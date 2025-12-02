@@ -89,6 +89,68 @@ const DEFAULT_SETTINGS: PerspectaSettings = {
 
 const FRONTMATTER_KEY = 'perspecta-arrangement';
 
+// ============================================================================
+// Virtual Coordinate System
+// ============================================================================
+// Uses MacBook Pro 16" as reference (1728x1117 at default scaling)
+// All saved coordinates are normalized to this virtual space, then scaled
+// to the actual screen dimensions on restore.
+
+const VIRTUAL_SCREEN = {
+	width: 1728,
+	height: 1117
+};
+
+interface PhysicalScreen {
+	width: number;
+	height: number;
+	x: number;  // screen.availLeft (left edge of available area)
+	y: number;  // screen.availTop (top edge, below menu bar on macOS)
+}
+
+function getPhysicalScreen(): PhysicalScreen {
+	return {
+		width: window.screen.availWidth,
+		height: window.screen.availHeight,
+		x: (window.screen as any).availLeft ?? 0,
+		y: (window.screen as any).availTop ?? 0
+	};
+}
+
+// Convert physical coordinates to virtual (for saving)
+function physicalToVirtual(physical: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+	const screen = getPhysicalScreen();
+	const scaleX = VIRTUAL_SCREEN.width / screen.width;
+	const scaleY = VIRTUAL_SCREEN.height / screen.height;
+
+	return {
+		x: Math.round((physical.x - screen.x) * scaleX),
+		y: Math.round((physical.y - screen.y) * scaleY),
+		width: Math.round(physical.width * scaleX),
+		height: Math.round(physical.height * scaleY)
+	};
+}
+
+// Convert virtual coordinates to physical (for restoring)
+function virtualToPhysical(virtual: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+	const screen = getPhysicalScreen();
+	const scaleX = screen.width / VIRTUAL_SCREEN.width;
+	const scaleY = screen.height / VIRTUAL_SCREEN.height;
+
+	let x = Math.round(virtual.x * scaleX) + screen.x;
+	let y = Math.round(virtual.y * scaleY) + screen.y;
+	let width = Math.round(virtual.width * scaleX);
+	let height = Math.round(virtual.height * scaleY);
+
+	// Ensure window fits within screen bounds
+	width = Math.min(width, screen.width);
+	height = Math.min(height, screen.height);
+	x = Math.max(screen.x, Math.min(x, screen.x + screen.width - width));
+	y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
+
+	return { x, y, width, height };
+}
+
 // Performance timing helper - controlled by settings.enableDebugLogging
 class PerfTimer {
 	private static enabled = false; // Controlled by plugin settings
@@ -384,12 +446,20 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private captureWindowState(rootSplit: any, win: Window): WindowStateV2 {
-		return {
-			root: this.captureSplitOrTabs(rootSplit),
+		// Convert physical coordinates to virtual coordinate system
+		const virtual = physicalToVirtual({
 			x: win.screenX,
 			y: win.screenY,
 			width: win.outerWidth,
 			height: win.outerHeight
+		});
+
+		return {
+			root: this.captureSplitOrTabs(rootSplit),
+			x: virtual.x,
+			y: virtual.y,
+			width: virtual.width,
+			height: virtual.height
 		};
 	}
 
@@ -404,12 +474,20 @@ export default class PerspectaPlugin extends Plugin {
 			if (!win || win === window) continue;
 			const popoutRoot = container?.children?.[0];
 			if (popoutRoot) {
-				states.push({
-					root: this.captureSplitOrTabs(popoutRoot),
+				// Convert physical coordinates to virtual coordinate system
+				const virtual = physicalToVirtual({
 					x: win.screenX,
 					y: win.screenY,
 					width: win.outerWidth,
 					height: win.outerHeight
+				});
+
+				states.push({
+					root: this.captureSplitOrTabs(popoutRoot),
+					x: virtual.x,
+					y: virtual.y,
+					width: virtual.width,
+					height: virtual.height
 				});
 			}
 		}
@@ -893,12 +971,21 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private restoreWindowGeometry(win: Window, state: WindowStateV2) {
-		if (state.width !== undefined && state.height !== undefined) {
-			try { win.resizeTo(state.width, state.height); } catch { /* ignore */ }
+		if (state.width === undefined || state.height === undefined ||
+			state.x === undefined || state.y === undefined) {
+			return;
 		}
-		if (state.x !== undefined && state.y !== undefined) {
-			try { win.moveTo(state.x, state.y); } catch { /* ignore */ }
-		}
+
+		// Convert virtual coordinates to physical screen coordinates
+		const physical = virtualToPhysical({
+			x: state.x,
+			y: state.y,
+			width: state.width,
+			height: state.height
+		});
+
+		try { win.resizeTo(physical.width, physical.height); } catch { /* ignore */ }
+		try { win.moveTo(physical.x, physical.y); } catch { /* ignore */ }
 	}
 
 	private isInRootSplit(leaf: WorkspaceLeaf): boolean {
