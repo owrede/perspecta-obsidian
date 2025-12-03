@@ -101,6 +101,9 @@ const VIRTUAL_SCREEN = {
 	height: 1117
 };
 
+// Global debug flag for coordinate conversions (set by plugin settings)
+let COORDINATE_DEBUG = false;
+
 interface PhysicalScreen {
 	width: number;
 	height: number;
@@ -123,12 +126,24 @@ function physicalToVirtual(physical: { x: number; y: number; width: number; heig
 	const scaleX = VIRTUAL_SCREEN.width / screen.width;
 	const scaleY = VIRTUAL_SCREEN.height / screen.height;
 
-	return {
+	const result = {
 		x: Math.round((physical.x - screen.x) * scaleX),
 		y: Math.round((physical.y - screen.y) * scaleY),
 		width: Math.round(physical.width * scaleX),
 		height: Math.round(physical.height * scaleY)
 	};
+
+	if (COORDINATE_DEBUG) {
+		console.log(`[Perspecta] physicalToVirtual:`, {
+			physical,
+			screen,
+			virtualRef: VIRTUAL_SCREEN,
+			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+			result
+		});
+	}
+
+	return result;
 }
 
 // Convert virtual coordinates to physical (for restoring)
@@ -148,7 +163,19 @@ function virtualToPhysical(virtual: { x: number; y: number; width: number; heigh
 	x = Math.max(screen.x, Math.min(x, screen.x + screen.width - width));
 	y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
 
-	return { x, y, width, height };
+	const result = { x, y, width, height };
+
+	if (COORDINATE_DEBUG) {
+		console.log(`[Perspecta] virtualToPhysical:`, {
+			virtual,
+			screen,
+			virtualRef: VIRTUAL_SCREEN,
+			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+			result
+		});
+	}
+
+	return result;
 }
 
 // Performance timing helper - controlled by settings.enableDebugLogging
@@ -446,13 +473,17 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private captureWindowState(rootSplit: any, win: Window): WindowStateV2 {
-		// Convert physical coordinates to virtual coordinate system
-		const virtual = physicalToVirtual({
+		const physical = {
 			x: win.screenX,
 			y: win.screenY,
 			width: win.outerWidth,
 			height: win.outerHeight
-		});
+		};
+
+		// Convert physical coordinates to virtual coordinate system
+		const virtual = physicalToVirtual(physical);
+
+		console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
 
 		return {
 			root: this.captureSplitOrTabs(rootSplit),
@@ -472,8 +503,20 @@ export default class PerspectaPlugin extends Plugin {
 		for (const container of floatingSplit.children) {
 			const win = container?.win;
 			if (!win || win === window) continue;
-			const popoutRoot = container?.children?.[0];
-			if (popoutRoot) {
+
+			if (COORDINATE_DEBUG) {
+				console.log(`[Perspecta] capturePopoutStates container:`, {
+					containerType: container?.constructor?.name,
+					containerDirection: container?.direction,
+					containerChildren: container?.children?.length,
+					firstChildType: container?.children?.[0]?.constructor?.name,
+					firstChildDirection: container?.children?.[0]?.direction
+				});
+			}
+
+			// The container itself may be a split (when popout has multiple panes)
+			// or it may contain a single tab group. We capture from the container level.
+			if (container?.children?.length > 0) {
 				// Convert physical coordinates to virtual coordinate system
 				const virtual = physicalToVirtual({
 					x: win.screenX,
@@ -482,8 +525,9 @@ export default class PerspectaPlugin extends Plugin {
 					height: win.outerHeight
 				});
 
+				// Capture from the container - it handles both splits and single tab groups
 				states.push({
-					root: this.captureSplitOrTabs(popoutRoot),
+					root: this.captureSplitOrTabs(container),
 					x: virtual.x,
 					y: virtual.y,
 					width: virtual.width,
@@ -507,6 +551,11 @@ export default class PerspectaPlugin extends Plugin {
 			}
 			if (children.length === 1) return children[0];
 			if (children.length === 0) return { type: 'tabs', tabs: [] };
+
+			if (COORDINATE_DEBUG) {
+				console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}`);
+			}
+
 			return { type: 'split', direction: node.direction, children };
 		}
 		return this.captureTabGroup(node);
@@ -694,7 +743,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (!context) { new Notice('No context found in this note'); return; }
 
-		const focusedWin = await this.applyArrangement(context);
+		const focusedWin = await this.applyArrangement(context, targetFile.path);
 		PerfTimer.mark('applyArrangement');
 
 		this.showNoticeInWindow(focusedWin, 'Context restored');
@@ -706,7 +755,7 @@ export default class PerspectaPlugin extends Plugin {
 		return cache?.frontmatter?.[FRONTMATTER_KEY] as WindowArrangement || null;
 	}
 
-	private async applyArrangement(arrangement: WindowArrangement): Promise<Window | null> {
+	private async applyArrangement(arrangement: WindowArrangement, contextNotePath?: string): Promise<Window | null> {
 		try {
 			PerfTimer.mark('applyArrangement:start');
 
@@ -749,10 +798,23 @@ export default class PerspectaPlugin extends Plugin {
 			if (v2.rightSidebar) this.restoreSidebarState('right', v2.rightSidebar);
 			PerfTimer.mark('restoreSidebars');
 
-			// Activate focused window
-			const focusedWin = this.getFocusedWindow(v2);
+			// Find and focus the window containing the context note (the note used to restore)
+			// This ensures the context note is active and its window is in foreground
+			let contextNoteWin: Window | null = null;
+			if (contextNotePath) {
+				contextNoteWin = this.findWindowContainingFile(contextNotePath);
+			}
+
+			// Fall back to the originally focused window if context note window not found
+			const focusedWin = contextNoteWin ?? this.getFocusedWindow(v2);
+
 			if (focusedWin) {
-				this.activateWindowLeaf(focusedWin, v2);
+				// Activate the leaf containing the context note (or the originally active leaf)
+				if (contextNotePath && contextNoteWin) {
+					this.activateLeafByPath(contextNoteWin, contextNotePath);
+				} else {
+					this.activateWindowLeaf(focusedWin, v2);
+				}
 				focusedWin.focus();
 				this.showFocusTint(focusedWin);
 			}
@@ -853,24 +915,122 @@ export default class PerspectaPlugin extends Plugin {
 	private async restoreSplit(parent: any, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.children.length) return existingLeaf;
 
-		let firstLeaf = await this.restoreWorkspaceNode(parent, state.children[0], existingLeaf);
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreSplit START: direction=${state.direction}, children=${state.children.length}, parent:`, {
+				type: parent?.constructor?.name,
+				direction: parent?.direction
+			});
+		}
 
-		for (let i = 1; i < state.children.length; i++) {
-			if (firstLeaf) this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
+		// Set the parent's direction to match what we need for THIS split level
+		if (parent && parent.direction !== state.direction) {
+			parent.direction = state.direction;
+			if (COORDINATE_DEBUG) {
+				console.log(`[Perspecta] restoreSplit: changed parent direction to ${state.direction}`);
+			}
+		}
 
-			// Obsidian's workspace stores direction as the axis of the split line:
-			// - 'horizontal' in storage = horizontal divider = notes stacked vertically (top/bottom)
-			// - 'vertical' in storage = vertical divider = notes side by side (left/right)
-			// But getLeaf('split', direction) expects the arrangement direction:
-			// - 'horizontal' = arrange horizontally = notes side by side (left/right)
-			// - 'vertical' = arrange vertically = notes stacked (top/bottom)
-			// So we need to SWAP the direction when restoring
-			const restoreDirection = state.direction === 'horizontal' ? 'vertical' : 'horizontal';
-			const newLeaf = this.app.workspace.getLeaf('split', restoreDirection);
-			await this.restoreWorkspaceNode(newLeaf.parent, state.children[i], newLeaf);
+		let firstLeaf: WorkspaceLeaf | undefined = existingLeaf;
+		let lastLeafInPrevChild: WorkspaceLeaf | undefined = existingLeaf;
+
+		// Process all children
+		for (let i = 0; i < state.children.length; i++) {
+			const child = state.children[i];
+
+			if (COORDINATE_DEBUG) {
+				console.log(`[Perspecta] restoreSplit: processing child[${i}] type=${child.type}`);
+			}
+
+			if (i === 0 && existingLeaf) {
+				// First child uses the existing leaf
+				if (child.type === 'tabs') {
+					firstLeaf = await this.restoreTabGroup(existingLeaf.parent, child, existingLeaf);
+					lastLeafInPrevChild = firstLeaf;
+				} else {
+					// First child is a nested split - returns { first, last } leaves
+					const result = await this.restoreNestedSplit(existingLeaf, child);
+					firstLeaf = result.first;
+					lastLeafInPrevChild = result.last;
+				}
+			} else {
+				// Subsequent children: split from the LAST leaf in the previous child's subtree
+				// This ensures the split happens at the correct container level
+				if (lastLeafInPrevChild) {
+					this.app.workspace.setActiveLeaf(lastLeafInPrevChild, { focus: false });
+
+					if (COORDINATE_DEBUG) {
+						const lastPath = (lastLeafInPrevChild?.view as any)?.file?.path || 'unknown';
+						console.log(`[Perspecta] restoreSplit: splitting from last leaf: ${lastPath}`);
+					}
+				}
+
+				// Create a new split at THIS level's direction
+				const newLeaf = this.app.workspace.getLeaf('split', state.direction);
+
+				if (child.type === 'tabs') {
+					await this.restoreTabGroup(newLeaf.parent, child, newLeaf);
+					lastLeafInPrevChild = newLeaf;
+				} else {
+					// Nested split within this child
+					const result = await this.restoreNestedSplit(newLeaf, child);
+					lastLeafInPrevChild = result.last;
+				}
+			}
+		}
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreSplit END: direction=${state.direction}`);
 		}
 
 		return firstLeaf;
+	}
+
+	// Restore a nested split structure starting from a leaf
+	// Returns both the first and last leaf created, for proper split anchoring
+	private async restoreNestedSplit(startLeaf: WorkspaceLeaf, state: SplitState): Promise<{ first: WorkspaceLeaf | undefined, last: WorkspaceLeaf | undefined }> {
+		if (!state.children.length) return { first: startLeaf, last: startLeaf };
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreNestedSplit: direction=${state.direction}, children=${state.children.length}`);
+		}
+
+		let firstLeaf: WorkspaceLeaf | undefined = startLeaf;
+		let lastLeaf: WorkspaceLeaf | undefined = startLeaf;
+
+		// First child goes into the start leaf
+		const firstChild = state.children[0];
+		if (firstChild.type === 'tabs') {
+			firstLeaf = await this.restoreTabGroup(startLeaf.parent, firstChild, startLeaf);
+			lastLeaf = firstLeaf;
+		} else {
+			// Recursively handle nested split
+			const result = await this.restoreNestedSplit(startLeaf, firstChild);
+			firstLeaf = result.first;
+			lastLeaf = result.last;
+		}
+
+		// Remaining children need splits in the nested direction
+		for (let i = 1; i < state.children.length; i++) {
+			const child = state.children[i];
+
+			// Set active leaf before splitting - use firstLeaf to keep splits at the same level
+			if (firstLeaf) {
+				this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
+			}
+
+			// Split in the nested direction
+			const newLeaf = this.app.workspace.getLeaf('split', state.direction);
+
+			if (child.type === 'tabs') {
+				await this.restoreTabGroup(newLeaf.parent, child, newLeaf);
+				lastLeaf = newLeaf;
+			} else {
+				const result = await this.restoreNestedSplit(newLeaf, child);
+				lastLeaf = result.last;
+			}
+		}
+
+		return { first: firstLeaf, last: lastLeaf };
 	}
 
 	private async restorePopoutWindow(state: WindowStateV2) {
@@ -880,30 +1040,170 @@ export default class PerspectaPlugin extends Plugin {
 		const file = this.app.vault.getAbstractFileByPath(firstTab.path);
 		if (!(file instanceof TFile)) return;
 
+		// Create the popout with the first file
 		const popoutLeaf = this.app.workspace.openPopoutLeaf();
 		await popoutLeaf.openFile(file);
 
 		const win = popoutLeaf.view?.containerEl?.win;
 		if (win) this.restoreWindowGeometry(win, state);
 
-		if (state.root.type === 'tabs' && state.root.tabs.length > 1) {
-			for (let i = 1; i < state.root.tabs.length; i++) {
-				const tab = state.root.tabs[i];
-				const f = this.app.vault.getAbstractFileByPath(tab.path);
-				if (!(f instanceof TFile)) continue;
-				const parent = popoutLeaf.parent;
-				if (parent) {
-					const leaf = this.app.workspace.createLeafInParent(parent, (parent as any).children?.length ?? 0);
-					await leaf.openFile(f);
+		if (state.root.type === 'tabs') {
+			// Simple tabs - add remaining tabs to the same group
+			await this.restoreRemainingTabs(popoutLeaf, state.root.tabs, 1);
+		} else if (state.root.type === 'split') {
+			// For complex splits, use outer-first approach:
+			// First create all outer splits, then fill in nested structures
+			await this.restoreSplitOuterFirst(popoutLeaf, state.root);
+		}
+	}
+
+	// Restore split using "outer-first" approach:
+	// 1. First create all siblings at the current level
+	// 2. Then recursively fill in any nested splits
+	private async restoreSplitOuterFirst(existingLeaf: WorkspaceLeaf, state: SplitState): Promise<void> {
+		if (!state.children.length) return;
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreSplitOuterFirst: direction=${state.direction}, children=${state.children.length}`);
+		}
+
+		// Step 1: Create all leaf placeholders at THIS level first
+		// This ensures the outer split structure is correct before we subdivide
+		const leafSlots: WorkspaceLeaf[] = [];
+
+		// existingLeaf will be slot 0 (first child)
+		leafSlots.push(existingLeaf);
+
+		// getLeaf('split') creates a new pane AFTER the active leaf
+		// So we iterate forward: each new split goes after the previous one
+		// This gives us the correct order: [existingLeaf, new1, new2, ...]
+
+		let lastLeaf = existingLeaf;
+		for (let i = 1; i < state.children.length; i++) {
+			this.app.workspace.setActiveLeaf(lastLeaf, { focus: false });
+			const newLeaf = this.app.workspace.getLeaf('split', state.direction);
+
+			// Open the first file of this child
+			const childFirstFile = this.getFirstTabFromNode(state.children[i]);
+			if (childFirstFile) {
+				const f = this.app.vault.getAbstractFileByPath(childFirstFile);
+				if (f instanceof TFile) {
+					await newLeaf.openFile(f);
 				}
 			}
-		} else if (state.root.type === 'split') {
-			this.app.workspace.setActiveLeaf(popoutLeaf, { focus: false });
-			for (let i = 1; i < state.root.children.length; i++) {
-				// Swap direction (same reason as in restoreSplit)
-				const restoreDirection = state.root.direction === 'horizontal' ? 'vertical' : 'horizontal';
-				const newLeaf = this.app.workspace.getLeaf('split', restoreDirection);
-				await this.restoreWorkspaceNode(newLeaf.parent, state.root.children[i], newLeaf);
+
+			leafSlots.push(newLeaf);
+			lastLeaf = newLeaf; // Next split will be after this one
+		}
+
+		// Now open the first file in the existing leaf (which is slot 0)
+		const firstFile = this.getFirstTabFromNode(state.children[0]);
+		if (firstFile) {
+			const f = this.app.vault.getAbstractFileByPath(firstFile);
+			if (f instanceof TFile) {
+				await existingLeaf.openFile(f);
+			}
+		}
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
+			leafSlots.forEach((leaf, idx) => {
+				const path = (leaf?.view as any)?.file?.path || 'unknown';
+				console.log(`  slot[${idx}]: ${path}`);
+			});
+		}
+
+		// Step 2: Now fill in nested structures for each child
+		for (let i = 0; i < state.children.length; i++) {
+			const child = state.children[i];
+			const leafSlot = leafSlots[i];
+
+			if (child.type === 'tabs') {
+				// Add remaining tabs to this slot
+				if (child.tabs.length > 1) {
+					await this.restoreRemainingTabs(leafSlot, child.tabs, 1);
+				}
+			} else if (child.type === 'split') {
+				// This child is a nested split - recursively restore it
+				// The leafSlot already has the first file, now we need to add the nested structure
+				await this.restoreNestedSplitInPlace(leafSlot, child);
+			}
+		}
+	}
+
+	// Restore a nested split within an existing leaf's position
+	private async restoreNestedSplitInPlace(leafSlot: WorkspaceLeaf, state: SplitState): Promise<void> {
+		if (state.children.length <= 1) {
+			// Only one child, just fill in its content
+			if (state.children[0]?.type === 'tabs' && state.children[0].tabs.length > 1) {
+				await this.restoreRemainingTabs(leafSlot, state.children[0].tabs, 1);
+			}
+			return;
+		}
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] restoreNestedSplitInPlace: direction=${state.direction}, children=${state.children.length}`);
+		}
+
+		// The leafSlot already has the first child's first file
+		// We need to create splits for remaining children in the NESTED direction
+
+		// First, handle remaining tabs in first child if any
+		const firstChild = state.children[0];
+		if (firstChild.type === 'tabs' && firstChild.tabs.length > 1) {
+			await this.restoreRemainingTabs(leafSlot, firstChild.tabs, 1);
+		} else if (firstChild.type === 'split') {
+			// First child is also a split - need deeper recursion
+			await this.restoreNestedSplitInPlace(leafSlot, firstChild);
+		}
+
+		// Now create splits for remaining children
+		// Track last leaf so splits are created in order (each after the previous)
+		let lastLeaf = leafSlot;
+		for (let i = 1; i < state.children.length; i++) {
+			const child = state.children[i];
+
+			this.app.workspace.setActiveLeaf(lastLeaf, { focus: false });
+			const newLeaf = this.app.workspace.getLeaf('split', state.direction);
+			lastLeaf = newLeaf;
+
+			// Open first file
+			const childFirstFile = this.getFirstTabFromNode(child);
+			if (childFirstFile) {
+				const f = this.app.vault.getAbstractFileByPath(childFirstFile);
+				if (f instanceof TFile) {
+					await newLeaf.openFile(f);
+				}
+			}
+
+			// Handle child's structure
+			if (child.type === 'tabs' && child.tabs.length > 1) {
+				await this.restoreRemainingTabs(newLeaf, child.tabs, 1);
+			} else if (child.type === 'split') {
+				await this.restoreNestedSplitInPlace(newLeaf, child);
+			}
+		}
+	}
+
+	// Get the first tab path from any node (tabs or split)
+	private getFirstTabFromNode(node: WorkspaceNodeState): string | null {
+		if (node.type === 'tabs') {
+			return node.tabs[0]?.path || null;
+		} else if (node.type === 'split' && node.children.length > 0) {
+			return this.getFirstTabFromNode(node.children[0]);
+		}
+		return null;
+	}
+
+	private async restoreRemainingTabs(existingLeaf: WorkspaceLeaf, tabs: TabState[], startIndex: number) {
+		for (let i = startIndex; i < tabs.length; i++) {
+			const tab = tabs[i];
+			const f = this.app.vault.getAbstractFileByPath(tab.path);
+			if (!(f instanceof TFile)) continue;
+			const parent = existingLeaf.parent;
+			if (parent) {
+				const leaf = this.app.workspace.createLeafInParent(parent, (parent as any).children?.length ?? 0);
+				await leaf.openFile(f);
 			}
 		}
 	}
@@ -929,6 +1229,24 @@ export default class PerspectaPlugin extends Plugin {
 		if (arr.focusedWindow === -1) return window;
 		const popouts = this.getPopoutWindowObjects();
 		return popouts[arr.focusedWindow] ?? window;
+	}
+
+	private findWindowContainingFile(filePath: string): Window | null {
+		let foundWin: Window | null = null;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (!foundWin && (leaf.view as any)?.file?.path === filePath) {
+				foundWin = leaf.view?.containerEl?.win ?? window;
+			}
+		});
+		return foundWin;
+	}
+
+	private activateLeafByPath(win: Window, filePath: string) {
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view?.containerEl?.win === win && (leaf.view as any)?.file?.path === filePath) {
+				this.app.workspace.setActiveLeaf(leaf, { focus: false });
+			}
+		});
 	}
 
 	private activateWindowLeaf(win: Window, arr: WindowArrangementV2) {
@@ -971,8 +1289,15 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private restoreWindowGeometry(win: Window, state: WindowStateV2) {
+		console.log(`[Perspecta] restoreWindowGeometry called`, {
+			hasCoords: state.x !== undefined && state.y !== undefined,
+			hasSize: state.width !== undefined && state.height !== undefined,
+			state: { x: state.x, y: state.y, width: state.width, height: state.height }
+		});
+
 		if (state.width === undefined || state.height === undefined ||
 			state.x === undefined || state.y === undefined) {
+			console.log(`[Perspecta] restoreWindowGeometry: missing coordinates, skipping`);
 			return;
 		}
 
@@ -983,6 +1308,8 @@ export default class PerspectaPlugin extends Plugin {
 			width: state.width,
 			height: state.height
 		});
+
+		console.log(`[Perspecta] restoreWindowGeometry: applying`, physical);
 
 		try { win.resizeTo(physical.width, physical.height); } catch { /* ignore */ }
 		try { win.moveTo(physical.x, physical.y); } catch { /* ignore */ }
@@ -1200,11 +1527,13 @@ export default class PerspectaPlugin extends Plugin {
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		PerfTimer.setEnabled(this.settings.enableDebugLogging);
+		COORDINATE_DEBUG = this.settings.enableDebugLogging;
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 		PerfTimer.setEnabled(this.settings.enableDebugLogging);
+		COORDINATE_DEBUG = this.settings.enableDebugLogging;
 	}
 }
 
