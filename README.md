@@ -1,5 +1,7 @@
 # Perspecta
 
+**Save and restore window arrangements in Obsidian**
+
 > **WARNING: Alpha Software**
 >
 > This plugin is currently in early development (alpha). Use at your own risk!
