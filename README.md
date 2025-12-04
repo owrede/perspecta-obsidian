@@ -114,6 +114,11 @@ perspecta-uid: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 ---
 ```
 
+## Tip
+
+As this plugin mostly provides two simple functions (saving a window arrangement and restoring it) it uses two hotkeys only. If you have a mouse like Logitech MX Master that offers extra configurable keys, using the store/restore with mouse keys makes navigating with Perspecta very convenient!
+
+
 ## License
 
 MIT
