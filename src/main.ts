@@ -80,8 +80,6 @@ interface PerspectaSettings {
 	enableVisualMapping: boolean;
 	enableAutomation: boolean;
 	automationScriptsPath: string;
-	saveArrangementHotkey: string;
-	restoreArrangementHotkey: string;
 	showDebugModal: boolean;
 	enableDebugLogging: boolean;
 	focusTintDuration: number;
@@ -93,8 +91,6 @@ const DEFAULT_SETTINGS: PerspectaSettings = {
 	enableVisualMapping: true,
 	enableAutomation: true,
 	automationScriptsPath: 'perspecta/scripts/',
-	saveArrangementHotkey: 'Shift+Meta+S',
-	restoreArrangementHotkey: 'Shift+Meta+R',
 	showDebugModal: true,
 	enableDebugLogging: false,
 	focusTintDuration: 8,
@@ -841,7 +837,6 @@ export default class PerspectaPlugin extends Plugin {
 	settings: PerspectaSettings;
 	private focusedWindowIndex: number = -1;
 	private windowFocusListeners: Map<Window, () => void> = new Map();
-	private registeredHotkeyWindows = new Set<Window>();
 	private filesWithContext = new Set<string>();
 	private refreshIndicatorsTimeout: ReturnType<typeof setTimeout> | null = null;
 	private isClosingWindow = false; // Guard against operations during window close
@@ -861,12 +856,14 @@ export default class PerspectaPlugin extends Plugin {
 		this.addCommand({
 			id: 'save-context',
 			name: 'Save context',
+			hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 's' }],
 			callback: () => this.saveContext()
 		});
 
 		this.addCommand({
 			id: 'restore-context',
 			name: 'Restore context',
+			hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'r' }],
 			callback: () => this.restoreContext()
 		});
 
@@ -875,8 +872,6 @@ export default class PerspectaPlugin extends Plugin {
 			name: 'Show context details',
 			callback: () => this.showContextDetails()
 		});
-
-		this.registerHotkeyListeners();
 		this.setupFocusTracking();
 		this.setupContextIndicator();
 		this.setupFileExplorerIndicators();
@@ -935,54 +930,6 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// ============================================================================
-	// Hotkey Management
-	// ============================================================================
-
-	private hotkeyHandler = (evt: KeyboardEvent) => {
-		if (this.matchesHotkey(evt, this.settings.saveArrangementHotkey)) {
-			evt.preventDefault();
-			this.saveContext();
-		} else if (this.matchesHotkey(evt, this.settings.restoreArrangementHotkey)) {
-			evt.preventDefault();
-			this.restoreContext();
-		}
-	};
-
-	private registerHotkeyListeners() {
-		this.registerDomEvent(document, 'keydown', this.hotkeyHandler);
-		this.registerEvent(
-			this.app.workspace.on('window-open', (_: any, win: Window) => {
-				this.registerHotkeyOnWindow(win);
-			})
-		);
-	}
-
-	private registerHotkeyOnWindow(win: Window) {
-		if (this.registeredHotkeyWindows.has(win)) return;
-		this.registeredHotkeyWindows.add(win);
-		win.document.addEventListener('keydown', this.hotkeyHandler);
-		win.addEventListener('unload', () => this.registeredHotkeyWindows.delete(win));
-	}
-
-	private matchesHotkey(evt: KeyboardEvent, hotkey: string): boolean {
-		const parts = hotkey.split('+').map(p => p.trim().toLowerCase());
-		const needsShift = parts.includes('shift');
-		const needsMeta = parts.includes('meta') || parts.includes('cmd');
-		const needsCtrl = parts.includes('ctrl') || parts.includes('control');
-		const needsAlt = parts.includes('alt') || parts.includes('option');
-		const modifiers = ['shift', 'meta', 'cmd', 'ctrl', 'control', 'alt', 'option'];
-		const key = hotkey.split('+').find(p => !modifiers.includes(p.trim().toLowerCase()));
-
-		if (needsShift !== evt.shiftKey || needsMeta !== evt.metaKey ||
-			needsCtrl !== evt.ctrlKey || needsAlt !== evt.altKey) return false;
-		if (key) {
-			const eventKey = evt.key.length === 1 ? evt.key.toUpperCase() : evt.key;
-			if (eventKey !== key) return false;
-		}
-		return true;
-	}
-
-	// ============================================================================
 	// Focus Tracking
 	// ============================================================================
 
@@ -1007,11 +954,6 @@ export default class PerspectaPlugin extends Plugin {
 				if (listener) {
 					win.removeEventListener('focus', listener);
 					this.windowFocusListeners.delete(win);
-				}
-
-				// Clean up registered hotkey window
-				if (this.registeredHotkeyWindows.has(win)) {
-					this.registeredHotkeyWindows.delete(win);
 				}
 
 				// Debug timing (uncomment to debug window close performance)
@@ -3258,10 +3200,6 @@ class PerspectaSettingTab extends PluginSettingTab {
 		containerEl.createEl('h2', { text: 'Perspecta Settings' });
 
 		containerEl.createEl('h3', { text: 'Context' });
-		this.addHotkeyRecorder(containerEl, 'Save context hotkey', this.plugin.settings.saveArrangementHotkey,
-			async (v) => { this.plugin.settings.saveArrangementHotkey = v; await this.plugin.saveSettings(); });
-		this.addHotkeyRecorder(containerEl, 'Restore context hotkey', this.plugin.settings.restoreArrangementHotkey,
-			async (v) => { this.plugin.settings.restoreArrangementHotkey = v; await this.plugin.saveSettings(); });
 
 		new Setting(containerEl).setName('Focus tint duration').setDesc('Seconds (0 = disabled)')
 			.addText(t => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async v => {
@@ -3363,36 +3301,5 @@ class PerspectaSettingTab extends PluginSettingTab {
 			.addToggle(t => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async v => {
 				this.plugin.settings.enableDebugLogging = v; await this.plugin.saveSettings();
 			}));
-	}
-
-	private addHotkeyRecorder(containerEl: HTMLElement, name: string, value: string, onChange: (v: string) => Promise<void>) {
-		const setting = new Setting(containerEl).setName(name);
-		const display = setting.controlEl.createEl('div', { cls: 'perspecta-hotkey-recorder', text: value || 'Click to set' });
-		let recording = false;
-
-		display.addEventListener('click', () => {
-			recording = !recording;
-			display.toggleClass('is-recording', recording);
-			display.setText(recording ? 'Press keys...' : value || 'Click to set');
-		});
-
-		display.addEventListener('keydown', async (e) => {
-			if (!recording || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
-			e.preventDefault();
-			e.stopPropagation();
-			const parts: string[] = [];
-			if (e.ctrlKey) parts.push('Ctrl');
-			if (e.altKey) parts.push('Alt');
-			if (e.shiftKey) parts.push('Shift');
-			if (e.metaKey) parts.push('Meta');
-			parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
-			const hotkey = parts.join('+');
-			display.setText(hotkey);
-			recording = false;
-			display.removeClass('is-recording');
-			await onChange(hotkey);
-		});
-
-		display.setAttribute('tabindex', '0');
 	}
 }

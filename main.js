@@ -32,8 +32,6 @@ var DEFAULT_SETTINGS = {
   enableVisualMapping: true,
   enableAutomation: true,
   automationScriptsPath: "perspecta/scripts/",
-  saveArrangementHotkey: "Shift+Meta+S",
-  restoreArrangementHotkey: "Shift+Meta+R",
   showDebugModal: true,
   enableDebugLogging: false,
   focusTintDuration: 8,
@@ -534,22 +532,9 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
     super(...arguments);
     this.focusedWindowIndex = -1;
     this.windowFocusListeners = /* @__PURE__ */ new Map();
-    this.registeredHotkeyWindows = /* @__PURE__ */ new Set();
     this.filesWithContext = /* @__PURE__ */ new Set();
     this.refreshIndicatorsTimeout = null;
     this.isClosingWindow = false;
-    // ============================================================================
-    // Hotkey Management
-    // ============================================================================
-    this.hotkeyHandler = (evt) => {
-      if (this.matchesHotkey(evt, this.settings.saveArrangementHotkey)) {
-        evt.preventDefault();
-        this.saveContext();
-      } else if (this.matchesHotkey(evt, this.settings.restoreArrangementHotkey)) {
-        evt.preventDefault();
-        this.restoreContext();
-      }
-    };
     // ============================================================================
     // Context Restore (Optimized)
     // ============================================================================
@@ -570,11 +555,13 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
     this.addCommand({
       id: "save-context",
       name: "Save context",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "s" }],
       callback: () => this.saveContext()
     });
     this.addCommand({
       id: "restore-context",
       name: "Restore context",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "r" }],
       callback: () => this.restoreContext()
     });
     this.addCommand({
@@ -582,7 +569,6 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
       name: "Show context details",
       callback: () => this.showContextDetails()
     });
-    this.registerHotkeyListeners();
     this.setupFocusTracking();
     this.setupContextIndicator();
     this.setupFileExplorerIndicators();
@@ -633,38 +619,6 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
     });
     this.windowFocusListeners.clear();
   }
-  registerHotkeyListeners() {
-    this.registerDomEvent(document, "keydown", this.hotkeyHandler);
-    this.registerEvent(
-      this.app.workspace.on("window-open", (_, win) => {
-        this.registerHotkeyOnWindow(win);
-      })
-    );
-  }
-  registerHotkeyOnWindow(win) {
-    if (this.registeredHotkeyWindows.has(win))
-      return;
-    this.registeredHotkeyWindows.add(win);
-    win.document.addEventListener("keydown", this.hotkeyHandler);
-    win.addEventListener("unload", () => this.registeredHotkeyWindows.delete(win));
-  }
-  matchesHotkey(evt, hotkey) {
-    const parts = hotkey.split("+").map((p) => p.trim().toLowerCase());
-    const needsShift = parts.includes("shift");
-    const needsMeta = parts.includes("meta") || parts.includes("cmd");
-    const needsCtrl = parts.includes("ctrl") || parts.includes("control");
-    const needsAlt = parts.includes("alt") || parts.includes("option");
-    const modifiers = ["shift", "meta", "cmd", "ctrl", "control", "alt", "option"];
-    const key = hotkey.split("+").find((p) => !modifiers.includes(p.trim().toLowerCase()));
-    if (needsShift !== evt.shiftKey || needsMeta !== evt.metaKey || needsCtrl !== evt.ctrlKey || needsAlt !== evt.altKey)
-      return false;
-    if (key) {
-      const eventKey = evt.key.length === 1 ? evt.key.toUpperCase() : evt.key;
-      if (eventKey !== key)
-        return false;
-    }
-    return true;
-  }
   // ============================================================================
   // Focus Tracking
   // ============================================================================
@@ -682,9 +636,6 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
         if (listener) {
           win.removeEventListener("focus", listener);
           this.windowFocusListeners.delete(win);
-        }
-        if (this.registeredHotkeyWindows.has(win)) {
-          this.registeredHotkeyWindows.delete(win);
         }
         setTimeout(() => {
           this.isClosingWindow = false;
@@ -2506,24 +2457,6 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Perspecta Settings" });
     containerEl.createEl("h3", { text: "Context" });
-    this.addHotkeyRecorder(
-      containerEl,
-      "Save context hotkey",
-      this.plugin.settings.saveArrangementHotkey,
-      async (v) => {
-        this.plugin.settings.saveArrangementHotkey = v;
-        await this.plugin.saveSettings();
-      }
-    );
-    this.addHotkeyRecorder(
-      containerEl,
-      "Restore context hotkey",
-      this.plugin.settings.restoreArrangementHotkey,
-      async (v) => {
-        this.plugin.settings.restoreArrangementHotkey = v;
-        await this.plugin.saveSettings();
-      }
-    );
     new import_obsidian.Setting(containerEl).setName("Focus tint duration").setDesc("Seconds (0 = disabled)").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
       const n = parseFloat(v);
       if (!isNaN(n) && n >= 0) {
@@ -2594,37 +2527,5 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.enableDebugLogging = v;
       await this.plugin.saveSettings();
     }));
-  }
-  addHotkeyRecorder(containerEl, name, value, onChange) {
-    const setting = new import_obsidian.Setting(containerEl).setName(name);
-    const display = setting.controlEl.createEl("div", { cls: "perspecta-hotkey-recorder", text: value || "Click to set" });
-    let recording = false;
-    display.addEventListener("click", () => {
-      recording = !recording;
-      display.toggleClass("is-recording", recording);
-      display.setText(recording ? "Press keys..." : value || "Click to set");
-    });
-    display.addEventListener("keydown", async (e) => {
-      if (!recording || ["Shift", "Control", "Alt", "Meta"].includes(e.key))
-        return;
-      e.preventDefault();
-      e.stopPropagation();
-      const parts = [];
-      if (e.ctrlKey)
-        parts.push("Ctrl");
-      if (e.altKey)
-        parts.push("Alt");
-      if (e.shiftKey)
-        parts.push("Shift");
-      if (e.metaKey)
-        parts.push("Meta");
-      parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
-      const hotkey = parts.join("+");
-      display.setText(hotkey);
-      recording = false;
-      display.removeClass("is-recording");
-      await onChange(hotkey);
-    });
-    display.setAttribute("tabindex", "0");
   }
 };

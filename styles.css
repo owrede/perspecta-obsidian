@@ -72,46 +72,6 @@
 }
 
 /* ============================================================================
-   Hotkey Recorder
-   ============================================================================ */
-
-.perspecta-hotkey-recorder {
-    padding: 6px 12px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    background-color: var(--background-primary);
-    cursor: pointer;
-    min-width: 150px;
-    text-align: center;
-    font-family: var(--font-monospace);
-    font-size: var(--font-ui-small);
-    user-select: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.perspecta-hotkey-recorder:hover {
-    border-color: var(--background-modifier-border-hover);
-}
-
-.perspecta-hotkey-recorder:focus {
-    outline: none;
-    border-color: var(--interactive-accent);
-    box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
-}
-
-.perspecta-hotkey-recorder.is-recording {
-    border-color: var(--interactive-accent);
-    background-color: var(--background-secondary);
-    color: var(--text-accent);
-    animation: perspecta-pulse 1s ease-in-out infinite;
-}
-
-@keyframes perspecta-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-}
-
-/* ============================================================================
    Debug Modal
    ============================================================================ */
 
