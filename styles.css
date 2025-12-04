@@ -286,6 +286,18 @@
     font-size: 0.85em;
     color: var(--text-muted);
     margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.perspecta-size-badge {
+    font-size: 0.75em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--background-modifier-border);
+    color: var(--text-muted);
+    font-weight: 500;
 }
 
 .perspecta-split-children {

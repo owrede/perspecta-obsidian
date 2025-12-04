@@ -2263,9 +2263,11 @@ export default class PerspectaPlugin extends Plugin {
 		doc.body.appendChild(modal);
 	}
 
-	private formatNodeDetails(node: WorkspaceNodeState, isFocusedWindow: boolean): string {
+	private formatNodeDetails(node: WorkspaceNodeState, isFocusedWindow: boolean, sizePercent?: string): string {
+		const sizeLabel = sizePercent ? `<span class="perspecta-size-badge">${sizePercent}</span>` : '';
+
 		if (node.type === 'tabs') {
-			return `<div class="perspecta-tab-list">${node.tabs.map(t => {
+			return `<div class="perspecta-tab-list">${sizeLabel}${node.tabs.map(t => {
 				const name = t.path.split('/').pop()?.replace(/\.md$/, '') || t.path;
 				const folder = t.path.includes('/') ? t.path.split('/').slice(0, -1).join('/') : '';
 				const activeClass = t.active ? ' perspecta-tab-active' : '';
@@ -2278,10 +2280,15 @@ export default class PerspectaPlugin extends Plugin {
 			}).join('')}</div>`;
 		} else {
 			const icon = node.direction === 'horizontal' ? '↔' : '↕';
+			// Calculate percentages for children if sizes are available
+			const sizes = node.sizes;
+			const total = sizes?.reduce((a, b) => a + b, 0) || 0;
+			const percentages = sizes?.map(s => total > 0 ? Math.round((s / total) * 100) + '%' : undefined);
+
 			return `<div class="perspecta-split">
-				<div class="perspecta-split-header">${icon} Split (${node.direction})</div>
+				<div class="perspecta-split-header">${icon} Split (${node.direction})${sizeLabel}</div>
 				<div class="perspecta-split-children">
-					${node.children.map(child => this.formatNodeDetails(child, isFocusedWindow)).join('')}
+					${node.children.map((child, i) => this.formatNodeDetails(child, isFocusedWindow, percentages?.[i])).join('')}
 				</div>
 			</div>`;
 		}

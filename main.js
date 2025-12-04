@@ -2266,9 +2266,10 @@ ${content}`;
     doc.body.appendChild(overlay);
     doc.body.appendChild(modal);
   }
-  formatNodeDetails(node, isFocusedWindow) {
+  formatNodeDetails(node, isFocusedWindow, sizePercent) {
+    const sizeLabel = sizePercent ? `<span class="perspecta-size-badge">${sizePercent}</span>` : "";
     if (node.type === "tabs") {
-      return `<div class="perspecta-tab-list">${node.tabs.map((t) => {
+      return `<div class="perspecta-tab-list">${sizeLabel}${node.tabs.map((t) => {
         var _a;
         const name = ((_a = t.path.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "")) || t.path;
         const folder = t.path.includes("/") ? t.path.split("/").slice(0, -1).join("/") : "";
@@ -2282,10 +2283,13 @@ ${content}`;
       }).join("")}</div>`;
     } else {
       const icon = node.direction === "horizontal" ? "\u2194" : "\u2195";
+      const sizes = node.sizes;
+      const total = (sizes == null ? void 0 : sizes.reduce((a, b) => a + b, 0)) || 0;
+      const percentages = sizes == null ? void 0 : sizes.map((s) => total > 0 ? Math.round(s / total * 100) + "%" : void 0);
       return `<div class="perspecta-split">
-				<div class="perspecta-split-header">${icon} Split (${node.direction})</div>
+				<div class="perspecta-split-header">${icon} Split (${node.direction})${sizeLabel}</div>
 				<div class="perspecta-split-children">
-					${node.children.map((child) => this.formatNodeDetails(child, isFocusedWindow)).join("")}
+					${node.children.map((child, i) => this.formatNodeDetails(child, isFocusedWindow, percentages == null ? void 0 : percentages[i])).join("")}
 				</div>
 			</div>`;
     }
