@@ -53,6 +53,16 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
 | Save Context | `Shift+Cmd+S` (Mac) / `Shift+Ctrl+S` (Windows) |
 | Restore Context | `Shift+Cmd+R` (Mac) / `Shift+Ctrl+R` (Windows) |
 
+### Commands
+
+All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
+
+| Command | Description |
+|---------|-------------|
+| **Save context** | Save the current window arrangement to the active file |
+| **Restore context** | Restore the window arrangement saved in the active file |
+| **Show context details** | Display detailed information about the saved context (tabs, windows, positions) |
+
 ### Saving a Context
 
 1. Arrange your windows, tabs, and splits as desired
