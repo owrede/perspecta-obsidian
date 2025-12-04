@@ -2113,6 +2113,28 @@ export default class PerspectaPlugin extends Plugin {
 		return firstLeaf;
 	}
 
+	/**
+	 * Restore a split structure.
+	 *
+	 * The challenge: Obsidian's getLeaf('split') creates splits at the LEAF level,
+	 * not at the container level. So if we have a horizontal container [A, B] and
+	 * split vertically from B, we get [A, vertical[B, C]] instead of vertical[[A,B], C].
+	 *
+	 * Solution: Use createLeafBySplit with the FIRST leaf of a nested structure.
+	 * When we split from the first leaf in a different direction, Obsidian properly
+	 * wraps the entire sibling group.
+	 *
+	 * For:
+	 *   vertical split
+	 *   ├── horizontal split (A | B)
+	 *   └── C
+	 *
+	 * Order:
+	 * 1. Start with leaf (A)
+	 * 2. Build horizontal: split from A → B (now [A, B] in horizontal)
+	 * 3. Split vertically from A (FIRST leaf) → C
+	 *    This should wrap [A, B] as a unit
+	 */
 	private async restoreSplit(parent: any, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.children.length) return existingLeaf;
 
@@ -2123,7 +2145,7 @@ export default class PerspectaPlugin extends Plugin {
 			});
 		}
 
-		// Set the parent's direction to match what we need for THIS split level
+		// Set the parent container's direction
 		if (parent && parent.direction !== state.direction) {
 			parent.direction = state.direction;
 			if (COORDINATE_DEBUG) {
@@ -2131,51 +2153,72 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		}
 
-		let firstLeaf: WorkspaceLeaf | undefined = existingLeaf;
-		let lastLeafInPrevChild: WorkspaceLeaf | undefined = existingLeaf;
+		let firstLeaf = existingLeaf;
 
-		// Process all children
-		for (let i = 0; i < state.children.length; i++) {
+		// Process first child - this may create nested structure
+		const firstChild = state.children[0];
+		if (firstChild.type === 'tabs') {
+			// Simple tabs
+			const firstTab = firstChild.tabs[0];
+			if (firstTab && existingLeaf) {
+				const { file: f, method } = resolveFile(this.app, firstTab);
+				if (f) {
+					if (method !== 'path') {
+						this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+					}
+					await existingLeaf.openFile(f);
+				}
+			}
+			if (firstChild.tabs.length > 1 && existingLeaf) {
+				await this.restoreRemainingTabs(existingLeaf, firstChild.tabs, 1);
+			}
+			firstLeaf = existingLeaf;
+		} else {
+			// First child is a nested split - build it first
+			firstLeaf = await this.buildNestedSplit(existingLeaf, firstChild);
+		}
+
+		// Now add siblings at THIS level
+		// KEY: Split from the FIRST leaf to properly wrap nested structures
+		for (let i = 1; i < state.children.length; i++) {
 			const child = state.children[i];
 
-			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] restoreSplit: processing child[${i}] type=${child.type}`);
-			}
+			// Small delay to ensure previous split operations are fully established
+			await new Promise(resolve => setTimeout(resolve, 50));
 
-			if (i === 0 && existingLeaf) {
-				// First child uses the existing leaf
-				if (child.type === 'tabs') {
-					firstLeaf = await this.restoreTabGroup(existingLeaf.parent, child, existingLeaf);
-					lastLeafInPrevChild = firstLeaf;
-				} else {
-					// First child is a nested split - returns { first, last } leaves
-					const result = await this.restoreNestedSplit(existingLeaf, child);
-					firstLeaf = result.first;
-					lastLeafInPrevChild = result.last;
-				}
-			} else {
-				// Subsequent children: split from the LAST leaf in the previous child's subtree
-				// This ensures the split happens at the correct container level
-				if (lastLeafInPrevChild) {
-					this.app.workspace.setActiveLeaf(lastLeafInPrevChild, { focus: false });
+			// Use createLeafBySplit from the FIRST leaf
+			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
 
-					if (COORDINATE_DEBUG) {
-						const lastPath = (lastLeafInPrevChild?.view as any)?.file?.path || 'unknown';
-						console.log(`[Perspecta] restoreSplit: splitting from last leaf: ${lastPath}`);
+			// Wait for the split to be established
+			await new Promise(resolve => setTimeout(resolve, 50));
+
+			if (child.type === 'tabs') {
+				const firstTab = child.tabs[0];
+				if (firstTab) {
+					const { file: f, method } = resolveFile(this.app, firstTab);
+					if (f) {
+						if (method !== 'path') {
+							this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+						}
+						await newLeaf.openFile(f);
 					}
 				}
-
-				// Create a new split at THIS level's direction
-				const newLeaf = this.app.workspace.getLeaf('split', state.direction);
-
-				if (child.type === 'tabs') {
-					await this.restoreTabGroup(newLeaf.parent, child, newLeaf);
-					lastLeafInPrevChild = newLeaf;
-				} else {
-					// Nested split within this child
-					const result = await this.restoreNestedSplit(newLeaf, child);
-					lastLeafInPrevChild = result.last;
+				if (child.tabs.length > 1) {
+					await this.restoreRemainingTabs(newLeaf, child.tabs, 1);
 				}
+			} else {
+				// Nested split
+				const firstTab = this.getFirstTabFromNode(child);
+				if (firstTab) {
+					const { file: f, method } = resolveFile(this.app, firstTab);
+					if (f) {
+						if (method !== 'path') {
+							this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+						}
+						await newLeaf.openFile(f);
+					}
+				}
+				await this.buildNestedSplit(newLeaf, child);
 			}
 		}
 
@@ -2186,52 +2229,88 @@ export default class PerspectaPlugin extends Plugin {
 		return firstLeaf;
 	}
 
-	// Restore a nested split structure starting from a leaf
-	// Returns both the first and last leaf created, for proper split anchoring
-	private async restoreNestedSplit(startLeaf: WorkspaceLeaf, state: SplitState): Promise<{ first: WorkspaceLeaf | undefined, last: WorkspaceLeaf | undefined }> {
-		if (!state.children.length) return { first: startLeaf, last: startLeaf };
+	/**
+	 * Build a nested split structure starting from a leaf.
+	 * Returns the first leaf in the created structure.
+	 */
+	private async buildNestedSplit(startLeaf: WorkspaceLeaf | undefined, state: SplitState): Promise<WorkspaceLeaf | undefined> {
+		if (!state.children.length || !startLeaf) {
+			return startLeaf;
+		}
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreNestedSplit: direction=${state.direction}, children=${state.children.length}`);
+			console.log(`[Perspecta] buildNestedSplit: direction=${state.direction}, children=${state.children.length}`);
 		}
 
-		let firstLeaf: WorkspaceLeaf | undefined = startLeaf;
-		let lastLeaf: WorkspaceLeaf | undefined = startLeaf;
+		let firstLeaf: WorkspaceLeaf = startLeaf;
 
-		// First child goes into the start leaf
+		// Process first child into startLeaf
 		const firstChild = state.children[0];
 		if (firstChild.type === 'tabs') {
-			firstLeaf = await this.restoreTabGroup(startLeaf.parent, firstChild, startLeaf);
-			lastLeaf = firstLeaf;
+			const firstTab = firstChild.tabs[0];
+			if (firstTab) {
+				const { file: f, method } = resolveFile(this.app, firstTab);
+				if (f) {
+					if (method !== 'path') {
+						this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+					}
+					await startLeaf.openFile(f);
+				}
+			}
+			if (firstChild.tabs.length > 1) {
+				await this.restoreRemainingTabs(startLeaf, firstChild.tabs, 1);
+			}
+			firstLeaf = startLeaf;
 		} else {
-			// Recursively handle nested split
-			const result = await this.restoreNestedSplit(startLeaf, firstChild);
-			firstLeaf = result.first;
-			lastLeaf = result.last;
+			// Recursively build nested split
+			const result = await this.buildNestedSplit(startLeaf, firstChild);
+			if (result) firstLeaf = result;
 		}
 
-		// Remaining children need splits in the nested direction
+		// Add siblings - split from FIRST leaf to keep them at same level
 		for (let i = 1; i < state.children.length; i++) {
 			const child = state.children[i];
 
-			// Set active leaf before splitting - use firstLeaf to keep splits at the same level
-			if (firstLeaf) {
-				this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
-			}
+			// Small delay to ensure previous operations are fully established
+			await new Promise(resolve => setTimeout(resolve, 50));
 
-			// Split in the nested direction
-			const newLeaf = this.app.workspace.getLeaf('split', state.direction);
+			// Split from firstLeaf
+			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
+
+			// Wait for the split to be established
+			await new Promise(resolve => setTimeout(resolve, 50));
 
 			if (child.type === 'tabs') {
-				await this.restoreTabGroup(newLeaf.parent, child, newLeaf);
-				lastLeaf = newLeaf;
+				const firstTab = child.tabs[0];
+				if (firstTab) {
+					const { file: f, method } = resolveFile(this.app, firstTab);
+					if (f) {
+						if (method !== 'path') {
+							this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+						}
+						await newLeaf.openFile(f);
+					}
+				}
+				if (child.tabs.length > 1) {
+					await this.restoreRemainingTabs(newLeaf, child.tabs, 1);
+				}
 			} else {
-				const result = await this.restoreNestedSplit(newLeaf, child);
-				lastLeaf = result.last;
+				// Nested split
+				const firstTab = this.getFirstTabFromNode(child);
+				if (firstTab) {
+					const { file: f, method } = resolveFile(this.app, firstTab);
+					if (f) {
+						if (method !== 'path') {
+							this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
+						}
+						await newLeaf.openFile(f);
+					}
+				}
+				await this.buildNestedSplit(newLeaf, child);
 			}
 		}
 
-		return { first: firstLeaf, last: lastLeaf };
+		return firstLeaf;
 	}
 
 	private async restorePopoutWindow(
