@@ -1,5 +1,5 @@
 # Build output
-main.js
+# main.js - NOT ignored, needed for BRAT installation
 *.js.map
 
 # npm
