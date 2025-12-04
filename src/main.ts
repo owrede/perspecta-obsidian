@@ -1,4 +1,4 @@
-import { App, Menu, MenuItem, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice, parseYaml, stringifyYaml } from 'obsidian';
+import { App, Menu, MenuItem, Platform, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice, parseYaml, stringifyYaml } from 'obsidian';
 
 // ============================================================================
 // Types and Interfaces
@@ -3201,6 +3201,20 @@ class PerspectaSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h3', { text: 'Context' });
 
+		// Display current hotkeys (read-only, configured via Obsidian's Hotkeys settings)
+		const saveHotkey = this.getHotkeyDisplay('perspecta-obsidian:save-context');
+		const restoreHotkey = this.getHotkeyDisplay('perspecta-obsidian:restore-context');
+
+		new Setting(containerEl)
+			.setName('Hotkeys')
+			.setDesc('Customize in Settings → Hotkeys')
+			.addButton(btn => btn
+				.setButtonText(`Save: ${saveHotkey}`)
+				.setDisabled(true))
+			.addButton(btn => btn
+				.setButtonText(`Restore: ${restoreHotkey}`)
+				.setDisabled(true));
+
 		new Setting(containerEl).setName('Focus tint duration').setDesc('Seconds (0 = disabled)')
 			.addText(t => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async v => {
 				const n = parseFloat(v);
@@ -3301,5 +3315,42 @@ class PerspectaSettingTab extends PluginSettingTab {
 			.addToggle(t => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async v => {
 				this.plugin.settings.enableDebugLogging = v; await this.plugin.saveSettings();
 			}));
+	}
+
+	private getHotkeyDisplay(commandId: string): string {
+		// Access Obsidian's internal hotkey manager to get current hotkey for a command
+		const hotkeyManager = (this.app as any).hotkeyManager;
+		if (!hotkeyManager) return 'Not set';
+
+		// Get custom hotkeys first, then fall back to defaults
+		const customHotkeys = hotkeyManager.customKeys?.[commandId];
+		const defaultHotkeys = hotkeyManager.defaultKeys?.[commandId];
+		const hotkeys = customHotkeys?.length ? customHotkeys : defaultHotkeys;
+
+		if (!hotkeys || hotkeys.length === 0) return 'Not set';
+
+		const hotkey = hotkeys[0];
+		const parts: string[] = [];
+
+		// Use platform-appropriate modifier display
+		const isMac = Platform.isMacOS;
+		if (hotkey.modifiers?.includes('Mod')) {
+			parts.push(isMac ? '⌘' : 'Ctrl');
+		}
+		if (hotkey.modifiers?.includes('Ctrl')) {
+			parts.push(isMac ? '⌃' : 'Ctrl');
+		}
+		if (hotkey.modifiers?.includes('Alt')) {
+			parts.push(isMac ? '⌥' : 'Alt');
+		}
+		if (hotkey.modifiers?.includes('Shift')) {
+			parts.push(isMac ? '⇧' : 'Shift');
+		}
+		if (hotkey.modifiers?.includes('Meta')) {
+			parts.push(isMac ? '⌘' : 'Win');
+		}
+
+		parts.push(hotkey.key?.toUpperCase() || '?');
+		return parts.join(isMac ? '' : '+');
 	}
 }

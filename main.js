@@ -2457,6 +2457,9 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Perspecta Settings" });
     containerEl.createEl("h3", { text: "Context" });
+    const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
+    const restoreHotkey = this.getHotkeyDisplay("perspecta-obsidian:restore-context");
+    new import_obsidian.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
     new import_obsidian.Setting(containerEl).setName("Focus tint duration").setDesc("Seconds (0 = disabled)").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
       const n = parseFloat(v);
       if (!isNaN(n) && n >= 0) {
@@ -2527,5 +2530,36 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.enableDebugLogging = v;
       await this.plugin.saveSettings();
     }));
+  }
+  getHotkeyDisplay(commandId) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const hotkeyManager = this.app.hotkeyManager;
+    if (!hotkeyManager)
+      return "Not set";
+    const customHotkeys = (_a = hotkeyManager.customKeys) == null ? void 0 : _a[commandId];
+    const defaultHotkeys = (_b = hotkeyManager.defaultKeys) == null ? void 0 : _b[commandId];
+    const hotkeys = (customHotkeys == null ? void 0 : customHotkeys.length) ? customHotkeys : defaultHotkeys;
+    if (!hotkeys || hotkeys.length === 0)
+      return "Not set";
+    const hotkey = hotkeys[0];
+    const parts = [];
+    const isMac = import_obsidian.Platform.isMacOS;
+    if ((_c = hotkey.modifiers) == null ? void 0 : _c.includes("Mod")) {
+      parts.push(isMac ? "\u2318" : "Ctrl");
+    }
+    if ((_d = hotkey.modifiers) == null ? void 0 : _d.includes("Ctrl")) {
+      parts.push(isMac ? "\u2303" : "Ctrl");
+    }
+    if ((_e = hotkey.modifiers) == null ? void 0 : _e.includes("Alt")) {
+      parts.push(isMac ? "\u2325" : "Alt");
+    }
+    if ((_f = hotkey.modifiers) == null ? void 0 : _f.includes("Shift")) {
+      parts.push(isMac ? "\u21E7" : "Shift");
+    }
+    if ((_g = hotkey.modifiers) == null ? void 0 : _g.includes("Meta")) {
+      parts.push(isMac ? "\u2318" : "Win");
+    }
+    parts.push(((_h = hotkey.key) == null ? void 0 : _h.toUpperCase()) || "?");
+    return parts.join(isMac ? "" : "+");
   }
 };
