@@ -82,6 +82,38 @@ All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
 - **Auto-generate UIDs**: Automatically add tracking IDs to files for reliable restoration
 - **Debug Modal**: Show detailed information when saving contexts
 
+## Important Concepts
+
+### Storage Modes
+
+Perspecta offers two storage modes for saving window arrangements:
+
+#### Frontmatter Mode (Default)
+- Context data is stored directly in your note's frontmatter as a compact base64-encoded string
+- **Advantage**: Data stays with your notes and survives plugin removal
+- **Disadvantage**: Adds a `perspecta-arrangement` property to your frontmatter
+
+#### External Mode
+- Context data is stored in the plugin's folder (`.obsidian/plugins/perspecta-obsidian/contexts/`)
+- **Advantage**: Keeps your frontmatter clean
+- **Disadvantage**: **All saved contexts will be lost if the plugin is removed or reinstalled**
+
+> **Note**: If you value data persistence, use Frontmatter Mode. If you prefer clean frontmatter and understand the risk, use External Mode.
+
+### Unique IDs (UIDs)
+
+Perspecta adds a `perspecta-uid` property to the frontmatter of notes that are part of a saved context. This unique identifier serves an important purpose:
+
+- **File tracking across renames**: When you rename or move a note, Obsidian changes its path. Without UIDs, Perspecta would lose track of these files and fail to restore them in your saved contexts.
+- **Reliable restoration**: UIDs ensure that even if you reorganize your vault, your window arrangements will still restore correctly.
+
+The UID is a small, unobtrusive property that looks like this:
+```yaml
+---
+perspecta-uid: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+---
+```
+
 ## License
 
 MIT
