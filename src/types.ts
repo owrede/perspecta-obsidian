@@ -13,6 +13,7 @@ export interface SplitState {
 	type: 'split';
 	direction: 'horizontal' | 'vertical';
 	children: (SplitState | TabGroupState)[];
+	sizes?: number[];  // Relative sizes for each child (maps to Obsidian's 'dimension' property)
 }
 
 export interface TabGroupState {

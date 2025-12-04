@@ -402,20 +402,34 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (node.direction && Array.isArray(node.children)) {
 			const children: WorkspaceNodeState[] = [];
+			const sizes: number[] = [];
+
 			for (const child of node.children) {
 				const childState = this.captureSplitOrTabs(child);
 				if (childState.type === 'split' || childState.tabs.length > 0) {
 					children.push(childState);
+					// Capture the size/dimension of each child
+					// Obsidian uses 'dimension' property for split sizes
+					const size = child.dimension ?? child.size ?? child.width ?? child.height;
+					sizes.push(size ?? 50); // Default to 50 if not found
 				}
 			}
 			if (children.length === 1) return children[0];
 			if (children.length === 0) return { type: 'tabs', tabs: [] };
 
 			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}`);
+				console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
+				// Debug: log all properties on the first child to discover size property
+				if (node.children[0]) {
+					const props = Object.keys(node.children[0]).filter(k =>
+						typeof node.children[0][k] === 'number' ||
+						(typeof node.children[0][k] === 'string' && !k.startsWith('_'))
+					);
+					console.log(`[Perspecta] Child properties:`, props.map(p => `${p}=${node.children[0][p]}`));
+				}
 			}
 
-			return { type: 'split', direction: node.direction, children };
+			return { type: 'split', direction: node.direction, children, sizes };
 		}
 		return this.captureTabGroup(node);
 	}
@@ -1445,11 +1459,51 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		}
 
+		// Apply saved sizes to the split children
+		if (state.sizes && state.sizes.length > 0 && firstLeaf) {
+			await this.applySplitSizes(firstLeaf, state.sizes);
+		}
+
 		if (COORDINATE_DEBUG) {
 			console.log(`[Perspecta] restoreSplit END: direction=${state.direction}`);
 		}
 
 		return firstLeaf;
+	}
+
+	/**
+	 * Apply saved sizes to a split container.
+	 * Gets the parent container from any leaf and sets dimension on its children.
+	 */
+	private async applySplitSizes(anyLeaf: WorkspaceLeaf, sizes: number[]): Promise<void> {
+		// Small delay to ensure DOM is updated
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		// Get the parent container
+		const parent = (anyLeaf as any).parent;
+		if (!parent?.children || parent.children.length !== sizes.length) {
+			if (COORDINATE_DEBUG) {
+				console.log(`[Perspecta] applySplitSizes: mismatch - parent has ${parent?.children?.length} children, expected ${sizes.length}`);
+			}
+			return;
+		}
+
+		// Apply dimension to each child
+		for (let i = 0; i < sizes.length; i++) {
+			const child = parent.children[i];
+			if (child && sizes[i] !== undefined) {
+				child.dimension = sizes[i];
+			}
+		}
+
+		// Trigger resize to apply the new dimensions
+		if (typeof parent.onResize === 'function') {
+			parent.onResize();
+		}
+
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] applySplitSizes: applied sizes ${JSON.stringify(sizes)} to ${sizes.length} children`);
+		}
 	}
 
 	/**
@@ -1531,6 +1585,11 @@ export default class PerspectaPlugin extends Plugin {
 				}
 				await this.buildNestedSplit(newLeaf, child);
 			}
+		}
+
+		// Apply saved sizes to the split children
+		if (state.sizes && state.sizes.length > 0 && firstLeaf) {
+			await this.applySplitSizes(firstLeaf, state.sizes);
 		}
 
 		return firstLeaf;
@@ -2259,13 +2318,28 @@ export default class PerspectaPlugin extends Plugin {
 		document.body.appendChild(modal);
 	}
 
-	private renderNodeHtml(node: WorkspaceNodeState, depth = 0): string {
+	private renderNodeHtml(node: WorkspaceNodeState, depth = 0, sizePercent?: string): string {
 		const pad = '&nbsp;'.repeat(depth * 4);
+		const sizeLabel = sizePercent ? ` <span style="color: var(--text-muted); font-size: 0.85em;">(${sizePercent})</span>` : '';
+
 		if (node.type === 'tabs') {
-			return node.tabs.map(t => `${pad}📄 ${t.path.split('/').pop()}${t.active ? ' ✓' : ''}`).join('<br>') + '<br>';
+			const tabList = node.tabs.map(t => `${pad}📄 ${t.path.split('/').pop()}${t.active ? ' ✓' : ''}`).join('<br>');
+			return `${pad}<span style="color: var(--text-muted);">Tabs${sizeLabel}</span><br>${tabList}<br>`;
 		}
-		let html = `${pad}${node.direction === 'horizontal' ? '↔️' : '↕️'} Split<br>`;
-		for (const child of node.children) html += this.renderNodeHtml(child, depth + 1);
+
+		// Calculate percentages for children if sizes are available
+		const sizes = node.sizes;
+		const total = sizes?.reduce((a, b) => a + b, 0) || 0;
+		const percentages = sizes?.map(s => total > 0 ? Math.round((s / total) * 100) + '%' : undefined);
+
+		const icon = node.direction === 'horizontal' ? '↔️' : '↕️';
+		let html = `${pad}${icon} <strong>Split</strong> (${node.direction})${sizeLabel}<br>`;
+
+		for (let i = 0; i < node.children.length; i++) {
+			const child = node.children[i];
+			const childPercent = percentages?.[i];
+			html += this.renderNodeHtml(child, depth + 1, childPercent);
+		}
 		return html;
 	}
 
