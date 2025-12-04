@@ -217,3 +217,140 @@
         opacity: 0;
     }
 }
+
+/* ============================================================================
+   Context Details Modal
+   ============================================================================ */
+
+.perspecta-details-modal {
+    min-width: 350px;
+    max-width: 500px;
+}
+
+.perspecta-details-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.perspecta-details-file {
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.perspecta-details-date {
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.perspecta-details-content {
+    margin-bottom: 16px;
+}
+
+.perspecta-window-section {
+    margin-bottom: 12px;
+    padding: 10px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+}
+
+.perspecta-window-title {
+    font-weight: 600;
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.perspecta-tab-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.perspecta-tab-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--background-primary);
+    font-size: 0.9em;
+}
+
+.perspecta-tab-item.perspecta-tab-active {
+    border-left: 2px solid var(--text-muted);
+    padding-left: 6px;
+}
+
+.perspecta-tab-item.perspecta-tab-focused {
+    border-left: 2px solid var(--interactive-accent);
+    background: var(--background-primary-alt);
+}
+
+.perspecta-tab-name {
+    color: var(--text-normal);
+    flex-shrink: 0;
+}
+
+.perspecta-tab-folder {
+    color: var(--text-faint);
+    font-size: 0.85em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.perspecta-uid-badge {
+    font-size: 0.7em;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.perspecta-split {
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 8px;
+    margin: 4px 0;
+}
+
+.perspecta-split-header {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.perspecta-split-children {
+    padding-left: 8px;
+}
+
+.perspecta-screen-info {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    text-align: right;
+    margin-top: 8px;
+}
+
+.perspecta-details-close {
+    margin-top: 16px;
+    padding: 8px 16px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    width: 100%;
+}
+
+.perspecta-details-close:hover {
+    background: var(--interactive-accent-hover);
+}
