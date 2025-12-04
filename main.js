@@ -27,7 +27,9 @@ __export(main_exports, {
   default: () => PerspectaPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
+
+// src/types.ts
 var DEFAULT_SETTINGS = {
   enableVisualMapping: true,
   enableAutomation: true,
@@ -40,11 +42,75 @@ var DEFAULT_SETTINGS = {
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
+
+// src/utils/perf-timer.ts
+var PerfTimer = class {
+  static begin(operation) {
+    if (!this.enabled)
+      return;
+    this.times = [];
+    this.start = performance.now();
+    this.lastMark = this.start;
+    this.currentOperation = operation;
+    console.log(`[Perspecta] \u25B6 ${operation} started at ${this.start.toFixed(0)}`);
+  }
+  static mark(label) {
+    if (!this.enabled)
+      return;
+    const now = performance.now();
+    const elapsed = now - this.lastMark;
+    const fromStart = now - this.start;
+    this.times.push({ label, elapsed, fromStart });
+    this.lastMark = now;
+    const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
+    console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+  }
+  static end(operation) {
+    if (!this.enabled)
+      return;
+    const total = performance.now() - this.start;
+    console.log(`[Perspecta] \u25FC ${operation} completed in ${total.toFixed(1)}ms`);
+    if (this.times.length > 0) {
+      console.log("[Perspecta] Full breakdown:");
+      for (const t of this.times) {
+        const flag = t.elapsed > 50 ? "\u26A0" : "\u2713";
+        console.log(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
+      }
+    }
+  }
+  static async timeAsync(label, fn) {
+    if (!this.enabled)
+      return fn();
+    const start = performance.now();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = performance.now() - start;
+      const fromStart = performance.now() - this.start;
+      this.times.push({ label, elapsed, fromStart });
+      const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
+      console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+    }
+  }
+  static setEnabled(enabled) {
+    this.enabled = enabled;
+  }
+  static isEnabled() {
+    return this.enabled;
+  }
+};
+PerfTimer.enabled = false;
+PerfTimer.times = [];
+PerfTimer.start = 0;
+PerfTimer.lastMark = 0;
+PerfTimer.currentOperation = "";
+
+// src/utils/coordinates.ts
 var VIRTUAL_SCREEN = {
   width: 1728,
   height: 1117
 };
-var COORDINATE_DEBUG = false;
+var coordinateDebug = false;
 function getPhysicalScreen() {
   var _a, _b;
   return {
@@ -64,7 +130,7 @@ function physicalToVirtual(physical) {
     width: Math.round(physical.width * scaleX),
     height: Math.round(physical.height * scaleY)
   };
-  if (COORDINATE_DEBUG) {
+  if (coordinateDebug) {
     console.log(`[Perspecta] physicalToVirtual:`, {
       physical,
       screen,
@@ -88,7 +154,7 @@ function virtualToPhysical(virtual, sourceScreen) {
   x = Math.max(screen.x, Math.min(x, screen.x + screen.width - width));
   y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
   const result = { x, y, width, height };
-  if (COORDINATE_DEBUG) {
+  if (coordinateDebug) {
     console.log(`[Perspecta] virtualToPhysical:`, {
       virtual,
       screen,
@@ -164,68 +230,8 @@ function calculateTiledLayout(windowCount, mainWindowState) {
   }
   return results;
 }
-var PerfTimer = class {
-  static begin(operation) {
-    if (!this.enabled)
-      return;
-    this.times = [];
-    this.start = performance.now();
-    this.lastMark = this.start;
-    this.currentOperation = operation;
-    console.log(`[Perspecta] \u25B6 ${operation} started at ${this.start.toFixed(0)}`);
-  }
-  static mark(label) {
-    if (!this.enabled)
-      return;
-    const now = performance.now();
-    const elapsed = now - this.lastMark;
-    const fromStart = now - this.start;
-    this.times.push({ label, elapsed, fromStart });
-    this.lastMark = now;
-    const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
-    console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-  }
-  static end(operation) {
-    if (!this.enabled)
-      return;
-    const total = performance.now() - this.start;
-    console.log(`[Perspecta] \u25FC ${operation} completed in ${total.toFixed(1)}ms`);
-    if (this.times.length > 0) {
-      console.log("[Perspecta] Full breakdown:");
-      for (const t of this.times) {
-        const flag = t.elapsed > 50 ? "\u26A0" : "\u2713";
-        console.log(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
-      }
-    }
-  }
-  // For timing individual async operations
-  static async timeAsync(label, fn) {
-    if (!this.enabled)
-      return fn();
-    const start = performance.now();
-    try {
-      return await fn();
-    } finally {
-      const elapsed = performance.now() - start;
-      const fromStart = performance.now() - this.start;
-      this.times.push({ label, elapsed, fromStart });
-      const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
-      console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-    }
-  }
-  static setEnabled(enabled) {
-    this.enabled = enabled;
-  }
-  static isEnabled() {
-    return this.enabled;
-  }
-};
-PerfTimer.enabled = false;
-// Controlled by plugin settings
-PerfTimer.times = [];
-PerfTimer.start = 0;
-PerfTimer.lastMark = 0;
-PerfTimer.currentOperation = "";
+
+// src/utils/uid.ts
 function generateUid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -293,6 +299,8 @@ ${newFm}
   }
   return false;
 }
+
+// src/storage/canvas.ts
 async function getContextFromCanvas(app, file) {
   var _a, _b;
   if (file.extension !== "canvas")
@@ -333,6 +341,9 @@ async function canvasHasContext(app, file) {
     return false;
   }
 }
+
+// src/storage/base.ts
+var import_obsidian = require("obsidian");
 async function getContextFromBase(app, file) {
   var _a;
   if (file.extension !== "base")
@@ -379,9 +390,126 @@ async function baseHasContext(app, file) {
     return false;
   }
 }
+
+// src/storage/external-store.ts
+var CONTEXTS_FOLDER = "contexts";
+var ExternalContextStore = class {
+  constructor(config) {
+    this.cache = /* @__PURE__ */ new Map();
+    this.dirty = /* @__PURE__ */ new Set();
+    this.saveTimeout = null;
+    this.initialized = false;
+    this.app = config.app;
+    this.manifest = config.manifest;
+  }
+  get adapter() {
+    return this.app.vault.adapter;
+  }
+  getContextsPath() {
+    return `${this.manifest.dir}/${CONTEXTS_FOLDER}`;
+  }
+  async initialize() {
+    var _a;
+    if (this.initialized)
+      return;
+    const contextsPath = this.getContextsPath();
+    try {
+      if (!await this.adapter.exists(contextsPath)) {
+        await this.adapter.mkdir(contextsPath);
+      }
+      const files = await this.adapter.list(contextsPath);
+      for (const file of files.files) {
+        if (file.endsWith(".json")) {
+          try {
+            const content = await this.adapter.read(file);
+            const data = JSON.parse(content);
+            const uid = (_a = file.split("/").pop()) == null ? void 0 : _a.replace(".json", "");
+            if (uid && data) {
+              this.cache.set(uid, data);
+            }
+          } catch (e) {
+            console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
+          }
+        }
+      }
+      this.initialized = true;
+      if (PerfTimer.isEnabled()) {
+        console.log(`[Perspecta] External store initialized with ${this.cache.size} contexts`);
+      }
+    } catch (e) {
+      console.error("[Perspecta] Failed to initialize external store:", e);
+    }
+  }
+  get(uid) {
+    return this.cache.get(uid) || null;
+  }
+  has(uid) {
+    return this.cache.has(uid);
+  }
+  set(uid, context) {
+    this.cache.set(uid, context);
+    this.dirty.add(uid);
+    this.scheduleSave();
+  }
+  async delete(uid) {
+    this.cache.delete(uid);
+    this.dirty.delete(uid);
+    const filePath = `${this.getContextsPath()}/${uid}.json`;
+    try {
+      if (await this.adapter.exists(filePath)) {
+        await this.adapter.remove(filePath);
+      }
+    } catch (e) {
+      console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
+    }
+  }
+  getAllUids() {
+    return Array.from(this.cache.keys());
+  }
+  scheduleSave() {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+    }
+    this.saveTimeout = setTimeout(() => this.flushDirty(), 2e3);
+  }
+  async flushDirty() {
+    if (this.dirty.size === 0)
+      return;
+    const contextsPath = this.getContextsPath();
+    if (!await this.adapter.exists(contextsPath)) {
+      await this.adapter.mkdir(contextsPath);
+    }
+    const toSave = Array.from(this.dirty);
+    this.dirty.clear();
+    for (const uid of toSave) {
+      const context = this.cache.get(uid);
+      if (context) {
+        const filePath = `${contextsPath}/${uid}.json`;
+        try {
+          const json = JSON.stringify(context);
+          await this.adapter.write(filePath, json);
+        } catch (e) {
+          console.error(`[Perspecta] Failed to save context: ${uid}`, e);
+          this.dirty.add(uid);
+        }
+      }
+    }
+    if (PerfTimer.isEnabled()) {
+      console.log(`[Perspecta] Saved ${toSave.length} context(s) to disk`);
+    }
+  }
+  async cleanup() {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+    }
+    await this.flushDirty();
+  }
+};
+
+// src/main.ts
 function resolveFile(app, tab) {
   const fileByPath = app.vault.getAbstractFileByPath(tab.path);
-  if (fileByPath instanceof import_obsidian.TFile) {
+  if (fileByPath instanceof import_obsidian2.TFile) {
     return { file: fileByPath, method: "path" };
   }
   if (tab.uid) {
@@ -402,132 +530,8 @@ function resolveFile(app, tab) {
   }
   return { file: null, method: "not_found" };
 }
-var CONTEXTS_FOLDER = "contexts";
-var ExternalContextStore = class {
-  constructor(plugin) {
-    this.cache = /* @__PURE__ */ new Map();
-    this.dirty = /* @__PURE__ */ new Set();
-    // UIDs that need saving
-    this.saveTimeout = null;
-    this.initialized = false;
-    this.plugin = plugin;
-  }
-  // Get the contexts folder path
-  getContextsPath() {
-    const adapter = this.plugin.app.vault.adapter;
-    const pluginDir = this.plugin.manifest.dir;
-    return `${pluginDir}/${CONTEXTS_FOLDER}`;
-  }
-  // Initialize: load all contexts into memory
-  async initialize() {
-    var _a;
-    if (this.initialized)
-      return;
-    const adapter = this.plugin.app.vault.adapter;
-    const contextsPath = this.getContextsPath();
-    try {
-      if (!await adapter.exists(contextsPath)) {
-        await adapter.mkdir(contextsPath);
-      }
-      const files = await adapter.list(contextsPath);
-      for (const file of files.files) {
-        if (file.endsWith(".json")) {
-          try {
-            const content = await adapter.read(file);
-            const data = JSON.parse(content);
-            const uid = (_a = file.split("/").pop()) == null ? void 0 : _a.replace(".json", "");
-            if (uid && data) {
-              this.cache.set(uid, data);
-            }
-          } catch (e) {
-            console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
-          }
-        }
-      }
-      this.initialized = true;
-      if (PerfTimer.isEnabled()) {
-        console.log(`[Perspecta] External store initialized with ${this.cache.size} contexts`);
-      }
-    } catch (e) {
-      console.error("[Perspecta] Failed to initialize external store:", e);
-    }
-  }
-  // Get context by UID (instant from cache)
-  get(uid) {
-    return this.cache.get(uid) || null;
-  }
-  // Check if context exists
-  has(uid) {
-    return this.cache.has(uid);
-  }
-  // Save context (updates cache immediately, debounces disk write)
-  set(uid, context) {
-    this.cache.set(uid, context);
-    this.dirty.add(uid);
-    this.scheduleSave();
-  }
-  // Delete context
-  async delete(uid) {
-    this.cache.delete(uid);
-    this.dirty.delete(uid);
-    const adapter = this.plugin.app.vault.adapter;
-    const filePath = `${this.getContextsPath()}/${uid}.json`;
-    try {
-      if (await adapter.exists(filePath)) {
-        await adapter.remove(filePath);
-      }
-    } catch (e) {
-      console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
-    }
-  }
-  // Get all UIDs that have contexts
-  getAllUids() {
-    return Array.from(this.cache.keys());
-  }
-  // Schedule debounced save (2 second delay)
-  scheduleSave() {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
-    }
-    this.saveTimeout = setTimeout(() => this.flushDirty(), 2e3);
-  }
-  // Force immediate save of all dirty contexts
-  async flushDirty() {
-    if (this.dirty.size === 0)
-      return;
-    const adapter = this.plugin.app.vault.adapter;
-    const contextsPath = this.getContextsPath();
-    if (!await adapter.exists(contextsPath)) {
-      await adapter.mkdir(contextsPath);
-    }
-    const toSave = Array.from(this.dirty);
-    this.dirty.clear();
-    for (const uid of toSave) {
-      const context = this.cache.get(uid);
-      if (context) {
-        const filePath = `${contextsPath}/${uid}.json`;
-        try {
-          const json = JSON.stringify(context);
-          await adapter.write(filePath, json);
-        } catch (e) {
-          console.error(`[Perspecta] Failed to save context: ${uid}`, e);
-          this.dirty.add(uid);
-        }
-      }
-    }
-    if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] Saved ${toSave.length} context(s) to disk`);
-    }
-  }
-  // Cleanup on plugin unload
-  async cleanup() {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
-    }
-    await this.flushDirty();
-  }
-};
-var PerspectaPlugin = class extends import_obsidian.Plugin {
+var COORDINATE_DEBUG = false;
+var PerspectaPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);
     this.focusedWindowIndex = -1;
@@ -546,7 +550,7 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
   // External context storage
   async onload() {
     await this.loadSettings();
-    this.externalStore = new ExternalContextStore(this);
+    this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
     if (this.settings.storageMode === "external") {
       await this.externalStore.initialize();
     }
@@ -574,7 +578,7 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
     this.setupFileExplorerIndicators();
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian.TFile && file.extension === "md") {
+        if (file instanceof import_obsidian2.TFile && file.extension === "md") {
           menu.addItem((item) => {
             item.setTitle("Remember note context").setIcon("target").onClick(() => this.saveContext(file));
           });
@@ -589,7 +593,7 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
           const href = link.getAttribute("data-href");
           if (href) {
             const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian.TFile)
+            if (file instanceof import_obsidian2.TFile)
               this.openInNewWindow(file);
           }
         }
@@ -604,7 +608,7 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
           const href = link.getAttribute("data-href");
           if (href) {
             const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian.TFile)
+            if (file instanceof import_obsidian2.TFile)
               this.openInNewWindow(file);
           }
         }
@@ -847,14 +851,14 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
-      new import_obsidian.Notice("No active file to save context to");
+      new import_obsidian2.Notice("No active file to save context to");
       return;
     }
     const isMarkdown = targetFile.extension === "md";
     const isCanvas = targetFile.extension === "canvas";
     const isBase = targetFile.extension === "base";
     if (!isMarkdown && !isCanvas && !isBase) {
-      new import_obsidian.Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`);
+      new import_obsidian2.Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`);
       PerfTimer.end("saveContext");
       return;
     }
@@ -885,7 +889,7 @@ var PerspectaPlugin = class extends import_obsidian.Plugin {
       this.showContextDebugModal(context, targetFile.name);
       PerfTimer.mark("showContextDebugModal");
     } else {
-      new import_obsidian.Notice(`Context saved to ${targetFile.name}`);
+      new import_obsidian2.Notice(`Context saved to ${targetFile.name}`);
     }
     PerfTimer.end("saveContext");
   }
@@ -1039,7 +1043,7 @@ ${newFm}
       for (const tab of node.tabs) {
         if (!tab.uid) {
           const file = this.app.vault.getAbstractFileByPath(tab.path);
-          if (file instanceof import_obsidian.TFile && file.extension === "md") {
+          if (file instanceof import_obsidian2.TFile && file.extension === "md") {
             const existingUid = getUidFromCache(this.app, file);
             if (!existingUid) {
               result.push({ file, uid: generateUid() });
@@ -1227,13 +1231,13 @@ ${content}`;
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
-      new import_obsidian.Notice("No active file");
+      new import_obsidian2.Notice("No active file");
       return;
     }
     const context = await this.getContextForFile(targetFile);
     PerfTimer.mark("getContextForFile");
     if (!context) {
-      new import_obsidian.Notice("No context found in this note");
+      new import_obsidian2.Notice("No context found in this note");
       return;
     }
     const focusedWin = await this.applyArrangement(context, targetFile.path);
@@ -1242,7 +1246,7 @@ ${content}`;
       await this.updateContextWithCorrectedPaths(targetFile, context);
       PerfTimer.mark("updateContextWithCorrectedPaths");
       const count = this.pathCorrections.size;
-      new import_obsidian.Notice(`Context restored (${count} file path${count > 1 ? "s" : ""} updated)`);
+      new import_obsidian2.Notice(`Context restored (${count} file path${count > 1 ? "s" : ""} updated)`);
     } else {
       this.showNoticeInWindow(focusedWin, "Context restored");
     }
@@ -1336,7 +1340,7 @@ ${content}`;
             tiledPositions
           });
         }
-        new import_obsidian.Notice(`Screen shape changed - tiling ${windowCount} windows`);
+        new import_obsidian2.Notice(`Screen shape changed - tiling ${windowCount} windows`);
       }
       PerfTimer.mark("checkTilingNeeded");
       const popoutWindows = this.getPopoutWindowObjects();
@@ -1393,7 +1397,7 @@ ${content}`;
       PerfTimer.mark("activateFocusedWindow");
       return focusedWin;
     } catch (e) {
-      new import_obsidian.Notice("Error restoring context: " + e.message);
+      new import_obsidian2.Notice("Error restoring context: " + e.message);
       return null;
     }
   }
@@ -2151,7 +2155,7 @@ ${content}`;
       container.appendChild(el);
       setTimeout(() => el.remove(), 4e3);
     } else {
-      new import_obsidian.Notice(message);
+      new import_obsidian2.Notice(message);
     }
   }
   // ============================================================================
@@ -2161,12 +2165,12 @@ ${content}`;
     var _a, _b, _c;
     const file = this.app.workspace.getActiveFile();
     if (!file) {
-      new import_obsidian.Notice("No active file");
+      new import_obsidian2.Notice("No active file");
       return;
     }
     const context = await this.getContextForFile(file);
     if (!context) {
-      new import_obsidian.Notice("No context found in this note");
+      new import_obsidian2.Notice("No context found in this note");
       return;
     }
     const activeLeaf = this.app.workspace.activeLeaf;
@@ -2447,7 +2451,7 @@ ${content}`;
     COORDINATE_DEBUG = this.settings.enableDebugLogging;
   }
 };
-var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
+var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -2459,20 +2463,20 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h3", { text: "Context" });
     const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
     const restoreHotkey = this.getHotkeyDisplay("perspecta-obsidian:restore-context");
-    new import_obsidian.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
-    new import_obsidian.Setting(containerEl).setName("Focus tint duration").setDesc("Seconds (0 = disabled)").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
+    new import_obsidian2.Setting(containerEl).setName("Focus tint duration").setDesc("Seconds (0 = disabled)").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
       const n = parseFloat(v);
       if (!isNaN(n) && n >= 0) {
         this.plugin.settings.focusTintDuration = n;
         await this.plugin.saveSettings();
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("Auto-generate file UIDs").setDesc("Automatically add unique IDs to files in saved contexts. This allows files to be found even after moving or renaming.").addToggle((t) => t.setValue(this.plugin.settings.autoGenerateUids).onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Auto-generate file UIDs").setDesc("Automatically add unique IDs to files in saved contexts. This allows files to be found even after moving or renaming.").addToggle((t) => t.setValue(this.plugin.settings.autoGenerateUids).onChange(async (v) => {
       this.plugin.settings.autoGenerateUids = v;
       await this.plugin.saveSettings();
     }));
     containerEl.createEl("h3", { text: "Storage" });
-    new import_obsidian.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
       this.plugin.settings.storageMode = v ? "frontmatter" : "external";
       await this.plugin.saveSettings();
       if (!v) {
@@ -2481,52 +2485,52 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
       this.display();
     }));
     if (this.plugin.settings.storageMode === "frontmatter") {
-      new import_obsidian.Setting(containerEl).setName("Migrate to external storage").setDesc("Move all context data from note frontmatter to the plugin folder. This cleans up your notes by removing perspecta-arrangement properties.").addButton((btn) => btn.setButtonText("Migrate to external").setCta().onClick(async () => {
+      new import_obsidian2.Setting(containerEl).setName("Migrate to external storage").setDesc("Move all context data from note frontmatter to the plugin folder. This cleans up your notes by removing perspecta-arrangement properties.").addButton((btn) => btn.setButtonText("Migrate to external").setCta().onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText("Migrating...");
         try {
           const result = await this.plugin.migrateToExternalStorage();
-          new import_obsidian.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
+          new import_obsidian2.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
           this.display();
         } catch (e) {
-          new import_obsidian.Notice("Migration failed: " + e.message);
+          new import_obsidian2.Notice("Migration failed: " + e.message);
           btn.setDisabled(false);
           btn.setButtonText("Migrate to external");
         }
       }));
     } else {
-      new import_obsidian.Setting(containerEl).setName("Migrate to frontmatter").setDesc("Move all context data from the plugin folder into note frontmatter. This makes contexts portable with your notes.").addButton((btn) => btn.setButtonText("Migrate to frontmatter").setCta().onClick(async () => {
+      new import_obsidian2.Setting(containerEl).setName("Migrate to frontmatter").setDesc("Move all context data from the plugin folder into note frontmatter. This makes contexts portable with your notes.").addButton((btn) => btn.setButtonText("Migrate to frontmatter").setCta().onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText("Migrating...");
         try {
           const result = await this.plugin.migrateToFrontmatter();
-          new import_obsidian.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
+          new import_obsidian2.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
           this.display();
         } catch (e) {
-          new import_obsidian.Notice("Migration failed: " + e.message);
+          new import_obsidian2.Notice("Migration failed: " + e.message);
           btn.setDisabled(false);
           btn.setButtonText("Migrate to frontmatter");
         }
       }));
     }
-    new import_obsidian.Setting(containerEl).setName("Clean up old uid properties").setDesc('Remove obsolete "uid" properties from notes that already have "perspecta-uid". This cleans up leftover data from earlier versions.').addButton((btn) => btn.setButtonText("Clean up").onClick(async () => {
+    new import_obsidian2.Setting(containerEl).setName("Clean up old uid properties").setDesc('Remove obsolete "uid" properties from notes that already have "perspecta-uid". This cleans up leftover data from earlier versions.').addButton((btn) => btn.setButtonText("Clean up").onClick(async () => {
       btn.setDisabled(true);
       btn.setButtonText("Cleaning...");
       try {
         const count = await this.plugin.cleanupOldUidProperties();
-        new import_obsidian.Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? "s" : ""}` : "No old uid properties found");
+        new import_obsidian2.Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? "s" : ""}` : "No old uid properties found");
       } catch (e) {
-        new import_obsidian.Notice("Cleanup failed: " + e.message);
+        new import_obsidian2.Notice("Cleanup failed: " + e.message);
       }
       btn.setDisabled(false);
       btn.setButtonText("Clean up");
     }));
     containerEl.createEl("h3", { text: "Debug" });
-    new import_obsidian.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
       this.plugin.settings.showDebugModal = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Enable debug logging").setDesc("Log performance timing to the developer console (Cmd+Shift+I)").addToggle((t) => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Enable debug logging").setDesc("Log performance timing to the developer console (Cmd+Shift+I)").addToggle((t) => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async (v) => {
       this.plugin.settings.enableDebugLogging = v;
       await this.plugin.saveSettings();
     }));
@@ -2543,7 +2547,7 @@ var PerspectaSettingTab = class extends import_obsidian.PluginSettingTab {
       return "Not set";
     const hotkey = hotkeys[0];
     const parts = [];
-    const isMac = import_obsidian.Platform.isMacOS;
+    const isMac = import_obsidian2.Platform.isMacOS;
     if ((_c = hotkey.modifiers) == null ? void 0 : _c.includes("Mod")) {
       parts.push(isMac ? "\u2318" : "Ctrl");
     }

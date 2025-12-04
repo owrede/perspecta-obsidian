@@ -1,618 +1,57 @@
-import { App, Menu, MenuItem, Platform, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice, parseYaml, stringifyYaml } from 'obsidian';
-
-// ============================================================================
-// Types and Interfaces
-// ============================================================================
-
-interface TabState {
-	path: string;
-	active: boolean;
-	uid?: string;   // Unique ID from frontmatter (for move/rename resilience)
-	name?: string;  // Filename without extension (fallback for search)
-}
-
-interface SplitState {
-	type: 'split';
-	direction: 'horizontal' | 'vertical';
-	children: (SplitState | TabGroupState)[];
-}
-
-interface TabGroupState {
-	type: 'tabs';
-	tabs: TabState[];
-}
-
-type WorkspaceNodeState = SplitState | TabGroupState;
-
-interface WindowStateV2 {
-	root: WorkspaceNodeState;
-	x?: number;
-	y?: number;
-	width?: number;
-	height?: number;
-}
-
-interface WindowStateV1 {
-	tabs: TabState[];
-	x?: number;
-	y?: number;
-	width?: number;
-	height?: number;
-}
-
-interface SidebarState {
-	collapsed: boolean;
-	activeTab?: string;
-}
-
-interface ScreenInfo {
-	width: number;
-	height: number;
-	aspectRatio: number;
-}
-
-interface WindowArrangementV2 {
-	v: 2;
-	ts: number;
-	main: WindowStateV2;
-	popouts: WindowStateV2[];
-	focusedWindow: number;
-	leftSidebar?: SidebarState;
-	rightSidebar?: SidebarState;
-	sourceScreen?: ScreenInfo; // Screen dimensions where arrangement was saved
-}
-
-interface WindowArrangementV1 {
-	v: 1;
-	ts: number;
-	main: WindowStateV1;
-	popouts: WindowStateV1[];
-	focusedWindow: number;
-	leftSidebar?: SidebarState;
-	rightSidebar?: SidebarState;
-}
-
-type WindowArrangement = WindowArrangementV1 | WindowArrangementV2;
-
-type StorageMode = 'frontmatter' | 'external';
-
-interface PerspectaSettings {
-	enableVisualMapping: boolean;
-	enableAutomation: boolean;
-	automationScriptsPath: string;
-	showDebugModal: boolean;
-	enableDebugLogging: boolean;
-	focusTintDuration: number;
-	autoGenerateUids: boolean;  // Auto-generate UIDs for files in saved contexts
-	storageMode: StorageMode;   // Where to store context data
-}
-
-const DEFAULT_SETTINGS: PerspectaSettings = {
-	enableVisualMapping: true,
-	enableAutomation: true,
-	automationScriptsPath: 'perspecta/scripts/',
-	showDebugModal: true,
-	enableDebugLogging: false,
-	focusTintDuration: 8,
-	autoGenerateUids: true,
-	storageMode: 'frontmatter'
-};
-
-const FRONTMATTER_KEY = 'perspecta-arrangement';
-const UID_FRONTMATTER_KEY = 'perspecta-uid';
-
-// ============================================================================
-// Virtual Coordinate System
-// ============================================================================
-// Uses MacBook Pro 16" as reference (1728x1117 at default scaling)
-// All saved coordinates are normalized to this virtual space, then scaled
-// to the actual screen dimensions on restore.
-
-const VIRTUAL_SCREEN = {
-	width: 1728,
-	height: 1117
-};
-
-// Global debug flag for coordinate conversions (set by plugin settings)
-let COORDINATE_DEBUG = false;
-
-interface PhysicalScreen {
-	width: number;
-	height: number;
-	x: number;  // screen.availLeft (left edge of available area)
-	y: number;  // screen.availTop (top edge, below menu bar on macOS)
-}
-
-function getPhysicalScreen(): PhysicalScreen {
-	return {
-		width: window.screen.availWidth,
-		height: window.screen.availHeight,
-		x: (window.screen as any).availLeft ?? 0,
-		y: (window.screen as any).availTop ?? 0
-	};
-}
-
-// Convert physical coordinates to virtual (for saving)
-function physicalToVirtual(physical: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
-	const screen = getPhysicalScreen();
-	const scaleX = VIRTUAL_SCREEN.width / screen.width;
-	const scaleY = VIRTUAL_SCREEN.height / screen.height;
-
-	const result = {
-		x: Math.round((physical.x - screen.x) * scaleX),
-		y: Math.round((physical.y - screen.y) * scaleY),
-		width: Math.round(physical.width * scaleX),
-		height: Math.round(physical.height * scaleY)
-	};
-
-	if (COORDINATE_DEBUG) {
-		console.log(`[Perspecta] physicalToVirtual:`, {
-			physical,
-			screen,
-			virtualRef: VIRTUAL_SCREEN,
-			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
-			result
-		});
-	}
-
-	return result;
-}
-
-// Convert virtual coordinates to physical (for restoring)
-// sourceScreen: optional screen info from when arrangement was saved
-function virtualToPhysical(
-	virtual: { x: number; y: number; width: number; height: number },
-	sourceScreen?: ScreenInfo
-): { x: number; y: number; width: number; height: number } {
-	const screen = getPhysicalScreen();
-	const scaleX = screen.width / VIRTUAL_SCREEN.width;
-	const scaleY = screen.height / VIRTUAL_SCREEN.height;
-
-	let x = Math.round(virtual.x * scaleX) + screen.x;
-	let y = Math.round(virtual.y * scaleY) + screen.y;
-	let width = Math.round(virtual.width * scaleX);
-	let height = Math.round(virtual.height * scaleY);
-
-	// Ensure window fits within screen bounds
-	width = Math.min(width, screen.width);
-	height = Math.min(height, screen.height);
-	x = Math.max(screen.x, Math.min(x, screen.x + screen.width - width));
-	y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
-
-	const result = { x, y, width, height };
-
-	if (COORDINATE_DEBUG) {
-		console.log(`[Perspecta] virtualToPhysical:`, {
-			virtual,
-			screen,
-			virtualRef: VIRTUAL_SCREEN,
-			sourceScreen,
-			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
-			result
-		});
-	}
-
-	return result;
-}
-
-// Calculate the aspect ratio difference between source and target screens
-function getAspectRatioDifference(sourceScreen?: ScreenInfo): number {
-	if (!sourceScreen) return 0;
-	const targetScreen = getPhysicalScreen();
-	const targetAspectRatio = targetScreen.width / targetScreen.height;
-	return Math.abs(sourceScreen.aspectRatio - targetAspectRatio);
-}
-
-// Check if we need to tile windows due to significant aspect ratio difference
-function needsTiling(sourceScreen?: ScreenInfo): boolean {
-	// If no source screen info, assume we might need tiling for safety
-	if (!sourceScreen) return false;
-
-	const diff = getAspectRatioDifference(sourceScreen);
-	// Threshold: if aspect ratios differ by more than 0.5, tile windows
-	// e.g., UWHD (2.39) vs MacBook (1.54) = diff of 0.85 → needs tiling
-	return diff > 0.5;
-}
-
-// Calculate tiled window positions for when aspect ratios differ significantly
-// Returns an array of physical coordinates for each window (main + popouts)
-function calculateTiledLayout(
-	windowCount: number,
-	mainWindowState: WindowStateV2
-): { x: number; y: number; width: number; height: number }[] {
-	const screen = getPhysicalScreen();
-	const results: { x: number; y: number; width: number; height: number }[] = [];
-
-	if (windowCount === 0) return results;
-
-	// For a single window (main only), use full screen
-	if (windowCount === 1) {
-		results.push({
-			x: screen.x,
-			y: screen.y,
-			width: screen.width,
-			height: screen.height
-		});
-		return results;
-	}
-
-	// For 2 windows, split horizontally (side by side)
-	if (windowCount === 2) {
-		const halfWidth = Math.floor(screen.width / 2);
-		results.push({
-			x: screen.x,
-			y: screen.y,
-			width: halfWidth,
-			height: screen.height
-		});
-		results.push({
-			x: screen.x + halfWidth,
-			y: screen.y,
-			width: screen.width - halfWidth,
-			height: screen.height
-		});
-		return results;
-	}
-
-	// For 3+ windows, use a grid layout
-	// Main window takes left half, popouts share right half vertically
-	const mainWidth = Math.floor(screen.width / 2);
-	results.push({
-		x: screen.x,
-		y: screen.y,
-		width: mainWidth,
-		height: screen.height
-	});
-
-	const popoutCount = windowCount - 1;
-	const popoutWidth = screen.width - mainWidth;
-	const popoutHeight = Math.floor(screen.height / popoutCount);
-
-	for (let i = 0; i < popoutCount; i++) {
-		const isLast = i === popoutCount - 1;
-		results.push({
-			x: screen.x + mainWidth,
-			y: screen.y + (i * popoutHeight),
-			width: popoutWidth,
-			height: isLast ? screen.height - (i * popoutHeight) : popoutHeight
-		});
-	}
-
-	return results;
-}
-
-// Performance timing helper - controlled by settings.enableDebugLogging
-class PerfTimer {
-	private static enabled = false; // Controlled by plugin settings
-	private static times: { label: string; elapsed: number; fromStart: number }[] = [];
-	private static start: number = 0;
-	private static lastMark: number = 0;
-	private static currentOperation: string = '';
-
-	static begin(operation: string) {
-		if (!this.enabled) return;
-		this.times = [];
-		this.start = performance.now();
-		this.lastMark = this.start;
-		this.currentOperation = operation;
-		console.log(`[Perspecta] ▶ ${operation} started at ${this.start.toFixed(0)}`);
-	}
-
-	static mark(label: string) {
-		if (!this.enabled) return;
-		const now = performance.now();
-		const elapsed = now - this.lastMark;
-		const fromStart = now - this.start;
-		this.times.push({ label, elapsed, fromStart });
-		this.lastMark = now;
-		// Log every mark for detailed debugging
-		const flag = elapsed > 50 ? '⚠ SLOW' : '✓';
-		console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-	}
-
-	static end(operation: string) {
-		if (!this.enabled) return;
-		const total = performance.now() - this.start;
-		console.log(`[Perspecta] ◼ ${operation} completed in ${total.toFixed(1)}ms`);
-		// Always show breakdown when debug is enabled
-		if (this.times.length > 0) {
-			console.log('[Perspecta] Full breakdown:');
-			for (const t of this.times) {
-				const flag = t.elapsed > 50 ? '⚠' : '✓';
-				console.log(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
-			}
-		}
-	}
-
-	// For timing individual async operations
-	static async timeAsync<T>(label: string, fn: () => Promise<T>): Promise<T> {
-		if (!this.enabled) return fn();
-		const start = performance.now();
-		try {
-			return await fn();
-		} finally {
-			const elapsed = performance.now() - start;
-			const fromStart = performance.now() - this.start;
-			this.times.push({ label, elapsed, fromStart });
-			const flag = elapsed > 50 ? '⚠ SLOW' : '✓';
-			console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-		}
-	}
-
-	static setEnabled(enabled: boolean) {
-		this.enabled = enabled;
-	}
-
-	static isEnabled(): boolean {
-		return this.enabled;
-	}
-}
-
-// ============================================================================
-// UID Utilities
-// ============================================================================
-
-// Generate a UUID v4
-function generateUid(): string {
-	// Use crypto.randomUUID if available (modern browsers/Node)
-	if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-		return crypto.randomUUID();
-	}
-	// Fallback for older environments
-	return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-		const r = Math.random() * 16 | 0;
-		const v = c === 'x' ? r : (r & 0x3 | 0x8);
-		return v.toString(16);
-	});
-}
-
-// Get UID from a file's frontmatter cache
-function getUidFromCache(app: App, file: TFile): string | undefined {
-	const cache = app.metadataCache.getFileCache(file);
-	return cache?.frontmatter?.[UID_FRONTMATTER_KEY] as string | undefined;
-}
-
-// Add UID to a file's frontmatter (creates frontmatter if needed)
-async function addUidToFile(app: App, file: TFile, uid: string): Promise<void> {
-	const content = await app.vault.read(file);
-	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-	const match = content.match(frontmatterRegex);
-
-	let newContent: string;
-	if (match) {
-		// Has frontmatter - add uid if not present
-		let fm = match[1];
-		if (fm.includes(`${UID_FRONTMATTER_KEY}:`)) {
-			// perspecta-uid already exists - just clean up old uid if present
-			if (fm.match(/^uid:\s*["']?[^"'\n]+["']?\s*$/m)) {
-				fm = fm.replace(/^uid:\s*["']?[^"'\n]+["']?\n?/gm, '').trim();
-				newContent = content.replace(frontmatterRegex, `---\n${fm}\n---`);
-				await app.vault.modify(file, newContent);
-			}
-			return;
-		}
-		// Remove old 'uid' property if present (migration from old format)
-		fm = fm.replace(/^uid:\s*["']?[^"'\n]+["']?\n?/gm, '').trim();
-		const newFm = `${UID_FRONTMATTER_KEY}: "${uid}"\n${fm}`;
-		newContent = content.replace(frontmatterRegex, `---\n${newFm}\n---`);
-	} else {
-		// No frontmatter - create it with uid
-		newContent = `---\n${UID_FRONTMATTER_KEY}: "${uid}"\n---\n${content}`;
-	}
-
-	await app.vault.modify(file, newContent);
-}
-
-// Remove old 'uid' property from a file if it has perspecta-uid
-async function cleanupOldUid(app: App, file: TFile): Promise<boolean> {
-	const content = await app.vault.read(file);
-	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-	const match = content.match(frontmatterRegex);
-
-	if (!match) return false;
-
-	const fm = match[1];
-	// Only clean up if file has perspecta-uid AND old uid
-	if (!fm.includes(`${UID_FRONTMATTER_KEY}:`)) return false;
-	if (!fm.match(/^uid:\s*["']?[^"'\n]+["']?\s*$/m)) return false;
-
-	const newFm = fm.replace(/^uid:\s*["']?[^"'\n]+["']?\n?/gm, '').trim();
-	const newContent = content.replace(frontmatterRegex, `---\n${newFm}\n---`);
-
-	if (newContent !== content) {
-		await app.vault.modify(file, newContent);
-		return true;
-	}
-	return false;
-}
-
-// ============================================================================
-// Canvas file support
-// Canvas files store perspecta data in a "perspecta" property within the JSON
-// ============================================================================
-
-interface CanvasData {
-	nodes?: unknown[];
-	edges?: unknown[];
-	perspecta?: {
-		uid?: string;
-		context?: WindowArrangement;
-	};
-	[key: string]: unknown;
-}
-
-// ============================================================================
-// Base file support
-// Base files are YAML and store perspecta data as base64-encoded JSON (like markdown)
-// ============================================================================
-
-interface BaseData {
-	views?: unknown[];
-	perspecta?: {
-		uid?: string;
-		context?: string;  // base64-encoded JSON blob (same format as markdown frontmatter)
-	};
-	[key: string]: unknown;
-}
-
-// Get UID from a canvas file's JSON
-async function getUidFromCanvas(app: App, file: TFile): Promise<string | undefined> {
-	if (file.extension !== 'canvas') return undefined;
-	try {
-		const content = await app.vault.read(file);
-		const data = JSON.parse(content) as CanvasData;
-		return data.perspecta?.uid;
-	} catch {
-		return undefined;
-	}
-}
-
-// Get context from a canvas file's JSON
-async function getContextFromCanvas(app: App, file: TFile): Promise<WindowArrangement | null> {
-	if (file.extension !== 'canvas') return null;
-	try {
-		const content = await app.vault.read(file);
-		const data = JSON.parse(content) as CanvasData;
-		return data.perspecta?.context ?? null;
-	} catch {
-		return null;
-	}
-}
-
-// Save UID to a canvas file's JSON
-async function addUidToCanvas(app: App, file: TFile, uid: string): Promise<void> {
-	if (file.extension !== 'canvas') return;
-	try {
-		const content = await app.vault.read(file);
-		const data = JSON.parse(content) as CanvasData;
-
-		if (!data.perspecta) {
-			data.perspecta = {};
-		}
-		data.perspecta.uid = uid;
-
-		await app.vault.modify(file, JSON.stringify(data, null, '\t'));
-	} catch (e) {
-		console.error('[Perspecta] Failed to add UID to canvas:', e);
-	}
-}
-
-// Save context to a canvas file's JSON
-async function saveContextToCanvas(app: App, file: TFile, context: WindowArrangement): Promise<void> {
-	if (file.extension !== 'canvas') return;
-	try {
-		const content = await app.vault.read(file);
-		const data = JSON.parse(content) as CanvasData;
-
-		if (!data.perspecta) {
-			data.perspecta = {};
-		}
-		data.perspecta.context = context;
-
-		await app.vault.modify(file, JSON.stringify(data, null, '\t'));
-	} catch (e) {
-		console.error('[Perspecta] Failed to save context to canvas:', e);
-		throw e;
-	}
-}
-
-// Check if a canvas file has a context stored
-async function canvasHasContext(app: App, file: TFile): Promise<boolean> {
-	if (file.extension !== 'canvas') return false;
-	try {
-		const content = await app.vault.read(file);
-		const data = JSON.parse(content) as CanvasData;
-		return !!data.perspecta?.context;
-	} catch {
-		return false;
-	}
-}
-
-// ============================================================================
-// Base file functions (.base files are YAML)
-// ============================================================================
-
-// Get UID from a base file's YAML
-async function getUidFromBase(app: App, file: TFile): Promise<string | undefined> {
-	if (file.extension !== 'base') return undefined;
-	try {
-		const content = await app.vault.read(file);
-		const data = parseYaml(content) as BaseData;
-		return data?.perspecta?.uid;
-	} catch {
-		return undefined;
-	}
-}
-
-// Get context from a base file's YAML (stored as base64-encoded JSON)
-async function getContextFromBase(app: App, file: TFile): Promise<WindowArrangement | null> {
-	if (file.extension !== 'base') return null;
-	try {
-		const content = await app.vault.read(file);
-		const data = parseYaml(content) as BaseData;
-		const encoded = data?.perspecta?.context;
-		if (!encoded) return null;
-
-		// Decode from base64
-		const json = decodeURIComponent(escape(atob(encoded)));
-		return JSON.parse(json) as WindowArrangement;
-	} catch {
-		return null;
-	}
-}
-
-// Save UID to a base file's YAML
-async function addUidToBase(app: App, file: TFile, uid: string): Promise<void> {
-	if (file.extension !== 'base') return;
-	try {
-		const content = await app.vault.read(file);
-		const data = (content.trim() ? parseYaml(content) : {}) as BaseData;
-
-		if (!data.perspecta) {
-			data.perspecta = {};
-		}
-		data.perspecta.uid = uid;
-
-		await app.vault.modify(file, stringifyYaml(data));
-	} catch (e) {
-		console.error('[Perspecta] Failed to add UID to base file:', e);
-	}
-}
-
-// Save context to a base file's YAML (stored as base64-encoded JSON)
-async function saveContextToBase(app: App, file: TFile, context: WindowArrangement): Promise<void> {
-	if (file.extension !== 'base') return;
-	try {
-		const content = await app.vault.read(file);
-		const data = (content.trim() ? parseYaml(content) : {}) as BaseData;
-
-		if (!data.perspecta) {
-			data.perspecta = {};
-		}
-
-		// Encode as base64 JSON blob (same format as markdown frontmatter)
-		const json = JSON.stringify(context);
-		const base64 = btoa(unescape(encodeURIComponent(json)));
-		data.perspecta.context = base64;
-
-		await app.vault.modify(file, stringifyYaml(data));
-	} catch (e) {
-		console.error('[Perspecta] Failed to save context to base file:', e);
-		throw e;
-	}
-}
-
-// Check if a base file has a context stored
-async function baseHasContext(app: App, file: TFile): Promise<boolean> {
-	if (file.extension !== 'base') return false;
-	try {
-		const content = await app.vault.read(file);
-		const data = parseYaml(content) as BaseData;
-		return !!data?.perspecta?.context;
-	} catch {
-		return false;
-	}
-}
+import { App, Menu, MenuItem, Platform, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice } from 'obsidian';
+
+// Import types
+import {
+	TabState,
+	SplitState,
+	TabGroupState,
+	WorkspaceNodeState,
+	WindowStateV1,
+	WindowStateV2,
+	SidebarState,
+	ScreenInfo,
+	WindowArrangementV1,
+	WindowArrangementV2,
+	WindowArrangement,
+	PerspectaSettings,
+	DEFAULT_SETTINGS,
+	FRONTMATTER_KEY,
+	UID_FRONTMATTER_KEY
+} from './types';
+
+// Import utilities
+import { PerfTimer } from './utils/perf-timer';
+import {
+	setCoordinateDebug,
+	getPhysicalScreen,
+	physicalToVirtual,
+	virtualToPhysical,
+	needsTiling,
+	calculateTiledLayout
+} from './utils/coordinates';
+import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
+
+// Import storage
+import {
+	getContextFromFrontmatter,
+	markdownHasContext,
+	saveContextToMarkdown
+} from './storage/markdown';
+import {
+	getUidFromCanvas,
+	getContextFromCanvas,
+	addUidToCanvas,
+	saveContextToCanvas,
+	canvasHasContext
+} from './storage/canvas';
+import {
+	getUidFromBase,
+	getContextFromBase,
+	addUidToBase,
+	saveContextToBase,
+	baseHasContext
+} from './storage/base';
+import { ExternalContextStore } from './storage/external-store';
 
 // ============================================================================
 // Unified file helpers (works for markdown, canvas, and base files)
@@ -640,18 +79,13 @@ async function addUidToAnyFile(app: App, file: TFile, uid: string): Promise<void
 	}
 }
 
-// ============================================================================
-
 // Resolve a file using fallback strategy: path → UID → filename
-// Returns the file and the resolution method used
 function resolveFile(app: App, tab: TabState): { file: TFile | null; method: 'path' | 'uid' | 'name' | 'not_found' } {
-	// 1. Try path first (fastest, most common case)
 	const fileByPath = app.vault.getAbstractFileByPath(tab.path);
 	if (fileByPath instanceof TFile) {
 		return { file: fileByPath, method: 'path' };
 	}
 
-	// 2. Try UID lookup (file was moved/renamed)
 	if (tab.uid) {
 		const files = app.vault.getMarkdownFiles();
 		for (const file of files) {
@@ -662,172 +96,19 @@ function resolveFile(app: App, tab: TabState): { file: TFile | null; method: 'pa
 		}
 	}
 
-	// 3. Try filename search (last resort, may have conflicts)
 	if (tab.name) {
 		const files = app.vault.getMarkdownFiles();
 		const matches = files.filter(f => f.basename === tab.name);
 		if (matches.length === 1) {
-			// Unique match by name
 			return { file: matches[0], method: 'name' };
 		}
-		// If multiple matches, we could try to find the best one
-		// For now, skip ambiguous matches
 	}
 
 	return { file: null, method: 'not_found' };
 }
 
-// ============================================================================
-// External Context Storage Manager
-// ============================================================================
-
-const CONTEXTS_FOLDER = 'contexts';
-
-class ExternalContextStore {
-	private plugin: PerspectaPlugin;
-	private cache: Map<string, WindowArrangementV2> = new Map();
-	private dirty: Set<string> = new Set();  // UIDs that need saving
-	private saveTimeout: ReturnType<typeof setTimeout> | null = null;
-	private initialized = false;
-
-	constructor(plugin: PerspectaPlugin) {
-		this.plugin = plugin;
-	}
-
-	// Get the contexts folder path
-	private getContextsPath(): string {
-		const adapter = this.plugin.app.vault.adapter;
-		const pluginDir = this.plugin.manifest.dir;
-		return `${pluginDir}/${CONTEXTS_FOLDER}`;
-	}
-
-	// Initialize: load all contexts into memory
-	async initialize(): Promise<void> {
-		if (this.initialized) return;
-
-		const adapter = this.plugin.app.vault.adapter;
-		const contextsPath = this.getContextsPath();
-
-		try {
-			// Ensure contexts folder exists
-			if (!await adapter.exists(contextsPath)) {
-				await adapter.mkdir(contextsPath);
-			}
-
-			// Load all context files
-			const files = await adapter.list(contextsPath);
-			for (const file of files.files) {
-				if (file.endsWith('.json')) {
-					try {
-						const content = await adapter.read(file);
-						const data = JSON.parse(content);
-						const uid = file.split('/').pop()?.replace('.json', '');
-						if (uid && data) {
-							this.cache.set(uid, data as WindowArrangementV2);
-						}
-					} catch (e) {
-						console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
-					}
-				}
-			}
-
-			this.initialized = true;
-			if (PerfTimer.isEnabled()) {
-				console.log(`[Perspecta] External store initialized with ${this.cache.size} contexts`);
-			}
-		} catch (e) {
-			console.error('[Perspecta] Failed to initialize external store:', e);
-		}
-	}
-
-	// Get context by UID (instant from cache)
-	get(uid: string): WindowArrangementV2 | null {
-		return this.cache.get(uid) || null;
-	}
-
-	// Check if context exists
-	has(uid: string): boolean {
-		return this.cache.has(uid);
-	}
-
-	// Save context (updates cache immediately, debounces disk write)
-	set(uid: string, context: WindowArrangementV2): void {
-		this.cache.set(uid, context);
-		this.dirty.add(uid);
-		this.scheduleSave();
-	}
-
-	// Delete context
-	async delete(uid: string): Promise<void> {
-		this.cache.delete(uid);
-		this.dirty.delete(uid);
-
-		const adapter = this.plugin.app.vault.adapter;
-		const filePath = `${this.getContextsPath()}/${uid}.json`;
-		try {
-			if (await adapter.exists(filePath)) {
-				await adapter.remove(filePath);
-			}
-		} catch (e) {
-			console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
-		}
-	}
-
-	// Get all UIDs that have contexts
-	getAllUids(): string[] {
-		return Array.from(this.cache.keys());
-	}
-
-	// Schedule debounced save (2 second delay)
-	private scheduleSave(): void {
-		if (this.saveTimeout) {
-			clearTimeout(this.saveTimeout);
-		}
-		this.saveTimeout = setTimeout(() => this.flushDirty(), 2000);
-	}
-
-	// Force immediate save of all dirty contexts
-	async flushDirty(): Promise<void> {
-		if (this.dirty.size === 0) return;
-
-		const adapter = this.plugin.app.vault.adapter;
-		const contextsPath = this.getContextsPath();
-
-		// Ensure folder exists
-		if (!await adapter.exists(contextsPath)) {
-			await adapter.mkdir(contextsPath);
-		}
-
-		const toSave = Array.from(this.dirty);
-		this.dirty.clear();
-
-		for (const uid of toSave) {
-			const context = this.cache.get(uid);
-			if (context) {
-				const filePath = `${contextsPath}/${uid}.json`;
-				try {
-					const json = JSON.stringify(context);
-					await adapter.write(filePath, json);
-				} catch (e) {
-					console.error(`[Perspecta] Failed to save context: ${uid}`, e);
-					this.dirty.add(uid);  // Re-add to retry later
-				}
-			}
-		}
-
-		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] Saved ${toSave.length} context(s) to disk`);
-		}
-	}
-
-	// Cleanup on plugin unload
-	async cleanup(): Promise<void> {
-		if (this.saveTimeout) {
-			clearTimeout(this.saveTimeout);
-		}
-		await this.flushDirty();
-	}
-}
+// Global debug flag for coordinate conversions
+let COORDINATE_DEBUG = false;
 
 // ============================================================================
 // Main Plugin Class
@@ -846,7 +127,7 @@ export default class PerspectaPlugin extends Plugin {
 		await this.loadSettings();
 
 		// Initialize external store
-		this.externalStore = new ExternalContextStore(this);
+		this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
 		if (this.settings.storageMode === 'external') {
 			await this.externalStore.initialize();
 		}
