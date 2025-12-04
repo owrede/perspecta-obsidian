@@ -1739,6 +1739,11 @@ export default class PerspectaPlugin extends Plugin {
 				await this.restoreNestedSplitInPlace(leafSlot, child);
 			}
 		}
+
+		// Step 3: Apply split sizes if available
+		if (state.sizes?.length && leafSlots.length > 0) {
+			await this.applySplitSizes(leafSlots[0], state.sizes);
+		}
 	}
 
 	// Restore a nested split within an existing leaf's position
@@ -1799,6 +1804,11 @@ export default class PerspectaPlugin extends Plugin {
 			} else if (child.type === 'split') {
 				await this.restoreNestedSplitInPlace(newLeaf, child);
 			}
+		}
+
+		// Apply split sizes if available
+		if (state.sizes?.length) {
+			await this.applySplitSizes(leafSlot, state.sizes);
 		}
 	}
 

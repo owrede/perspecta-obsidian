@@ -1756,6 +1756,7 @@ ${content}`;
   // 1. First create all siblings at the current level
   // 2. Then recursively fill in any nested splits
   async restoreSplitOuterFirst(existingLeaf, state) {
+    var _a;
     if (!state.children.length)
       return;
     if (COORDINATE_DEBUG) {
@@ -1799,8 +1800,8 @@ ${content}`;
     if (COORDINATE_DEBUG) {
       console.log(`[Perspecta] restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
       leafSlots.forEach((leaf, idx) => {
-        var _a, _b;
-        const path = ((_b = (_a = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a.file) == null ? void 0 : _b.path) || "unknown";
+        var _a2, _b;
+        const path = ((_b = (_a2 = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a2.file) == null ? void 0 : _b.path) || "unknown";
         console.log(`  slot[${idx}]: ${path}`);
       });
     }
@@ -1815,10 +1816,13 @@ ${content}`;
         await this.restoreNestedSplitInPlace(leafSlot, child);
       }
     }
+    if (((_a = state.sizes) == null ? void 0 : _a.length) && leafSlots.length > 0) {
+      await this.applySplitSizes(leafSlots[0], state.sizes);
+    }
   }
   // Restore a nested split within an existing leaf's position
   async restoreNestedSplitInPlace(leafSlot, state) {
-    var _a;
+    var _a, _b;
     if (state.children.length <= 1) {
       if (((_a = state.children[0]) == null ? void 0 : _a.type) === "tabs" && state.children[0].tabs.length > 1) {
         await this.restoreRemainingTabs(leafSlot, state.children[0].tabs, 1);
@@ -1858,6 +1862,9 @@ ${content}`;
       } else if (child.type === "split") {
         await this.restoreNestedSplitInPlace(newLeaf, child);
       }
+    }
+    if ((_b = state.sizes) == null ? void 0 : _b.length) {
+      await this.applySplitSizes(leafSlot, state.sizes);
     }
   }
   // Get the first tab from any node (tabs or split) - returns full TabState for fallback resolution
