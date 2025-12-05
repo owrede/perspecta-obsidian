@@ -19,6 +19,8 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
 ## Features
 
 - **Save & Restore Window Arrangements**: Capture tabs, splits, and popout windows
+- **Split Size Preservation**: Restore exact split proportions (e.g., 30%/70% layouts)
+- **Scroll Position Restoration**: Each tab's scroll position is saved and restored
 - **Multiple File Type Support**: Works with markdown (.md), canvas (.canvas), and base (.base) files
 - **Smart File Tracking**: UIDs ensure files are found even after renaming or moving
 - **Multi-Display Support**: Virtual coordinate system handles different screen configurations
@@ -26,6 +28,7 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
   - Frontmatter mode: Store context directly in your notes
   - External mode: Keep your frontmatter clean with separate storage
 - **File Explorer Indicators**: Visual markers show which files have saved contexts
+- **Context Details View**: Inspect saved contexts with split percentages and tab information
 
 ## Installation
 
