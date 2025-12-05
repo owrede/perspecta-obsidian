@@ -660,3 +660,62 @@
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* ============================================================================
+   Settings Tabs
+   ============================================================================ */
+
+.perspecta-settings-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 0;
+}
+
+.perspecta-settings-tab {
+    padding: 8px 16px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.perspecta-settings-tab:hover {
+    color: var(--text-normal);
+}
+
+.perspecta-settings-tab.is-active {
+    color: var(--text-normal);
+    border-bottom-color: var(--interactive-accent);
+}
+
+/* Changelog styles */
+.perspecta-changelog-version {
+    margin-bottom: 24px;
+}
+
+.perspecta-changelog-version h3 {
+    margin-top: 0;
+    margin-bottom: 8px;
+    color: var(--text-normal);
+    font-size: 1em;
+    font-weight: 600;
+}
+
+.perspecta-changelog-version ul {
+    margin: 0;
+    padding-left: 24px;
+}
+
+.perspecta-changelog-version li {
+    margin: 6px 0;
+    color: var(--text-muted);
+    font-size: 0.9em;
+    line-height: 1.4;
+}

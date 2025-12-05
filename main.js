@@ -3363,13 +3363,83 @@ ${content}`;
 var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.currentTab = "changelog";
     this.plugin = plugin;
   }
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Perspecta Settings" });
-    containerEl.createEl("h3", { text: "Context" });
+    const tabNav = containerEl.createDiv({ cls: "perspecta-settings-tabs" });
+    const tabs = [
+      { id: "changelog", label: "Changelog" },
+      { id: "context", label: "Context" },
+      { id: "storage", label: "Storage" },
+      { id: "backup", label: "Backup" },
+      { id: "debug", label: "Debug" }
+    ];
+    tabs.forEach((tab) => {
+      const tabEl = tabNav.createEl("button", {
+        cls: `perspecta-settings-tab ${this.currentTab === tab.id ? "is-active" : ""}`,
+        text: tab.label
+      });
+      tabEl.addEventListener("click", () => {
+        this.currentTab = tab.id;
+        this.display();
+      });
+    });
+    switch (this.currentTab) {
+      case "changelog":
+        this.displayChangelog(containerEl);
+        break;
+      case "context":
+        this.displayContextSettings(containerEl);
+        break;
+      case "storage":
+        this.displayStorageSettings(containerEl);
+        break;
+      case "backup":
+        this.displayBackupSettings(containerEl);
+        break;
+      case "debug":
+        this.displayDebugSettings(containerEl);
+        break;
+    }
+  }
+  displayChangelog(containerEl) {
+    containerEl.createEl("h2", { text: "Changelog" });
+    const v013 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    v013.createEl("h3", { text: "v0.1.3" });
+    const v013List = v013.createEl("ul");
+    v013List.createEl("li", { text: "Multi-arrangement storage: store up to 5 arrangements per note" });
+    v013List.createEl("li", { text: "Arrangement selector modal with visual SVG previews" });
+    v013List.createEl("li", { text: "Delete button to remove specific arrangements from history" });
+    v013List.createEl("li", { text: "Confirmation dialog when overwriting single arrangement" });
+    v013List.createEl("li", { text: "Backup & restore functionality to perspecta folder" });
+    v013List.createEl("li", { text: "SVG previews show windows, splits, sidebars, and focus highlight" });
+    v013List.createEl("li", { text: "Instant tooltips on SVG areas showing note names" });
+    v013List.createEl("li", { text: 'Renamed "Focus tint duration" setting for clarity' });
+    v013List.createEl("li", { text: "Fixed notification toast not disappearing" });
+    const v012 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    v012.createEl("h3", { text: "v0.1.2" });
+    const v012List = v012.createEl("ul");
+    v012List.createEl("li", { text: "Improved plugin compliance with Obsidian guidelines" });
+    const v011 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    v011.createEl("h3", { text: "v0.1.1" });
+    const v011List = v011.createEl("ul");
+    v011List.createEl("li", { text: "Save and restore scroll position for all tabs" });
+    v011List.createEl("li", { text: "Save and restore split sizes (pane proportions)" });
+    const v010 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    v010.createEl("h3", { text: "v0.1.0" });
+    const v010List = v010.createEl("ul");
+    v010List.createEl("li", { text: "Initial release" });
+    v010List.createEl("li", { text: "Save and restore window arrangements (tabs, splits, popouts)" });
+    v010List.createEl("li", { text: "External storage mode for cleaner notes" });
+    v010List.createEl("li", { text: "Frontmatter storage mode for portability" });
+    v010List.createEl("li", { text: "Auto-generate UIDs for file tracking" });
+    v010List.createEl("li", { text: "Context indicators in file explorer" });
+    v010List.createEl("li", { text: "Focus tint animation on restore" });
+  }
+  displayContextSettings(containerEl) {
     const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
     const restoreHotkey = this.getHotkeyDisplay("perspecta-obsidian:restore-context");
     new import_obsidian2.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
@@ -3384,7 +3454,8 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
       this.plugin.settings.autoGenerateUids = v;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h3", { text: "Storage" });
+  }
+  displayStorageSettings(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Perspecta folder").setDesc("Folder in your vault for Perspecta data (backups, scripts). Created if it doesn't exist.").addText((t) => t.setPlaceholder("perspecta").setValue(this.plugin.settings.perspectaFolderPath).onChange(async (v) => {
       this.plugin.settings.perspectaFolderPath = v.trim() || "perspecta";
       await this.plugin.saveSettings();
@@ -3457,7 +3528,8 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
       btn.setDisabled(false);
       btn.setButtonText("Clean up");
     }));
-    containerEl.createEl("h3", { text: "Backup & Restore" });
+  }
+  displayBackupSettings(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Backup arrangements").setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`).addButton((btn) => btn.setButtonText("Create backup").onClick(async () => {
       btn.setDisabled(true);
       btn.setButtonText("Backing up...");
@@ -3507,7 +3579,8 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
         });
       }
     });
-    containerEl.createEl("h3", { text: "Debug" });
+  }
+  displayDebugSettings(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
       this.plugin.settings.showDebugModal = v;
       await this.plugin.saveSettings();
