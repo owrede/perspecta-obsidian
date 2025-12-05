@@ -454,17 +454,20 @@ export default class PerspectaPlugin extends Plugin {
 				const uid = getUidFromCache(this.app, file);
 				// Get filename without extension for fallback search
 				const name = file.basename;
+				// Get scroll position if available
+				const scroll = (leaf?.view as any)?.currentMode?.getScroll?.();
 
 				const isActive = i === currentTabIndex;
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}`);
+					console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}`);
 				}
 
 				tabs.push({
 					path: file.path,
 					active: isActive,
 					uid,
-					name
+					name,
+					scroll: typeof scroll === 'number' ? scroll : undefined
 				});
 			}
 		}
@@ -1203,6 +1206,13 @@ export default class PerspectaPlugin extends Plugin {
 			if (v2.rightSidebar) this.restoreSidebarState('right', v2.rightSidebar);
 			PerfTimer.mark('restoreSidebars');
 
+			// Schedule scroll position restoration for all leaves
+			this.scheduleScrollRestoration(v2.main.root);
+			for (const popout of v2.popouts) {
+				this.scheduleScrollRestoration(popout.root);
+			}
+			PerfTimer.mark('scheduleScrollRestoration');
+
 			// Find and focus the window containing the context note (the note used to restore)
 			// This ensures the context note is active and its window is in foreground
 			let contextNoteWin: Window | null = null;
@@ -1476,33 +1486,135 @@ export default class PerspectaPlugin extends Plugin {
 	 * Gets the parent container from any leaf and sets dimension on its children.
 	 */
 	private async applySplitSizes(anyLeaf: WorkspaceLeaf, sizes: number[]): Promise<void> {
-		// Small delay to ensure DOM is updated
-		await new Promise(resolve => setTimeout(resolve, 50));
+		// Longer delay to ensure layout is fully ready
+		await new Promise(resolve => setTimeout(resolve, 200));
 
-		// Get the parent container
-		const parent = (anyLeaf as any).parent;
-		if (!parent?.children || parent.children.length !== sizes.length) {
-			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] applySplitSizes: mismatch - parent has ${parent?.children?.length} children, expected ${sizes.length}`);
+		// Navigate up the parent chain to find the split container with matching child count
+		let parent = (anyLeaf as any).parent;
+		let attempts = 0;
+		const maxAttempts = 5;
+
+		while (parent && attempts < maxAttempts) {
+			if (parent.children?.length === sizes.length && parent.direction) {
+				// Found the right split container
+				break;
 			}
+			parent = parent.parent;
+			attempts++;
+		}
+
+		if (!parent?.children || parent.children.length !== sizes.length) {
+			console.log(`[Perspecta] applySplitSizes: could not find matching parent - expected ${sizes.length} children`);
 			return;
 		}
 
-		// Apply dimension to each child
-		for (let i = 0; i < sizes.length; i++) {
+		// Normalize sizes to percentages that sum to 100
+		const total = sizes.reduce((a, b) => a + b, 0);
+		const normalizedSizes = sizes.map(s => (s / total) * 100);
+
+		console.log(`[Perspecta] applySplitSizes: found parent with ${parent.children.length} children, direction=${parent.direction}, applying sizes:`, normalizedSizes);
+
+		// Apply dimension to each child using setDimension if available, otherwise direct assignment
+		for (let i = 0; i < normalizedSizes.length; i++) {
 			const child = parent.children[i];
-			if (child && sizes[i] !== undefined) {
-				child.dimension = sizes[i];
+			if (child && normalizedSizes[i] !== undefined) {
+				if (typeof child.setDimension === 'function') {
+					child.setDimension(normalizedSizes[i]);
+					console.log(`[Perspecta] applySplitSizes: called child[${i}].setDimension(${normalizedSizes[i]})`);
+				} else {
+					child.dimension = normalizedSizes[i];
+					console.log(`[Perspecta] applySplitSizes: set child[${i}].dimension = ${normalizedSizes[i]}`);
+				}
 			}
 		}
 
-		// Trigger resize to apply the new dimensions
+		// Trigger resize - try multiple methods
+		// Method 1: parent's onResize
 		if (typeof parent.onResize === 'function') {
 			parent.onResize();
+			console.log(`[Perspecta] applySplitSizes: called parent.onResize()`);
 		}
 
-		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] applySplitSizes: applied sizes ${JSON.stringify(sizes)} to ${sizes.length} children`);
+		// Method 2: workspace requestResize (used by obsidian-resize-split plugin)
+		const workspace = this.app.workspace as any;
+		if (typeof workspace.requestResize === 'function') {
+			workspace.requestResize();
+			console.log(`[Perspecta] applySplitSizes: called workspace.requestResize()`);
+		}
+
+		// Method 3: root split's onResize
+		const rootSplit = workspace.rootSplit;
+		if (rootSplit && typeof rootSplit.onResize === 'function') {
+			rootSplit.onResize();
+			console.log(`[Perspecta] applySplitSizes: called rootSplit.onResize()`);
+		}
+
+		// Method 4: trigger window resize event (forces Obsidian to recalculate layout)
+		window.dispatchEvent(new Event('resize'));
+		console.log(`[Perspecta] applySplitSizes: dispatched window resize event`);
+	}
+
+	/**
+	 * Apply scroll position to a leaf's view.
+	 * Must be called after the file is fully loaded.
+	 */
+	private applyScrollPosition(leaf: WorkspaceLeaf, scroll: number | undefined): void {
+		if (scroll === undefined || scroll === 0) return;
+
+		// Delay to ensure view is fully rendered
+		setTimeout(() => {
+			const view = leaf.view as any;
+			if (view?.currentMode?.applyScroll) {
+				view.currentMode.applyScroll(scroll);
+				if (PerfTimer.isEnabled()) {
+					console.log(`[Perspecta] applyScrollPosition: scrolled to ${scroll}`);
+				}
+			}
+		}, 100);
+	}
+
+	/**
+	 * Collect scroll positions from a workspace node state and apply them to matching leaves.
+	 */
+	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
+		// Build a map of path -> scroll from the state
+		const scrollMap = new Map<string, number>();
+		this.collectScrollPositions(state, scrollMap);
+
+		if (scrollMap.size === 0) return;
+
+		console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll positions to restore`);
+
+		// Apply scroll positions after a longer delay to ensure all views in splits are loaded
+		// Re-iterate leaves inside timeout since split views may not exist yet when this is called
+		setTimeout(() => {
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				const file = (leaf.view as any)?.file as TFile | undefined;
+				if (file && scrollMap.has(file.path)) {
+					const scroll = scrollMap.get(file.path);
+					if (scroll !== undefined && scroll > 0) {
+						const view = leaf.view as any;
+						if (view?.currentMode?.applyScroll) {
+							view.currentMode.applyScroll(scroll);
+							console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> ${scroll}`);
+						}
+					}
+				}
+			});
+		}, 500);
+	}
+
+	private collectScrollPositions(node: WorkspaceNodeState, map: Map<string, number>): void {
+		if (node.type === 'tabs') {
+			for (const tab of node.tabs) {
+				if (tab.scroll !== undefined && tab.scroll > 0) {
+					map.set(tab.path, tab.scroll);
+				}
+			}
+		} else {
+			for (const child of node.children) {
+				this.collectScrollPositions(child, map);
+			}
 		}
 	}
 

@@ -7,6 +7,7 @@ export interface TabState {
 	active: boolean;
 	uid?: string;   // Unique ID from frontmatter (for move/rename resilience)
 	name?: string;  // Filename without extension (fallback for search)
+	scroll?: number; // Scroll position (from view.currentMode.getScroll())
 }
 
 export interface SplitState {
