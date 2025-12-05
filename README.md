@@ -48,11 +48,11 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
 
 All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
 
-| Command | Description                                                                                                                                                                                                                   |
-|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Command | Description                                                                                                                                                                                                                     |
+|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Save context** | 1. Arrange your windows, tabs, and splits as desired<br/>2. Navigate to the note you want to associate with this arrangement<br/>3. Trigger the save context command or press the hotkey you assigned to that command<br/><br/> |
-| **Restore context** | 1. Open the note that has a saved context<br/>2. Trigger the restore context command or press the hotkey you assigned to that command<br/><br/>                                                                               |
-| **Show context details** | Display detailed information about the saved context (tabs, windows, positions)                                                                                                                                               |
+| **Restore context** | 1. Open the note that has a saved context<br/>2. Trigger the restore context command or press the hotkey you assigned to that command<br/><br/>                                                                                 |
+| **Show context details** | Display a small visualization about the saved context (tabs, windows, positions) of the active note.                                                                                                                            |
 
 ### Settings
 
