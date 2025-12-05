@@ -41,49 +41,28 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
 5. Click "Add Plugin"
 6. Enable Perspecta in Community Plugins
 
-### Manual Installation
-
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/owrede/perspecta-obsidian/releases)
-2. Create a folder called `perspecta-obsidian` in your vault's `.obsidian/plugins/` directory
-3. Copy the downloaded files into this folder
-4. Reload Obsidian
-5. Enable Perspecta in Community Plugins
 
 ## Usage
-
-### Default Hotkeys
-
-| Action | Hotkey |
-|--------|--------|
-| Save Context | `Shift+Cmd+S` (Mac) / `Shift+Ctrl+S` (Windows) |
-| Restore Context | `Shift+Cmd+R` (Mac) / `Shift+Ctrl+R` (Windows) |
 
 ### Commands
 
 All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
 
-| Command | Description |
-|---------|-------------|
-| **Save context** | Save the current window arrangement to the active file |
-| **Restore context** | Restore the window arrangement saved in the active file |
-| **Show context details** | Display detailed information about the saved context (tabs, windows, positions) |
-
-### Saving a Context
-
-1. Arrange your windows, tabs, and splits as desired
-2. Navigate to the note you want to associate with this arrangement
-3. Press `Shift+Cmd+S` to save the context
-
-### Restoring a Context
-
-1. Open the note that has a saved context
-2. Press `Shift+Cmd+R` to restore the window arrangement
+| Command | Description                                                                                                                                                                                                                   |
+|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Save context** | 1. Arrange your windows, tabs, and splits as desired<br/>2. Navigate to the note you want to associate with this arrangement<br/>3. Trigger the save context command or press the hotkey you assigned to that command<br/><br/> |
+| **Restore context** | 1. Open the note that has a saved context<br/>2. Trigger the restore context command or press the hotkey you assigned to that command<br/><br/>                                                                               |
+| **Show context details** | Display detailed information about the saved context (tabs, windows, positions)                                                                                                                                               |
 
 ### Settings
 
 - **Storage Mode**: Choose between frontmatter (in-note) or external storage
 - **Auto-generate UIDs**: Automatically add tracking IDs to files for reliable restoration
 - **Debug Modal**: Show detailed information when saving contexts
+
+> **WARNING**: Storage mode "external" will kill all data if plugin is
+> uninstalled.
+
 
 ## Important Concepts
 
@@ -101,7 +80,8 @@ Perspecta offers two storage modes for saving window arrangements:
 - **Advantage**: Keeps your frontmatter clean
 - **Disadvantage**: **All saved contexts will be lost if the plugin is removed or reinstalled**
 
-> **Note**: If you value data persistence, use Frontmatter Mode. If you prefer clean frontmatter and understand the risk, use External Mode.
+> **NOTE**: If you value data persistence, use Frontmatter Mode. If you prefer 
+> clean frontmatter and understand the risk, use External Mode.
 
 ### Unique IDs (UIDs)
 
