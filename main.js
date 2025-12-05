@@ -559,13 +559,11 @@ var PerspectaPlugin = class extends import_obsidian2.Plugin {
     this.addCommand({
       id: "save-context",
       name: "Save context",
-      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "s" }],
       callback: () => this.saveContext()
     });
     this.addCommand({
       id: "restore-context",
       name: "Restore context",
-      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "r" }],
       callback: () => this.restoreContext()
     });
     this.addCommand({
@@ -2319,128 +2317,144 @@ ${content}`;
     this.showContextDetailsModal(v2, file.name, targetWindow);
   }
   showContextDetailsModal(context, fileName, targetWindow) {
-    var _a;
     const doc = targetWindow.document;
     const overlay = doc.createElement("div");
     overlay.className = "perspecta-debug-overlay";
     const modal = doc.createElement("div");
     modal.className = "perspecta-debug-modal perspecta-details-modal";
+    const h3 = modal.createEl("h3", { text: "Context Details" });
+    const header = modal.createDiv({ cls: "perspecta-details-header" });
+    header.createSpan({ cls: "perspecta-details-file", text: fileName });
     const date = new Date(context.ts);
-    const dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString();
-    let html = `<h3>Context Details</h3>
-			<div class="perspecta-details-header">
-				<span class="perspecta-details-file">${fileName}</span>
-				<span class="perspecta-details-date">${dateStr}</span>
-			</div>
-			<div class="perspecta-details-content">`;
-    html += `<div class="perspecta-window-section">
-			<div class="perspecta-window-title">Main Window</div>
-			${this.formatNodeDetails(context.main.root, context.focusedWindow === -1)}
-		</div>`;
-    if (context.popouts.length > 0) {
-      context.popouts.forEach((p, i) => {
-        html += `<div class="perspecta-window-section">
-					<div class="perspecta-window-title">Popout ${i + 1}</div>
-					${this.formatNodeDetails(p.root, context.focusedWindow === i)}
-				</div>`;
-      });
-    }
+    header.createSpan({ cls: "perspecta-details-date", text: date.toLocaleDateString() + " " + date.toLocaleTimeString() });
+    const content = modal.createDiv({ cls: "perspecta-details-content" });
+    const mainSection = content.createDiv({ cls: "perspecta-window-section" });
+    mainSection.createDiv({ cls: "perspecta-window-title", text: "Main Window" });
+    this.buildNodeDetailsDOM(mainSection, context.main.root, context.focusedWindow === -1);
+    context.popouts.forEach((p, i) => {
+      const popoutSection = content.createDiv({ cls: "perspecta-window-section" });
+      popoutSection.createDiv({ cls: "perspecta-window-title", text: `Popout ${i + 1}` });
+      this.buildNodeDetailsDOM(popoutSection, p.root, context.focusedWindow === i);
+    });
     if (context.sourceScreen) {
       const ar = context.sourceScreen.aspectRatio;
       const screenType = ar > 2 ? "ultrawide" : ar > 1.7 ? "wide" : "standard";
-      html += `<div class="perspecta-screen-info">Screen: ${screenType} (${ar.toFixed(2)})</div>`;
+      content.createDiv({ cls: "perspecta-screen-info", text: `Screen: ${screenType} (${ar.toFixed(2)})` });
     }
-    html += `</div><button class="perspecta-details-close">Close</button>`;
-    modal.innerHTML = html;
-    overlay.onclick = () => {
+    const closeBtn = modal.createEl("button", { cls: "perspecta-details-close", text: "Close" });
+    const closeModal = () => {
       modal.remove();
       overlay.remove();
     };
-    (_a = modal.querySelector(".perspecta-details-close")) == null ? void 0 : _a.addEventListener("click", () => {
-      modal.remove();
-      overlay.remove();
-    });
+    overlay.onclick = closeModal;
+    closeBtn.addEventListener("click", closeModal);
     doc.body.appendChild(overlay);
     doc.body.appendChild(modal);
   }
-  formatNodeDetails(node, isFocusedWindow, sizePercent) {
-    const sizeLabel = sizePercent ? `<span class="perspecta-size-badge">${sizePercent}</span>` : "";
+  buildNodeDetailsDOM(container, node, isFocusedWindow, sizePercent) {
+    var _a;
     if (node.type === "tabs") {
-      return `<div class="perspecta-tab-list">${sizeLabel}${node.tabs.map((t) => {
-        var _a;
+      const tabList = container.createDiv({ cls: "perspecta-tab-list" });
+      if (sizePercent) {
+        tabList.createSpan({ cls: "perspecta-size-badge", text: sizePercent });
+      }
+      for (const t of node.tabs) {
         const name = ((_a = t.path.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "")) || t.path;
         const folder = t.path.includes("/") ? t.path.split("/").slice(0, -1).join("/") : "";
-        const activeClass = t.active ? " perspecta-tab-active" : "";
-        const focusedClass = t.active && isFocusedWindow ? " perspecta-tab-focused" : "";
-        const uidBadge = t.uid ? '<span class="perspecta-uid-badge" title="Has UID for move/rename resilience">uid</span>' : "";
-        return `<div class="perspecta-tab-item${activeClass}${focusedClass}">
-					<span class="perspecta-tab-name">${name}</span>${uidBadge}
-					${folder ? `<span class="perspecta-tab-folder">${folder}</span>` : ""}
-				</div>`;
-      }).join("")}</div>`;
+        const classes = ["perspecta-tab-item"];
+        if (t.active)
+          classes.push("perspecta-tab-active");
+        if (t.active && isFocusedWindow)
+          classes.push("perspecta-tab-focused");
+        const tabItem = tabList.createDiv({ cls: classes.join(" ") });
+        tabItem.createSpan({ cls: "perspecta-tab-name", text: name });
+        if (t.uid) {
+          tabItem.createSpan({ cls: "perspecta-uid-badge", text: "uid", attr: { title: "Has UID for move/rename resilience" } });
+        }
+        if (folder) {
+          tabItem.createSpan({ cls: "perspecta-tab-folder", text: folder });
+        }
+      }
     } else {
       const icon = node.direction === "horizontal" ? "\u2194" : "\u2195";
       const sizes = node.sizes;
       const total = (sizes == null ? void 0 : sizes.reduce((a, b) => a + b, 0)) || 0;
       const percentages = sizes == null ? void 0 : sizes.map((s) => total > 0 ? Math.round(s / total * 100) + "%" : void 0);
-      return `<div class="perspecta-split">
-				<div class="perspecta-split-header">${icon} Split (${node.direction})${sizeLabel}</div>
-				<div class="perspecta-split-children">
-					${node.children.map((child, i) => this.formatNodeDetails(child, isFocusedWindow, percentages == null ? void 0 : percentages[i])).join("")}
-				</div>
-			</div>`;
+      const splitDiv = container.createDiv({ cls: "perspecta-split" });
+      const splitHeader = splitDiv.createDiv({ cls: "perspecta-split-header" });
+      splitHeader.appendText(`${icon} Split (${node.direction})`);
+      if (sizePercent) {
+        splitHeader.createSpan({ cls: "perspecta-size-badge", text: sizePercent });
+      }
+      const childrenDiv = splitDiv.createDiv({ cls: "perspecta-split-children" });
+      node.children.forEach((child, i) => {
+        this.buildNodeDetailsDOM(childrenDiv, child, isFocusedWindow, percentages == null ? void 0 : percentages[i]);
+      });
     }
   }
   // ============================================================================
   // Debug Modal (Save Confirmation)
   // ============================================================================
   showContextDebugModal(context, fileName) {
-    var _a;
     const overlay = document.createElement("div");
     overlay.className = "perspecta-debug-overlay";
     const modal = document.createElement("div");
     modal.className = "perspecta-debug-modal";
-    let html = `<h3>Context Saved</h3>
-			<p><strong>File:</strong> ${fileName}</p>
-			<p><strong>Focused:</strong> ${context.focusedWindow === -1 ? "Main" : `Popout #${context.focusedWindow + 1}`}</p>
-			<h4>Main Window</h4>${this.renderNodeHtml(context.main.root)}`;
+    modal.createEl("h3", { text: "Context Saved" });
+    const fileP = modal.createEl("p");
+    fileP.createEl("strong", { text: "File: " });
+    fileP.appendText(fileName);
+    const focusedP = modal.createEl("p");
+    focusedP.createEl("strong", { text: "Focused: " });
+    focusedP.appendText(context.focusedWindow === -1 ? "Main" : `Popout #${context.focusedWindow + 1}`);
+    modal.createEl("h4", { text: "Main Window" });
+    this.buildDebugNodeDOM(modal, context.main.root, 0);
     if (context.popouts.length) {
-      html += `<h4>Popouts (${context.popouts.length})</h4>`;
+      modal.createEl("h4", { text: `Popouts (${context.popouts.length})` });
       context.popouts.forEach((p, i) => {
-        html += `<p>Popout #${i + 1}:</p>${this.renderNodeHtml(p.root)}`;
+        modal.createEl("p", { text: `Popout #${i + 1}:` });
+        this.buildDebugNodeDOM(modal, p.root, 0);
       });
     }
-    html += `<button class="perspecta-debug-close">Close</button>`;
-    modal.innerHTML = html;
-    overlay.onclick = () => {
+    const closeBtn = modal.createEl("button", { cls: "perspecta-debug-close", text: "Close" });
+    const closeModal = () => {
       modal.remove();
       overlay.remove();
     };
-    (_a = modal.querySelector(".perspecta-debug-close")) == null ? void 0 : _a.addEventListener("click", () => {
-      modal.remove();
-      overlay.remove();
-    });
+    overlay.onclick = closeModal;
+    closeBtn.addEventListener("click", closeModal);
     document.body.appendChild(overlay);
     document.body.appendChild(modal);
   }
-  renderNodeHtml(node, depth = 0, sizePercent) {
-    const pad = "&nbsp;".repeat(depth * 4);
-    const sizeLabel = sizePercent ? ` <span style="color: var(--text-muted); font-size: 0.85em;">(${sizePercent})</span>` : "";
+  buildDebugNodeDOM(container, node, depth, sizePercent) {
+    const wrapper = container.createDiv({ cls: `perspecta-debug-node perspecta-debug-depth-${depth}` });
     if (node.type === "tabs") {
-      const tabList = node.tabs.map((t) => `${pad}\u{1F4C4} ${t.path.split("/").pop()}${t.active ? " \u2713" : ""}`).join("<br>");
-      return `${pad}<span style="color: var(--text-muted);">Tabs${sizeLabel}</span><br>${tabList}<br>`;
+      const header = wrapper.createSpan({ cls: "perspecta-debug-muted", text: "Tabs" });
+      if (sizePercent) {
+        header.createSpan({ cls: "perspecta-debug-size", text: ` (${sizePercent})` });
+      }
+      for (const t of node.tabs) {
+        const tabLine = wrapper.createDiv({ cls: "perspecta-debug-tab" });
+        tabLine.appendText(`\u{1F4C4} ${t.path.split("/").pop() || t.path}`);
+        if (t.active)
+          tabLine.appendText(" \u2713");
+      }
+    } else {
+      const sizes = node.sizes;
+      const total = (sizes == null ? void 0 : sizes.reduce((a, b) => a + b, 0)) || 0;
+      const percentages = sizes == null ? void 0 : sizes.map((s) => total > 0 ? Math.round(s / total * 100) + "%" : void 0);
+      const icon = node.direction === "horizontal" ? "\u2194\uFE0F" : "\u2195\uFE0F";
+      const header = wrapper.createDiv();
+      header.appendText(`${icon} `);
+      header.createEl("strong", { text: "Split" });
+      header.appendText(` (${node.direction})`);
+      if (sizePercent) {
+        header.createSpan({ cls: "perspecta-debug-size", text: ` (${sizePercent})` });
+      }
+      node.children.forEach((child, i) => {
+        this.buildDebugNodeDOM(wrapper, child, depth + 1, percentages == null ? void 0 : percentages[i]);
+      });
     }
-    const sizes = node.sizes;
-    const total = (sizes == null ? void 0 : sizes.reduce((a, b) => a + b, 0)) || 0;
-    const percentages = sizes == null ? void 0 : sizes.map((s) => total > 0 ? Math.round(s / total * 100) + "%" : void 0);
-    const icon = node.direction === "horizontal" ? "\u2194\uFE0F" : "\u2195\uFE0F";
-    let html = `${pad}${icon} <strong>Split</strong> (${node.direction})${sizeLabel}<br>`;
-    for (let i = 0; i < node.children.length; i++) {
-      const child = node.children[i];
-      const childPercent = percentages == null ? void 0 : percentages[i];
-      html += this.renderNodeHtml(child, depth + 1, childPercent);
-    }
-    return html;
   }
   // ============================================================================
   // Context Indicator
@@ -2492,7 +2506,7 @@ ${content}`;
   createTargetIcon() {
     const el = document.createElement("span");
     el.className = "perspecta-context-indicator";
-    el.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>`;
+    (0, import_obsidian2.setIcon)(el, "target");
     return el;
   }
   // ============================================================================

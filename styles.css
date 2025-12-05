@@ -151,6 +151,29 @@
     background: var(--interactive-accent-hover);
 }
 
+/* Debug modal node styles */
+.perspecta-debug-node {
+    margin: 4px 0;
+}
+
+.perspecta-debug-depth-1 { padding-left: 16px; }
+.perspecta-debug-depth-2 { padding-left: 32px; }
+.perspecta-debug-depth-3 { padding-left: 48px; }
+.perspecta-debug-depth-4 { padding-left: 64px; }
+
+.perspecta-debug-muted {
+    color: var(--text-muted);
+}
+
+.perspecta-debug-size {
+    color: var(--text-muted);
+    font-size: 0.85em;
+}
+
+.perspecta-debug-tab {
+    margin: 2px 0;
+}
+
 /* ============================================================================
    Focus Tint Animation
    ============================================================================ */
