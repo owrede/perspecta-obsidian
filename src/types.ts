@@ -80,23 +80,40 @@ export interface PerspectaSettings {
 	enableVisualMapping: boolean;
 	enableAutomation: boolean;
 	automationScriptsPath: string;
+	perspectaFolderPath: string;
 	showDebugModal: boolean;
 	enableDebugLogging: boolean;
 	focusTintDuration: number;
 	autoGenerateUids: boolean;
 	storageMode: StorageMode;
+	maxArrangementsPerNote: number;
+	autoConfirmOverwrite: boolean;
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
 	enableVisualMapping: true,
 	enableAutomation: true,
 	automationScriptsPath: 'perspecta/scripts/',
+	perspectaFolderPath: 'perspecta',
 	showDebugModal: true,
 	enableDebugLogging: false,
 	focusTintDuration: 8,
 	autoGenerateUids: true,
-	storageMode: 'frontmatter'
+	storageMode: 'frontmatter',
+	maxArrangementsPerNote: 1,
+	autoConfirmOverwrite: false
 };
+
+// Timestamped arrangement for multi-arrangement storage
+export interface TimestampedArrangement {
+	arrangement: WindowArrangementV2;
+	savedAt: number;  // Unix timestamp when saved
+}
+
+// Collection of arrangements for a single file
+export interface ArrangementCollection {
+	arrangements: TimestampedArrangement[];
+}
 
 export const FRONTMATTER_KEY = 'perspecta-arrangement';
 export const UID_FRONTMATTER_KEY = 'perspecta-uid';

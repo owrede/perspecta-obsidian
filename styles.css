@@ -349,3 +349,314 @@
 .perspecta-details-close:hover {
     background: var(--interactive-accent-hover);
 }
+
+/* ============================================================================
+   Arrangement Selector Modal
+   ============================================================================ */
+
+.perspecta-arrangement-selector {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 20px;
+    min-width: 350px;
+    max-width: 450px;
+    max-height: 80vh;
+    overflow-y: auto;
+    z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.perspecta-modal-title {
+    font-size: 1.1em;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin-bottom: 4px;
+}
+
+.perspecta-modal-subtitle {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+.perspecta-arrangement-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.perspecta-arrangement-item {
+    padding: 12px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    border: 1px solid transparent;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.perspecta-arrangement-item:hover {
+    background: var(--background-secondary-alt);
+    border-color: var(--interactive-accent);
+}
+
+.perspecta-arrangement-preview-container {
+    flex-shrink: 0;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--background-primary-alt);
+    padding: 2px;
+}
+
+.perspecta-arrangement-preview {
+    display: block;
+    overflow: visible;
+}
+
+.perspecta-arrangement-preview-container {
+    position: relative;
+}
+
+.perspecta-preview-tab-area {
+    cursor: pointer;
+    pointer-events: all;
+}
+
+.perspecta-preview-tab-area:hover {
+    fill: var(--interactive-accent);
+    fill-opacity: 0.15;
+}
+
+.perspecta-preview-tooltip {
+    position: absolute;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.8em;
+    color: var(--text-normal);
+    white-space: pre;
+    pointer-events: none;
+    z-index: 10000;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.perspecta-arrangement-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.perspecta-arrangement-delete {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+    cursor: pointer;
+}
+
+.perspecta-arrangement-item:hover .perspecta-arrangement-delete {
+    opacity: 1;
+}
+
+.perspecta-arrangement-delete:hover {
+    color: var(--text-error);
+    background-color: var(--background-modifier-hover);
+}
+
+.perspecta-arrangement-delete svg {
+    display: block;
+}
+
+.perspecta-arrangement-time {
+    font-size: 0.95em;
+    font-weight: 500;
+    color: var(--text-normal);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.perspecta-arrangement-badge {
+    font-size: 0.7em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.perspecta-arrangement-summary {
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.perspecta-modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.perspecta-modal-button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.perspecta-modal-button-primary {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.perspecta-modal-button-primary:hover {
+    background: var(--interactive-accent-hover);
+}
+
+.perspecta-modal-button-secondary {
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+}
+
+.perspecta-modal-button-secondary:hover {
+    background: var(--background-modifier-border-hover);
+}
+
+/* ============================================================================
+   Confirm Overwrite Modal
+   ============================================================================ */
+
+.perspecta-confirm-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 20px;
+    min-width: 350px;
+    max-width: 400px;
+    z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.perspecta-confirm-content {
+    margin: 16px 0;
+    color: var(--text-normal);
+}
+
+.perspecta-existing-info {
+    margin: 12px 0;
+    padding: 10px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.perspecta-existing-info-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.perspecta-confirm-warning {
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+/* ============================================================================
+   Backup List in Settings
+   ============================================================================ */
+
+.perspecta-backup-list-container {
+    margin-top: 8px;
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.perspecta-backup-empty {
+    color: var(--text-muted);
+    font-size: 0.9em;
+    font-style: italic;
+}
+
+.perspecta-backup-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: var(--background-primary);
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.perspecta-backup-item:last-child {
+    margin-bottom: 0;
+}
+
+.perspecta-backup-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.perspecta-backup-name {
+    font-size: 0.9em;
+    color: var(--text-normal);
+    word-break: break-all;
+}
+
+.perspecta-backup-date {
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.perspecta-backup-restore-btn {
+    flex-shrink: 0;
+    margin-left: 12px;
+    padding: 4px 12px;
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+
+.perspecta-backup-restore-btn:hover {
+    background: var(--background-modifier-border-hover);
+}
+
+.perspecta-backup-restore-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

@@ -16,7 +16,8 @@ import {
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
 	FRONTMATTER_KEY,
-	UID_FRONTMATTER_KEY
+	UID_FRONTMATTER_KEY,
+	TimestampedArrangement
 } from './types';
 
 // Import utilities
@@ -52,6 +53,9 @@ import {
 	baseHasContext
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
+
+// Import UI components
+import { showArrangementSelector, showConfirmOverwrite } from './ui/modals';
 
 // ============================================================================
 // Unified file helpers (works for markdown, canvas, and base files)
@@ -540,6 +544,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Save based on file type and storage mode
+		let saved = true;
 		if (isCanvas) {
 			// Canvas files always store context in the JSON
 			await saveContextToCanvas(this.app, targetFile, context);
@@ -553,25 +558,29 @@ export default class PerspectaPlugin extends Plugin {
 			this.debouncedRefreshIndicators();
 			PerfTimer.mark('saveContextToBase');
 		} else if (this.settings.storageMode === 'external') {
-			await this.saveContextExternal(targetFile, context);
+			saved = await this.saveContextExternal(targetFile, context);
 			PerfTimer.mark('saveContextExternal');
 		} else {
 			await this.saveArrangementToNote(targetFile, context);
 			PerfTimer.mark('saveArrangementToNote');
 		}
 
-		if (this.settings.showDebugModal) {
-			this.showContextDebugModal(context, targetFile.name);
-			PerfTimer.mark('showContextDebugModal');
-		} else {
-			new Notice(`Context saved to ${targetFile.name}`);
+		// Only show confirmation if save was not cancelled
+		if (saved) {
+			if (this.settings.showDebugModal) {
+				this.showContextDebugModal(context, targetFile.name);
+				PerfTimer.mark('showContextDebugModal');
+			} else {
+				new Notice(`Context saved to ${targetFile.name}`, 4000);
+			}
 		}
 
 		PerfTimer.end('saveContext');
 	}
 
 	// Save context to external store (using file's UID as key)
-	private async saveContextExternal(file: TFile, context: WindowArrangementV2): Promise<void> {
+	// Returns true if save was successful, false if cancelled
+	private async saveContextExternal(file: TFile, context: WindowArrangementV2): Promise<boolean> {
 		// Get the file's UID (must exist since we ensured UIDs above)
 		let uid = getUidFromCache(this.app, file);
 		if (!uid) {
@@ -587,13 +596,28 @@ export default class PerspectaPlugin extends Plugin {
 			await this.externalStore.initialize();
 		}
 
-		this.externalStore.set(uid, context);
+		const maxArrangements = this.settings.maxArrangementsPerNote;
+		const existingCount = this.externalStore.getCount(uid);
+
+		// If max is 1 and there's already an arrangement, ask for confirmation (unless auto-confirm is on)
+		if (maxArrangements === 1 && existingCount > 0 && !this.settings.autoConfirmOverwrite) {
+			const existingArrangements = this.externalStore.getAll(uid);
+			if (existingArrangements.length > 0) {
+				const result = await showConfirmOverwrite(existingArrangements[0], file.name);
+				if (!result.confirmed) {
+					return false; // User cancelled
+				}
+			}
+		}
+
+		this.externalStore.set(uid, context, maxArrangements);
 
 		// Remove perspecta-arrangement from frontmatter (if present) to avoid duplication
 		await this.removeArrangementFromFrontmatter(file);
 
 		this.filesWithContext.add(file.path);
 		this.debouncedRefreshIndicators();
+		return true;
 	}
 
 	// Remove perspecta-arrangement property from a file's frontmatter
@@ -742,6 +766,127 @@ export default class PerspectaPlugin extends Plugin {
 		await this.setupFileExplorerIndicators();
 
 		return { migrated, errors };
+	}
+
+	// Get the backup folder path
+	private getBackupFolderPath(): string {
+		const basePath = this.settings.perspectaFolderPath.replace(/\/+$/, ''); // Remove trailing slashes
+		return `${basePath}/backups`;
+	}
+
+	// Backup all arrangements to the perspecta folder
+	async backupArrangements(): Promise<{ count: number; path: string }> {
+		// Initialize external store if needed
+		if (!this.externalStore['initialized']) {
+			await this.externalStore.initialize();
+		}
+
+		// Collect all arrangements from external store
+		const allArrangements: Record<string, unknown> = {};
+		const uids = this.externalStore.getAllUids();
+
+		for (const uid of uids) {
+			const arrangements = this.externalStore.getAll(uid);
+			if (arrangements.length > 0) {
+				allArrangements[uid] = arrangements;
+			}
+		}
+
+		// Create backup folder if it doesn't exist
+		const backupFolder = this.getBackupFolderPath();
+		if (!await this.app.vault.adapter.exists(backupFolder)) {
+			await this.app.vault.createFolder(backupFolder);
+		}
+
+		// Generate backup filename with timestamp
+		const now = new Date();
+		const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+		const backupFileName = `arrangements-backup-${timestamp}.json`;
+		const backupPath = `${backupFolder}/${backupFileName}`;
+
+		// Create backup data with metadata
+		const backupData = {
+			version: 1,
+			createdAt: now.toISOString(),
+			arrangementCount: Object.keys(allArrangements).length,
+			arrangements: allArrangements
+		};
+
+		// Write backup file
+		await this.app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
+
+		return { count: Object.keys(allArrangements).length, path: backupPath };
+	}
+
+	// List available backups
+	async listBackups(): Promise<{ name: string; path: string; date: Date }[]> {
+		const backupFolder = this.getBackupFolderPath();
+
+		if (!await this.app.vault.adapter.exists(backupFolder)) {
+			return [];
+		}
+
+		const files = await this.app.vault.adapter.list(backupFolder);
+		const backups: { name: string; path: string; date: Date }[] = [];
+
+		for (const filePath of files.files) {
+			if (filePath.endsWith('.json')) {
+				const fileName = filePath.split('/').pop() || '';
+				// Parse date from filename: arrangements-backup-YYYY-MM-DDTHH-MM-SS.json
+				const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
+				if (match) {
+					const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ':' : '-').replace('T', 'T');
+					const date = new Date(dateStr.slice(0, 10) + 'T' + dateStr.slice(11).replace(/-/g, ':'));
+					backups.push({ name: fileName, path: filePath, date });
+				}
+			}
+		}
+
+		// Sort by date, newest first
+		backups.sort((a, b) => b.date.getTime() - a.date.getTime());
+		return backups;
+	}
+
+	// Restore arrangements from a backup file
+	async restoreFromBackup(backupPath: string): Promise<{ restored: number; errors: number }> {
+		// Read backup file
+		const content = await this.app.vault.adapter.read(backupPath);
+		const backupData = JSON.parse(content);
+
+		if (!backupData.arrangements || typeof backupData.arrangements !== 'object') {
+			throw new Error('Invalid backup file format');
+		}
+
+		// Initialize external store if needed
+		if (!this.externalStore['initialized']) {
+			await this.externalStore.initialize();
+		}
+
+		let restored = 0;
+		let errors = 0;
+
+		for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
+			try {
+				// Restore each arrangement
+				const arrList = arrangements as Array<{ arrangement: unknown; savedAt: number }>;
+				for (const item of arrList) {
+					this.externalStore.set(uid, item.arrangement as any, this.settings.maxArrangementsPerNote);
+				}
+				restored++;
+			} catch (e) {
+				console.error(`[Perspecta] Failed to restore arrangements for UID ${uid}:`, e);
+				errors++;
+			}
+		}
+
+		// Flush to disk
+		await this.externalStore.flushDirty();
+
+		// Refresh indicators
+		this.filesWithContext.clear();
+		await this.setupFileExplorerIndicators();
+
+		return { restored, errors };
 	}
 
 	// Generate UIDs for any files in the context that don't have them
@@ -1013,9 +1158,16 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (!targetFile) { new Notice('No active file'); return; }
 
-		const context = await this.getContextForFile(targetFile);
-		PerfTimer.mark('getContextForFile');
+		// Get context - may show selector if multiple arrangements exist
+		const contextResult = await this.getContextForFileWithSelection(targetFile);
+		PerfTimer.mark('getContextForFileWithSelection');
 
+		if (!contextResult || contextResult.cancelled) {
+			PerfTimer.end('restoreContext');
+			return;
+		}
+
+		const context = contextResult.context;
 		if (!context) { new Notice('No context found in this note'); return; }
 
 		const focusedWin = await this.applyArrangement(context, targetFile.path);
@@ -1026,7 +1178,7 @@ export default class PerspectaPlugin extends Plugin {
 			await this.updateContextWithCorrectedPaths(targetFile, context);
 			PerfTimer.mark('updateContextWithCorrectedPaths');
 			const count = this.pathCorrections.size;
-			new Notice(`Context restored (${count} file path${count > 1 ? 's' : ''} updated)`);
+			new Notice(`Context restored (${count} file path${count > 1 ? 's' : ''} updated)`, 4000);
 		} else {
 			this.showNoticeInWindow(focusedWin, 'Context restored');
 		}
@@ -1039,6 +1191,59 @@ export default class PerspectaPlugin extends Plugin {
 				console.log(`[Perspecta] 🏁 Full restore (including render): ${totalTime.toFixed(0)}ms`);
 			}, { timeout: 5000 });
 		}
+	}
+
+	// Get context with potential user selection for multiple arrangements
+	private async getContextForFileWithSelection(file: TFile): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
+		// Canvas files store context directly in their JSON (single arrangement)
+		if (file.extension === 'canvas') {
+			return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+		}
+
+		// Base files store context directly in their YAML (single arrangement)
+		if (file.extension === 'base') {
+			return { context: await getContextFromBase(this.app, file), cancelled: false };
+		}
+
+		// For markdown files with external storage, check for multiple arrangements
+		if (this.settings.storageMode === 'external') {
+			const uid = getUidFromCache(this.app, file);
+			if (uid) {
+				// Initialize store if needed
+				if (!this.externalStore['initialized']) {
+					await this.externalStore.initialize();
+				}
+
+				const arrangements = this.externalStore.getAll(uid);
+
+				if (arrangements.length === 0) {
+					// No arrangements in external store, fall back to frontmatter
+					return { context: this.getContextFromNote(file), cancelled: false };
+				}
+
+				if (arrangements.length === 1) {
+					// Single arrangement - use it directly
+					return { context: arrangements[0].arrangement, cancelled: false };
+				}
+
+				// Multiple arrangements - show selector with delete callback
+				const result = await showArrangementSelector(
+					arrangements,
+					file.name,
+					(savedAt: number) => {
+						// Delete the arrangement from the store
+						this.externalStore.deleteArrangement(uid, savedAt);
+					}
+				);
+				if (result.cancelled) {
+					return { context: null, cancelled: true };
+				}
+				return { context: result.arrangement.arrangement, cancelled: false };
+			}
+		}
+
+		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
+		return { context: this.getContextFromNote(file), cancelled: false };
 	}
 
 	// Get context for file - handles markdown, canvas, base, and external storage
@@ -1149,7 +1354,7 @@ export default class PerspectaPlugin extends Plugin {
 						tiledPositions
 					});
 				}
-				new Notice(`Screen shape changed - tiling ${windowCount} windows`);
+				new Notice(`Screen shape changed - tiling ${windowCount} windows`, 4000);
 			}
 			PerfTimer.mark('checkTilingNeeded');
 
@@ -2723,7 +2928,7 @@ class PerspectaSettingTab extends PluginSettingTab {
 				.setButtonText(`Restore: ${restoreHotkey}`)
 				.setDisabled(true));
 
-		new Setting(containerEl).setName('Focus tint duration').setDesc('Seconds (0 = disabled)')
+		new Setting(containerEl).setName('Seconds for focus note highlight').setDesc('0 = disabled')
 			.addText(t => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async v => {
 				const n = parseFloat(v);
 				if (!isNaN(n) && n >= 0) { this.plugin.settings.focusTintDuration = n; await this.plugin.saveSettings(); }
@@ -2737,6 +2942,16 @@ class PerspectaSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h3', { text: 'Storage' });
 
+		new Setting(containerEl).setName('Perspecta folder')
+			.setDesc('Folder in your vault for Perspecta data (backups, scripts). Created if it doesn\'t exist.')
+			.addText(t => t
+				.setPlaceholder('perspecta')
+				.setValue(this.plugin.settings.perspectaFolderPath)
+				.onChange(async v => {
+					this.plugin.settings.perspectaFolderPath = v.trim() || 'perspecta';
+					await this.plugin.saveSettings();
+				}));
+
 		new Setting(containerEl).setName('Store window arrangements in frontmatter')
 			.setDesc('When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).')
 			.addToggle(t => t.setValue(this.plugin.settings.storageMode === 'frontmatter').onChange(async v => {
@@ -2749,6 +2964,37 @@ class PerspectaSettingTab extends PluginSettingTab {
 				// Refresh display to update button visibility
 				this.display();
 			}));
+
+		// Multi-arrangement settings (only shown for external storage mode)
+		if (this.plugin.settings.storageMode === 'external') {
+			new Setting(containerEl).setName('Maximum arrangements per note')
+				.setDesc('How many window arrangements to store per note. Older arrangements are automatically removed when the limit is reached.')
+				.addDropdown(d => d
+					.addOptions({
+						'1': '1',
+						'2': '2',
+						'3': '3',
+						'4': '4',
+						'5': '5'
+					})
+					.setValue(String(this.plugin.settings.maxArrangementsPerNote))
+					.onChange(async v => {
+						this.plugin.settings.maxArrangementsPerNote = parseInt(v);
+						await this.plugin.saveSettings();
+						// Refresh to show/hide auto-confirm option
+						this.display();
+					}));
+
+			// Auto-confirm only relevant when max is 1
+			if (this.plugin.settings.maxArrangementsPerNote === 1) {
+				new Setting(containerEl).setName('Auto-confirm overwrite')
+					.setDesc('Skip confirmation when overwriting an existing arrangement. Only applies when storing a single arrangement per note.')
+					.addToggle(t => t.setValue(this.plugin.settings.autoConfirmOverwrite).onChange(async v => {
+						this.plugin.settings.autoConfirmOverwrite = v;
+						await this.plugin.saveSettings();
+					}));
+			}
+		}
 
 		// Migration buttons - show based on current storage mode
 		if (this.plugin.settings.storageMode === 'frontmatter') {
@@ -2810,6 +3056,75 @@ class PerspectaSettingTab extends PluginSettingTab {
 					btn.setDisabled(false);
 					btn.setButtonText('Clean up');
 				}));
+
+		// Backup & Restore section
+		containerEl.createEl('h3', { text: 'Backup & Restore' });
+
+		new Setting(containerEl)
+			.setName('Backup arrangements')
+			.setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`)
+			.addButton(btn => btn
+				.setButtonText('Create backup')
+				.onClick(async () => {
+					btn.setDisabled(true);
+					btn.setButtonText('Backing up...');
+					try {
+						const result = await this.plugin.backupArrangements();
+						new Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`);
+						this.display(); // Refresh to show new backup in restore list
+					} catch (e) {
+						new Notice('Backup failed: ' + (e as Error).message);
+					}
+					btn.setDisabled(false);
+					btn.setButtonText('Create backup');
+				}));
+
+		// Restore from backup
+		new Setting(containerEl)
+			.setName('Restore from backup')
+			.setDesc('Restore arrangements from a previous backup. This will overwrite existing arrangements with the same UIDs.');
+
+		// Create backup list container below the setting
+		const backupListContainer = containerEl.createDiv({ cls: 'perspecta-backup-list-container' });
+
+		// Fetch available backups and create list
+		this.plugin.listBackups().then(backups => {
+			if (backups.length === 0) {
+				backupListContainer.createDiv({
+					cls: 'perspecta-backup-empty',
+					text: 'No backups available'
+				});
+			} else {
+				backups.forEach(backup => {
+					const item = backupListContainer.createDiv({ cls: 'perspecta-backup-item' });
+
+					const info = item.createDiv({ cls: 'perspecta-backup-info' });
+					info.createDiv({ cls: 'perspecta-backup-name', text: backup.name });
+					info.createDiv({
+						cls: 'perspecta-backup-date',
+						text: backup.date.toLocaleString()
+					});
+
+					const restoreBtn = item.createEl('button', {
+						cls: 'perspecta-backup-restore-btn',
+						text: 'Restore'
+					});
+
+					restoreBtn.addEventListener('click', async () => {
+						restoreBtn.disabled = true;
+						restoreBtn.textContent = 'Restoring...';
+						try {
+							const result = await this.plugin.restoreFromBackup(backup.path);
+							new Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ''}`);
+						} catch (e) {
+							new Notice('Restore failed: ' + (e as Error).message);
+						}
+						restoreBtn.disabled = false;
+						restoreBtn.textContent = 'Restore';
+					});
+				});
+			}
+		});
 
 		containerEl.createEl('h3', { text: 'Debug' });
 		new Setting(containerEl).setName('Show debug modal on save')

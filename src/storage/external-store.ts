@@ -1,10 +1,11 @@
 // ============================================================================
 // External Context Storage Manager
 // Stores context data as JSON files in the plugin folder
+// Supports multiple timestamped arrangements per file
 // ============================================================================
 
 import { App, DataAdapter, PluginManifest } from 'obsidian';
-import { WindowArrangementV2 } from '../types';
+import { WindowArrangementV2, ArrangementCollection, TimestampedArrangement } from '../types';
 import { PerfTimer } from '../utils/perf-timer';
 
 const CONTEXTS_FOLDER = 'contexts';
@@ -14,10 +15,15 @@ export interface ExternalStoreConfig {
 	manifest: PluginManifest;
 }
 
+// Type guard to check if data is old format (single arrangement) or new format (collection)
+function isArrangementCollection(data: unknown): data is ArrangementCollection {
+	return typeof data === 'object' && data !== null && 'arrangements' in data && Array.isArray((data as ArrangementCollection).arrangements);
+}
+
 export class ExternalContextStore {
 	private app: App;
 	private manifest: PluginManifest;
-	private cache: Map<string, WindowArrangementV2> = new Map();
+	private cache: Map<string, ArrangementCollection> = new Map();
 	private dirty: Set<string> = new Set();
 	private saveTimeout: ReturnType<typeof setTimeout> | null = null;
 	private initialized = false;
@@ -53,7 +59,21 @@ export class ExternalContextStore {
 						const data = JSON.parse(content);
 						const uid = file.split('/').pop()?.replace('.json', '');
 						if (uid && data) {
-							this.cache.set(uid, data as WindowArrangementV2);
+							// Handle migration from old format (single arrangement) to new format (collection)
+							if (isArrangementCollection(data)) {
+								this.cache.set(uid, data);
+							} else {
+								// Migrate old single arrangement to collection format
+								const arrangement = data as WindowArrangementV2;
+								const collection: ArrangementCollection = {
+									arrangements: [{
+										arrangement,
+										savedAt: arrangement.ts || Date.now()
+									}]
+								};
+								this.cache.set(uid, collection);
+								this.dirty.add(uid); // Mark for re-save in new format
+							}
 						}
 					} catch (e) {
 						console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
@@ -70,16 +90,74 @@ export class ExternalContextStore {
 		}
 	}
 
+	// Get the most recent arrangement (for backward compatibility)
 	get(uid: string): WindowArrangementV2 | null {
-		return this.cache.get(uid) || null;
+		const collection = this.cache.get(uid);
+		if (!collection || collection.arrangements.length === 0) return null;
+		// Return the most recent arrangement
+		return collection.arrangements[collection.arrangements.length - 1].arrangement;
+	}
+
+	// Get all arrangements for a UID
+	getAll(uid: string): TimestampedArrangement[] {
+		const collection = this.cache.get(uid);
+		if (!collection) return [];
+		// Return sorted by timestamp, newest first
+		return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+	}
+
+	// Get arrangement count for a UID
+	getCount(uid: string): number {
+		const collection = this.cache.get(uid);
+		return collection?.arrangements.length ?? 0;
 	}
 
 	has(uid: string): boolean {
-		return this.cache.has(uid);
+		const collection = this.cache.get(uid);
+		return collection !== undefined && collection.arrangements.length > 0;
 	}
 
-	set(uid: string, context: WindowArrangementV2): void {
-		this.cache.set(uid, context);
+	// Add a new arrangement, respecting the max limit
+	set(uid: string, context: WindowArrangementV2, maxArrangements: number = 1): void {
+		let collection = this.cache.get(uid);
+
+		if (!collection) {
+			collection = { arrangements: [] };
+		}
+
+		// Add the new arrangement
+		const timestamped: TimestampedArrangement = {
+			arrangement: context,
+			savedAt: Date.now()
+		};
+		collection.arrangements.push(timestamped);
+
+		// Sort by timestamp (oldest first for easier pruning)
+		collection.arrangements.sort((a, b) => a.savedAt - b.savedAt);
+
+		// Prune oldest arrangements if over the limit
+		while (collection.arrangements.length > maxArrangements) {
+			collection.arrangements.shift();
+		}
+
+		this.cache.set(uid, collection);
+		this.dirty.add(uid);
+		this.scheduleSave();
+	}
+
+	// Delete a specific arrangement by timestamp
+	deleteArrangement(uid: string, savedAt: number): void {
+		const collection = this.cache.get(uid);
+		if (!collection) return;
+
+		collection.arrangements = collection.arrangements.filter(a => a.savedAt !== savedAt);
+
+		if (collection.arrangements.length === 0) {
+			this.cache.delete(uid);
+		} else {
+			this.cache.set(uid, collection);
+		}
+
 		this.dirty.add(uid);
 		this.scheduleSave();
 	}
@@ -122,15 +200,25 @@ export class ExternalContextStore {
 		this.dirty.clear();
 
 		for (const uid of toSave) {
-			const context = this.cache.get(uid);
-			if (context) {
-				const filePath = `${contextsPath}/${uid}.json`;
+			const collection = this.cache.get(uid);
+			const filePath = `${contextsPath}/${uid}.json`;
+
+			if (collection && collection.arrangements.length > 0) {
 				try {
-					const json = JSON.stringify(context);
+					const json = JSON.stringify(collection);
 					await this.adapter.write(filePath, json);
 				} catch (e) {
 					console.error(`[Perspecta] Failed to save context: ${uid}`, e);
 					this.dirty.add(uid);
+				}
+			} else {
+				// If collection is empty, delete the file
+				try {
+					if (await this.adapter.exists(filePath)) {
+						await this.adapter.remove(filePath);
+					}
+				} catch (e) {
+					console.warn(`[Perspecta] Failed to delete empty context file: ${filePath}`, e);
 				}
 			}
 		}

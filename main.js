@@ -34,11 +34,14 @@ var DEFAULT_SETTINGS = {
   enableVisualMapping: true,
   enableAutomation: true,
   automationScriptsPath: "perspecta/scripts/",
+  perspectaFolderPath: "perspecta",
   showDebugModal: true,
   enableDebugLogging: false,
   focusTintDuration: 8,
   autoGenerateUids: true,
-  storageMode: "frontmatter"
+  storageMode: "frontmatter",
+  maxArrangementsPerNote: 1,
+  autoConfirmOverwrite: false
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
@@ -393,6 +396,9 @@ async function baseHasContext(app, file) {
 
 // src/storage/external-store.ts
 var CONTEXTS_FOLDER = "contexts";
+function isArrangementCollection(data) {
+  return typeof data === "object" && data !== null && "arrangements" in data && Array.isArray(data.arrangements);
+}
 var ExternalContextStore = class {
   constructor(config) {
     this.cache = /* @__PURE__ */ new Map();
@@ -425,7 +431,19 @@ var ExternalContextStore = class {
             const data = JSON.parse(content);
             const uid = (_a = file.split("/").pop()) == null ? void 0 : _a.replace(".json", "");
             if (uid && data) {
-              this.cache.set(uid, data);
+              if (isArrangementCollection(data)) {
+                this.cache.set(uid, data);
+              } else {
+                const arrangement = data;
+                const collection = {
+                  arrangements: [{
+                    arrangement,
+                    savedAt: arrangement.ts || Date.now()
+                  }]
+                };
+                this.cache.set(uid, collection);
+                this.dirty.add(uid);
+              }
             }
           } catch (e) {
             console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
@@ -440,14 +458,60 @@ var ExternalContextStore = class {
       console.error("[Perspecta] Failed to initialize external store:", e);
     }
   }
+  // Get the most recent arrangement (for backward compatibility)
   get(uid) {
-    return this.cache.get(uid) || null;
+    const collection = this.cache.get(uid);
+    if (!collection || collection.arrangements.length === 0)
+      return null;
+    return collection.arrangements[collection.arrangements.length - 1].arrangement;
+  }
+  // Get all arrangements for a UID
+  getAll(uid) {
+    const collection = this.cache.get(uid);
+    if (!collection)
+      return [];
+    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+  }
+  // Get arrangement count for a UID
+  getCount(uid) {
+    var _a;
+    const collection = this.cache.get(uid);
+    return (_a = collection == null ? void 0 : collection.arrangements.length) != null ? _a : 0;
   }
   has(uid) {
-    return this.cache.has(uid);
+    const collection = this.cache.get(uid);
+    return collection !== void 0 && collection.arrangements.length > 0;
   }
-  set(uid, context) {
-    this.cache.set(uid, context);
+  // Add a new arrangement, respecting the max limit
+  set(uid, context, maxArrangements = 1) {
+    let collection = this.cache.get(uid);
+    if (!collection) {
+      collection = { arrangements: [] };
+    }
+    const timestamped = {
+      arrangement: context,
+      savedAt: Date.now()
+    };
+    collection.arrangements.push(timestamped);
+    collection.arrangements.sort((a, b) => a.savedAt - b.savedAt);
+    while (collection.arrangements.length > maxArrangements) {
+      collection.arrangements.shift();
+    }
+    this.cache.set(uid, collection);
+    this.dirty.add(uid);
+    this.scheduleSave();
+  }
+  // Delete a specific arrangement by timestamp
+  deleteArrangement(uid, savedAt) {
+    const collection = this.cache.get(uid);
+    if (!collection)
+      return;
+    collection.arrangements = collection.arrangements.filter((a) => a.savedAt !== savedAt);
+    if (collection.arrangements.length === 0) {
+      this.cache.delete(uid);
+    } else {
+      this.cache.set(uid, collection);
+    }
     this.dirty.add(uid);
     this.scheduleSave();
   }
@@ -482,15 +546,23 @@ var ExternalContextStore = class {
     const toSave = Array.from(this.dirty);
     this.dirty.clear();
     for (const uid of toSave) {
-      const context = this.cache.get(uid);
-      if (context) {
-        const filePath = `${contextsPath}/${uid}.json`;
+      const collection = this.cache.get(uid);
+      const filePath = `${contextsPath}/${uid}.json`;
+      if (collection && collection.arrangements.length > 0) {
         try {
-          const json = JSON.stringify(context);
+          const json = JSON.stringify(collection);
           await this.adapter.write(filePath, json);
         } catch (e) {
           console.error(`[Perspecta] Failed to save context: ${uid}`, e);
           this.dirty.add(uid);
+        }
+      } else {
+        try {
+          if (await this.adapter.exists(filePath)) {
+            await this.adapter.remove(filePath);
+          }
+        } catch (e) {
+          console.warn(`[Perspecta] Failed to delete empty context file: ${filePath}`, e);
         }
       }
     }
@@ -505,6 +577,533 @@ var ExternalContextStore = class {
     await this.flushDirty();
   }
 };
+
+// src/ui/modals.ts
+var SVG_NS = "http://www.w3.org/2000/svg";
+function generateArrangementPreview(arrangement, width, height) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+  const arr = arrangement.arrangement;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.classList.add("perspecta-arrangement-preview");
+  const padding = 2;
+  const cornerRadius = 2;
+  const screenWidth = (_b = (_a = arr.sourceScreen) == null ? void 0 : _a.width) != null ? _b : 1920;
+  const screenHeight = (_d = (_c = arr.sourceScreen) == null ? void 0 : _c.height) != null ? _d : 1080;
+  const availableWidth = width - padding * 2;
+  const availableHeight = height - padding * 2;
+  const scale = Math.min(availableWidth / screenWidth, availableHeight / screenHeight);
+  const scaledScreenWidth = screenWidth * scale;
+  const scaledScreenHeight = screenHeight * scale;
+  const screenX = padding + (availableWidth - scaledScreenWidth) / 2;
+  const screenY = padding + (availableHeight - scaledScreenHeight) / 2;
+  const screenRect = createRect({
+    x: screenX,
+    y: screenY,
+    width: scaledScreenWidth,
+    height: scaledScreenHeight
+  }, "var(--background-modifier-border)", "none", cornerRadius);
+  svg.appendChild(screenRect);
+  const windows = [];
+  if (arr.main) {
+    windows.push({ state: arr.main, isMain: true });
+  }
+  if (arr.popouts) {
+    arr.popouts.forEach((p) => windows.push({ state: p, isMain: false }));
+  }
+  windows.forEach(({ state, isMain }) => {
+    var _a2, _b2, _c2, _d2;
+    const x = (_a2 = state.x) != null ? _a2 : 0;
+    const y = (_b2 = state.y) != null ? _b2 : 0;
+    const w = (_c2 = state.width) != null ? _c2 : 800;
+    const h = (_d2 = state.height) != null ? _d2 : 600;
+    const winRect = {
+      x: screenX + x * scale,
+      y: screenY + y * scale,
+      width: w * scale,
+      height: h * scale
+    };
+    const windowEl = createRect(
+      winRect,
+      "var(--background-primary)",
+      "var(--background-primary-alt)",
+      cornerRadius
+    );
+    windowEl.setAttribute("stroke-width", "1");
+    svg.appendChild(windowEl);
+    if (isMain) {
+      const sidebarWidth = Math.max(5, winRect.width * 0.18);
+      const sidebarPadding = 2;
+      if (arr.leftSidebar && !arr.leftSidebar.collapsed) {
+        const leftSidebar = createRect({
+          x: winRect.x + sidebarPadding,
+          y: winRect.y + sidebarPadding,
+          width: sidebarWidth,
+          height: winRect.height - sidebarPadding * 2
+        }, "var(--background-modifier-border)", "none", 1);
+        svg.appendChild(leftSidebar);
+      }
+      if (arr.rightSidebar && !arr.rightSidebar.collapsed) {
+        const rightSidebar = createRect({
+          x: winRect.x + winRect.width - sidebarWidth - sidebarPadding,
+          y: winRect.y + sidebarPadding,
+          width: sidebarWidth,
+          height: winRect.height - sidebarPadding * 2
+        }, "var(--background-modifier-border)", "none", 1);
+        svg.appendChild(rightSidebar);
+      }
+    }
+    if (state.root) {
+      drawSplitLines(svg, state.root, winRect);
+      drawTabAreas(svg, state.root, winRect);
+    }
+  });
+  const focusedWindowIndex = (_e = arr.focusedWindow) != null ? _e : -1;
+  let focusedState = null;
+  if (focusedWindowIndex === -1 && arr.main) {
+    focusedState = arr.main;
+  } else if (focusedWindowIndex >= 0 && arr.popouts && arr.popouts[focusedWindowIndex]) {
+    focusedState = arr.popouts[focusedWindowIndex];
+  }
+  if (focusedState == null ? void 0 : focusedState.root) {
+    const x = (_f = focusedState.x) != null ? _f : 0;
+    const y = (_g = focusedState.y) != null ? _g : 0;
+    const w = (_h = focusedState.width) != null ? _h : 800;
+    const h = (_i = focusedState.height) != null ? _i : 600;
+    const winRect = {
+      x: screenX + x * scale,
+      y: screenY + y * scale,
+      width: w * scale,
+      height: h * scale
+    };
+    drawFocusHighlight(svg, focusedState.root, winRect, cornerRadius);
+  }
+  return svg;
+}
+function drawSplitLines(svg, node, bounds) {
+  if (!node || node.type !== "split")
+    return;
+  const children = node.children || [];
+  if (children.length < 2)
+    return;
+  const sizes = node.sizes || children.map(() => 1 / children.length);
+  const direction = node.direction;
+  const totalSize = sizes.reduce((a, b) => a + b, 0);
+  const normalizedSizes = sizes.map((s) => s / totalSize);
+  let offset = 0;
+  children.forEach((child, i) => {
+    const size = normalizedSizes[i] || 1 / children.length;
+    if (i > 0) {
+      const line = document.createElementNS(SVG_NS, "line");
+      if (direction === "vertical") {
+        const lineX = bounds.x + offset * bounds.width;
+        line.setAttribute("x1", String(lineX));
+        line.setAttribute("y1", String(bounds.y + 2));
+        line.setAttribute("x2", String(lineX));
+        line.setAttribute("y2", String(bounds.y + bounds.height - 2));
+      } else {
+        const lineY = bounds.y + offset * bounds.height;
+        line.setAttribute("x1", String(bounds.x + 2));
+        line.setAttribute("y1", String(lineY));
+        line.setAttribute("x2", String(bounds.x + bounds.width - 2));
+        line.setAttribute("y2", String(lineY));
+      }
+      line.setAttribute("stroke", "var(--text-muted)");
+      line.setAttribute("stroke-width", "1");
+      line.setAttribute("stroke-dasharray", "2,2");
+      line.setAttribute("opacity", "0.6");
+      svg.appendChild(line);
+    }
+    let childBounds;
+    if (direction === "vertical") {
+      childBounds = {
+        x: bounds.x + offset * bounds.width,
+        y: bounds.y,
+        width: size * bounds.width,
+        height: bounds.height
+      };
+    } else {
+      childBounds = {
+        x: bounds.x,
+        y: bounds.y + offset * bounds.height,
+        width: bounds.width,
+        height: size * bounds.height
+      };
+    }
+    drawSplitLines(svg, child, childBounds);
+    offset += size;
+  });
+}
+function drawFocusHighlight(svg, node, bounds, cornerRadius) {
+  var _a;
+  if (!node)
+    return false;
+  if (node.type === "tabs") {
+    const hasActive = (_a = node.tabs) == null ? void 0 : _a.some((t) => t.active);
+    if (hasActive) {
+      const highlight = createRect(bounds, "none", "var(--interactive-accent)", cornerRadius);
+      highlight.setAttribute("stroke-width", "1.5");
+      svg.appendChild(highlight);
+      return true;
+    }
+    return false;
+  }
+  if (node.type === "split") {
+    const children = node.children || [];
+    if (children.length === 0)
+      return false;
+    const sizes = node.sizes || children.map(() => 1 / children.length);
+    const direction = node.direction;
+    const totalSize = sizes.reduce((a, b) => a + b, 0);
+    const normalizedSizes = sizes.map((s) => s / totalSize);
+    let offset = 0;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const size = normalizedSizes[i] || 1 / children.length;
+      let childBounds;
+      if (direction === "vertical") {
+        childBounds = {
+          x: bounds.x + offset * bounds.width,
+          y: bounds.y,
+          width: size * bounds.width,
+          height: bounds.height
+        };
+      } else {
+        childBounds = {
+          x: bounds.x,
+          y: bounds.y + offset * bounds.height,
+          width: bounds.width,
+          height: size * bounds.height
+        };
+      }
+      if (drawFocusHighlight(svg, child, childBounds, cornerRadius)) {
+        return true;
+      }
+      offset += size;
+    }
+  }
+  return false;
+}
+function drawTabAreas(svg, node, bounds) {
+  if (!node)
+    return;
+  if (node.type === "tabs") {
+    const tabs = node.tabs || [];
+    if (tabs.length === 0)
+      return;
+    const noteNames = tabs.map((tab) => {
+      if (tab.name)
+        return tab.name;
+      const path = tab.path || "";
+      const fileName = path.split("/").pop() || path;
+      return fileName.replace(/\.md$/, "");
+    });
+    const activeIndex = tabs.findIndex((t) => t.active);
+    let tooltipText;
+    if (tabs.length === 1) {
+      tooltipText = noteNames[0];
+    } else {
+      tooltipText = noteNames.map(
+        (name, i) => i === activeIndex ? `\u25B8 ${name}` : `  ${name}`
+      ).join("\n");
+    }
+    const area = document.createElementNS(SVG_NS, "rect");
+    area.setAttribute("x", String(bounds.x));
+    area.setAttribute("y", String(bounds.y));
+    area.setAttribute("width", String(Math.max(0, bounds.width)));
+    area.setAttribute("height", String(Math.max(0, bounds.height)));
+    area.setAttribute("fill", "transparent");
+    area.setAttribute("class", "perspecta-preview-tab-area");
+    area.setAttribute("data-tooltip", tooltipText);
+    svg.appendChild(area);
+    return;
+  }
+  if (node.type === "split") {
+    const children = node.children || [];
+    if (children.length === 0)
+      return;
+    const sizes = node.sizes || children.map(() => 1 / children.length);
+    const direction = node.direction;
+    const totalSize = sizes.reduce((a, b) => a + b, 0);
+    const normalizedSizes = sizes.map((s) => s / totalSize);
+    let offset = 0;
+    children.forEach((child, i) => {
+      const size = normalizedSizes[i] || 1 / children.length;
+      let childBounds;
+      if (direction === "vertical") {
+        childBounds = {
+          x: bounds.x + offset * bounds.width,
+          y: bounds.y,
+          width: size * bounds.width,
+          height: bounds.height
+        };
+      } else {
+        childBounds = {
+          x: bounds.x,
+          y: bounds.y + offset * bounds.height,
+          width: bounds.width,
+          height: size * bounds.height
+        };
+      }
+      drawTabAreas(svg, child, childBounds);
+      offset += size;
+    });
+  }
+}
+function setupPreviewTooltips(container, doc) {
+  let tooltip = null;
+  const showTooltip = (e) => {
+    const target = e.target;
+    const text = target.getAttribute("data-tooltip");
+    if (!text)
+      return;
+    if (tooltip)
+      tooltip.remove();
+    tooltip = doc.createElement("div");
+    tooltip.className = "perspecta-preview-tooltip";
+    tooltip.textContent = text;
+    doc.body.appendChild(tooltip);
+    const rect = target.getBoundingClientRect();
+    tooltip.style.left = `${rect.right + 8}px`;
+    tooltip.style.top = `${rect.top}px`;
+    const tooltipRect = tooltip.getBoundingClientRect();
+    if (tooltipRect.right > doc.documentElement.clientWidth) {
+      tooltip.style.left = `${rect.left - tooltipRect.width - 8}px`;
+    }
+    if (tooltipRect.bottom > doc.documentElement.clientHeight) {
+      tooltip.style.top = `${doc.documentElement.clientHeight - tooltipRect.height - 8}px`;
+    }
+  };
+  const hideTooltip = () => {
+    if (tooltip) {
+      tooltip.remove();
+      tooltip = null;
+    }
+  };
+  container.addEventListener("mouseover", (e) => {
+    if (e.target.classList.contains("perspecta-preview-tab-area")) {
+      showTooltip(e);
+    }
+  });
+  container.addEventListener("mouseout", (e) => {
+    if (e.target.classList.contains("perspecta-preview-tab-area")) {
+      hideTooltip();
+    }
+  });
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.removedNodes.forEach((node) => {
+        var _a;
+        if (node === container || ((_a = node.contains) == null ? void 0 : _a.call(node, container))) {
+          hideTooltip();
+          observer.disconnect();
+        }
+      });
+    });
+  });
+  observer.observe(doc.body, { childList: true, subtree: true });
+}
+function createRect(rect, fill, stroke, rx) {
+  const rectEl = document.createElementNS(SVG_NS, "rect");
+  rectEl.setAttribute("x", String(rect.x));
+  rectEl.setAttribute("y", String(rect.y));
+  rectEl.setAttribute("width", String(Math.max(0, rect.width)));
+  rectEl.setAttribute("height", String(Math.max(0, rect.height)));
+  rectEl.setAttribute("fill", fill);
+  rectEl.setAttribute("stroke", stroke);
+  rectEl.setAttribute("rx", String(rx));
+  return rectEl;
+}
+function formatTimestamp(ts) {
+  const date = new Date(ts);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = date.toDateString() === yesterday.toDateString();
+  const timeStr = date.toLocaleTimeString(void 0, {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  if (isToday) {
+    return `Today at ${timeStr}`;
+  } else if (isYesterday) {
+    return `Yesterday at ${timeStr}`;
+  } else {
+    const dateStr = date.toLocaleDateString(void 0, {
+      month: "short",
+      day: "numeric",
+      year: date.getFullYear() !== now.getFullYear() ? "numeric" : void 0
+    });
+    return `${dateStr} at ${timeStr}`;
+  }
+}
+function getArrangementSummary(arrangement) {
+  var _a, _b, _c, _d;
+  const arr = arrangement.arrangement;
+  const windowCount = 1 + ((_b = (_a = arr.popouts) == null ? void 0 : _a.length) != null ? _b : 0);
+  let tabCount = 0;
+  const countTabs = (node) => {
+    if (!node || typeof node !== "object")
+      return;
+    const n = node;
+    if (n.type === "tabs" && Array.isArray(n.tabs)) {
+      tabCount += n.tabs.length;
+    } else if (n.type === "split" && Array.isArray(n.children)) {
+      n.children.forEach(countTabs);
+    }
+  };
+  countTabs((_c = arr.main) == null ? void 0 : _c.root);
+  (_d = arr.popouts) == null ? void 0 : _d.forEach((p) => countTabs(p.root));
+  const windowText = windowCount === 1 ? "1 window" : `${windowCount} windows`;
+  const tabText = tabCount === 1 ? "1 tab" : `${tabCount} tabs`;
+  return `${windowText}, ${tabText}`;
+}
+function showArrangementSelector(arrangements, fileName, onDelete, targetWindow = window) {
+  return new Promise((resolve) => {
+    const doc = targetWindow.document;
+    const overlay = doc.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = doc.createElement("div");
+    modal.className = "perspecta-arrangement-selector";
+    const title = modal.createDiv({ cls: "perspecta-modal-title" });
+    title.setText(`Select Arrangement - ${fileName}`);
+    const subtitle = modal.createDiv({ cls: "perspecta-modal-subtitle" });
+    const updateSubtitle = (count) => {
+      subtitle.setText(`${count} saved arrangement${count > 1 ? "s" : ""}`);
+    };
+    updateSubtitle(arrangements.length);
+    const list = modal.createDiv({ cls: "perspecta-arrangement-list" });
+    const sorted = [...arrangements].sort((a, b) => b.savedAt - a.savedAt);
+    const cleanup = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    const renderList = () => {
+      list.empty();
+      const remaining = sorted.filter((a) => !deletedTimestamps.has(a.savedAt));
+      updateSubtitle(remaining.length);
+      if (remaining.length === 0) {
+        cleanup();
+        resolve({ arrangement: sorted[0], cancelled: true });
+        return;
+      }
+      remaining.forEach((arr, index) => {
+        const item = list.createDiv({ cls: "perspecta-arrangement-item" });
+        const previewContainer = item.createDiv({ cls: "perspecta-arrangement-preview-container" });
+        const preview = generateArrangementPreview(arr, 80, 50);
+        previewContainer.appendChild(preview);
+        setupPreviewTooltips(previewContainer, doc);
+        const info = item.createDiv({ cls: "perspecta-arrangement-info" });
+        const timeLabel = info.createDiv({ cls: "perspecta-arrangement-time" });
+        timeLabel.setText(formatTimestamp(arr.savedAt));
+        if (index === 0) {
+          const badge = timeLabel.createSpan({ cls: "perspecta-arrangement-badge" });
+          badge.setText("Latest");
+        }
+        const summary = info.createDiv({ cls: "perspecta-arrangement-summary" });
+        summary.setText(getArrangementSummary(arr));
+        const deleteBtn = item.createDiv({ cls: "perspecta-arrangement-delete" });
+        deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+					<circle cx="12" cy="12" r="10"/>
+					<line x1="15" y1="9" x2="9" y2="15"/>
+					<line x1="9" y1="9" x2="15" y2="15"/>
+				</svg>`;
+        deleteBtn.setAttribute("aria-label", "Delete arrangement");
+        deleteBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deletedTimestamps.add(arr.savedAt);
+          if (onDelete) {
+            onDelete(arr.savedAt);
+          }
+          renderList();
+        });
+        item.addEventListener("click", () => {
+          cleanup();
+          resolve({ arrangement: arr, cancelled: false });
+        });
+      });
+    };
+    const deletedTimestamps = /* @__PURE__ */ new Set();
+    renderList();
+    const buttonRow = modal.createDiv({ cls: "perspecta-modal-buttons" });
+    const cancelBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-secondary",
+      text: "Cancel"
+    });
+    overlay.onclick = () => {
+      cleanup();
+      resolve({ arrangement: sorted[0], cancelled: true });
+    };
+    cancelBtn.addEventListener("click", () => {
+      cleanup();
+      resolve({ arrangement: sorted[0], cancelled: true });
+    });
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(modal);
+  });
+}
+function showConfirmOverwrite(existingArrangement, fileName, targetWindow = window) {
+  return new Promise((resolve) => {
+    const doc = targetWindow.document;
+    const overlay = doc.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = doc.createElement("div");
+    modal.className = "perspecta-confirm-modal";
+    const title = modal.createDiv({ cls: "perspecta-modal-title" });
+    title.setText("Overwrite Arrangement?");
+    const content = modal.createDiv({ cls: "perspecta-confirm-content" });
+    content.createDiv({ text: `"${fileName}" already has a saved arrangement:` });
+    const existingInfo = content.createDiv({ cls: "perspecta-existing-info" });
+    const previewContainer = existingInfo.createDiv({ cls: "perspecta-arrangement-preview-container" });
+    const preview = generateArrangementPreview(existingArrangement, 80, 50);
+    previewContainer.appendChild(preview);
+    setupPreviewTooltips(previewContainer, doc);
+    const infoText = existingInfo.createDiv({ cls: "perspecta-existing-info-text" });
+    infoText.createDiv({
+      cls: "perspecta-arrangement-time",
+      text: formatTimestamp(existingArrangement.savedAt)
+    });
+    infoText.createDiv({
+      cls: "perspecta-arrangement-summary",
+      text: getArrangementSummary(existingArrangement)
+    });
+    content.createDiv({
+      cls: "perspecta-confirm-warning",
+      text: "This will replace the existing arrangement."
+    });
+    const buttonRow = modal.createDiv({ cls: "perspecta-modal-buttons" });
+    const cancelBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-secondary",
+      text: "Cancel"
+    });
+    const confirmBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-primary",
+      text: "Overwrite"
+    });
+    const cleanup = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    overlay.onclick = () => {
+      cleanup();
+      resolve({ confirmed: false });
+    };
+    cancelBtn.addEventListener("click", () => {
+      cleanup();
+      resolve({ confirmed: false });
+    });
+    confirmBtn.addEventListener("click", () => {
+      cleanup();
+      resolve({ confirmed: true });
+    });
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(modal);
+    confirmBtn.focus();
+  });
+}
 
 // src/main.ts
 function resolveFile(app, tab) {
@@ -878,6 +1477,7 @@ var PerspectaPlugin = class extends import_obsidian2.Plugin {
       context = await this.ensureUidsForContext(context);
       PerfTimer.mark("ensureUidsForContext");
     }
+    let saved = true;
     if (isCanvas) {
       await saveContextToCanvas(this.app, targetFile, context);
       this.filesWithContext.add(targetFile.path);
@@ -889,21 +1489,24 @@ var PerspectaPlugin = class extends import_obsidian2.Plugin {
       this.debouncedRefreshIndicators();
       PerfTimer.mark("saveContextToBase");
     } else if (this.settings.storageMode === "external") {
-      await this.saveContextExternal(targetFile, context);
+      saved = await this.saveContextExternal(targetFile, context);
       PerfTimer.mark("saveContextExternal");
     } else {
       await this.saveArrangementToNote(targetFile, context);
       PerfTimer.mark("saveArrangementToNote");
     }
-    if (this.settings.showDebugModal) {
-      this.showContextDebugModal(context, targetFile.name);
-      PerfTimer.mark("showContextDebugModal");
-    } else {
-      new import_obsidian2.Notice(`Context saved to ${targetFile.name}`);
+    if (saved) {
+      if (this.settings.showDebugModal) {
+        this.showContextDebugModal(context, targetFile.name);
+        PerfTimer.mark("showContextDebugModal");
+      } else {
+        new import_obsidian2.Notice(`Context saved to ${targetFile.name}`, 4e3);
+      }
     }
     PerfTimer.end("saveContext");
   }
   // Save context to external store (using file's UID as key)
+  // Returns true if save was successful, false if cancelled
   async saveContextExternal(file, context) {
     let uid = getUidFromCache(this.app, file);
     if (!uid) {
@@ -914,10 +1517,22 @@ var PerspectaPlugin = class extends import_obsidian2.Plugin {
     if (!this.externalStore["initialized"]) {
       await this.externalStore.initialize();
     }
-    this.externalStore.set(uid, context);
+    const maxArrangements = this.settings.maxArrangementsPerNote;
+    const existingCount = this.externalStore.getCount(uid);
+    if (maxArrangements === 1 && existingCount > 0 && !this.settings.autoConfirmOverwrite) {
+      const existingArrangements = this.externalStore.getAll(uid);
+      if (existingArrangements.length > 0) {
+        const result = await showConfirmOverwrite(existingArrangements[0], file.name);
+        if (!result.confirmed) {
+          return false;
+        }
+      }
+    }
+    this.externalStore.set(uid, context, maxArrangements);
     await this.removeArrangementFromFrontmatter(file);
     this.filesWithContext.add(file.path);
     this.debouncedRefreshIndicators();
+    return true;
   }
   // Remove perspecta-arrangement property from a file's frontmatter
   async removeArrangementFromFrontmatter(file) {
@@ -1021,6 +1636,92 @@ ${newFm}
     this.filesWithContext.clear();
     await this.setupFileExplorerIndicators();
     return { migrated, errors };
+  }
+  // Get the backup folder path
+  getBackupFolderPath() {
+    const basePath = this.settings.perspectaFolderPath.replace(/\/+$/, "");
+    return `${basePath}/backups`;
+  }
+  // Backup all arrangements to the perspecta folder
+  async backupArrangements() {
+    if (!this.externalStore["initialized"]) {
+      await this.externalStore.initialize();
+    }
+    const allArrangements = {};
+    const uids = this.externalStore.getAllUids();
+    for (const uid of uids) {
+      const arrangements = this.externalStore.getAll(uid);
+      if (arrangements.length > 0) {
+        allArrangements[uid] = arrangements;
+      }
+    }
+    const backupFolder = this.getBackupFolderPath();
+    if (!await this.app.vault.adapter.exists(backupFolder)) {
+      await this.app.vault.createFolder(backupFolder);
+    }
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const backupFileName = `arrangements-backup-${timestamp}.json`;
+    const backupPath = `${backupFolder}/${backupFileName}`;
+    const backupData = {
+      version: 1,
+      createdAt: now.toISOString(),
+      arrangementCount: Object.keys(allArrangements).length,
+      arrangements: allArrangements
+    };
+    await this.app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
+    return { count: Object.keys(allArrangements).length, path: backupPath };
+  }
+  // List available backups
+  async listBackups() {
+    const backupFolder = this.getBackupFolderPath();
+    if (!await this.app.vault.adapter.exists(backupFolder)) {
+      return [];
+    }
+    const files = await this.app.vault.adapter.list(backupFolder);
+    const backups = [];
+    for (const filePath of files.files) {
+      if (filePath.endsWith(".json")) {
+        const fileName = filePath.split("/").pop() || "";
+        const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
+        if (match) {
+          const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
+          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          backups.push({ name: fileName, path: filePath, date });
+        }
+      }
+    }
+    backups.sort((a, b) => b.date.getTime() - a.date.getTime());
+    return backups;
+  }
+  // Restore arrangements from a backup file
+  async restoreFromBackup(backupPath) {
+    const content = await this.app.vault.adapter.read(backupPath);
+    const backupData = JSON.parse(content);
+    if (!backupData.arrangements || typeof backupData.arrangements !== "object") {
+      throw new Error("Invalid backup file format");
+    }
+    if (!this.externalStore["initialized"]) {
+      await this.externalStore.initialize();
+    }
+    let restored = 0;
+    let errors = 0;
+    for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
+      try {
+        const arrList = arrangements;
+        for (const item of arrList) {
+          this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+        }
+        restored++;
+      } catch (e) {
+        console.error(`[Perspecta] Failed to restore arrangements for UID ${uid}:`, e);
+        errors++;
+      }
+    }
+    await this.externalStore.flushDirty();
+    this.filesWithContext.clear();
+    await this.setupFileExplorerIndicators();
+    return { restored, errors };
   }
   // Generate UIDs for any files in the context that don't have them
   async ensureUidsForContext(context) {
@@ -1244,8 +1945,13 @@ ${content}`;
       new import_obsidian2.Notice("No active file");
       return;
     }
-    const context = await this.getContextForFile(targetFile);
-    PerfTimer.mark("getContextForFile");
+    const contextResult = await this.getContextForFileWithSelection(targetFile);
+    PerfTimer.mark("getContextForFileWithSelection");
+    if (!contextResult || contextResult.cancelled) {
+      PerfTimer.end("restoreContext");
+      return;
+    }
+    const context = contextResult.context;
     if (!context) {
       new import_obsidian2.Notice("No context found in this note");
       return;
@@ -1256,7 +1962,7 @@ ${content}`;
       await this.updateContextWithCorrectedPaths(targetFile, context);
       PerfTimer.mark("updateContextWithCorrectedPaths");
       const count = this.pathCorrections.size;
-      new import_obsidian2.Notice(`Context restored (${count} file path${count > 1 ? "s" : ""} updated)`);
+      new import_obsidian2.Notice(`Context restored (${count} file path${count > 1 ? "s" : ""} updated)`, 4e3);
     } else {
       this.showNoticeInWindow(focusedWin, "Context restored");
     }
@@ -1267,6 +1973,42 @@ ${content}`;
         console.log(`[Perspecta] \u{1F3C1} Full restore (including render): ${totalTime.toFixed(0)}ms`);
       }, { timeout: 5e3 });
     }
+  }
+  // Get context with potential user selection for multiple arrangements
+  async getContextForFileWithSelection(file) {
+    if (file.extension === "canvas") {
+      return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+    }
+    if (file.extension === "base") {
+      return { context: await getContextFromBase(this.app, file), cancelled: false };
+    }
+    if (this.settings.storageMode === "external") {
+      const uid = getUidFromCache(this.app, file);
+      if (uid) {
+        if (!this.externalStore["initialized"]) {
+          await this.externalStore.initialize();
+        }
+        const arrangements = this.externalStore.getAll(uid);
+        if (arrangements.length === 0) {
+          return { context: this.getContextFromNote(file), cancelled: false };
+        }
+        if (arrangements.length === 1) {
+          return { context: arrangements[0].arrangement, cancelled: false };
+        }
+        const result = await showArrangementSelector(
+          arrangements,
+          file.name,
+          (savedAt) => {
+            this.externalStore.deleteArrangement(uid, savedAt);
+          }
+        );
+        if (result.cancelled) {
+          return { context: null, cancelled: true };
+        }
+        return { context: result.arrangement.arrangement, cancelled: false };
+      }
+    }
+    return { context: this.getContextFromNote(file), cancelled: false };
   }
   // Get context for file - handles markdown, canvas, base, and external storage
   async getContextForFile(file) {
@@ -1350,7 +2092,7 @@ ${content}`;
             tiledPositions
           });
         }
-        new import_obsidian2.Notice(`Screen shape changed - tiling ${windowCount} windows`);
+        new import_obsidian2.Notice(`Screen shape changed - tiling ${windowCount} windows`, 4e3);
       }
       PerfTimer.mark("checkTilingNeeded");
       const popoutWindows = this.getPopoutWindowObjects();
@@ -2631,7 +3373,7 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
     const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
     const restoreHotkey = this.getHotkeyDisplay("perspecta-obsidian:restore-context");
     new import_obsidian2.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
-    new import_obsidian2.Setting(containerEl).setName("Focus tint duration").setDesc("Seconds (0 = disabled)").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
+    new import_obsidian2.Setting(containerEl).setName("Seconds for focus note highlight").setDesc("0 = disabled").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
       const n = parseFloat(v);
       if (!isNaN(n) && n >= 0) {
         this.plugin.settings.focusTintDuration = n;
@@ -2643,6 +3385,10 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
       await this.plugin.saveSettings();
     }));
     containerEl.createEl("h3", { text: "Storage" });
+    new import_obsidian2.Setting(containerEl).setName("Perspecta folder").setDesc("Folder in your vault for Perspecta data (backups, scripts). Created if it doesn't exist.").addText((t) => t.setPlaceholder("perspecta").setValue(this.plugin.settings.perspectaFolderPath).onChange(async (v) => {
+      this.plugin.settings.perspectaFolderPath = v.trim() || "perspecta";
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian2.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
       this.plugin.settings.storageMode = v ? "frontmatter" : "external";
       await this.plugin.saveSettings();
@@ -2651,6 +3397,25 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
       }
       this.display();
     }));
+    if (this.plugin.settings.storageMode === "external") {
+      new import_obsidian2.Setting(containerEl).setName("Maximum arrangements per note").setDesc("How many window arrangements to store per note. Older arrangements are automatically removed when the limit is reached.").addDropdown((d) => d.addOptions({
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5"
+      }).setValue(String(this.plugin.settings.maxArrangementsPerNote)).onChange(async (v) => {
+        this.plugin.settings.maxArrangementsPerNote = parseInt(v);
+        await this.plugin.saveSettings();
+        this.display();
+      }));
+      if (this.plugin.settings.maxArrangementsPerNote === 1) {
+        new import_obsidian2.Setting(containerEl).setName("Auto-confirm overwrite").setDesc("Skip confirmation when overwriting an existing arrangement. Only applies when storing a single arrangement per note.").addToggle((t) => t.setValue(this.plugin.settings.autoConfirmOverwrite).onChange(async (v) => {
+          this.plugin.settings.autoConfirmOverwrite = v;
+          await this.plugin.saveSettings();
+        }));
+      }
+    }
     if (this.plugin.settings.storageMode === "frontmatter") {
       new import_obsidian2.Setting(containerEl).setName("Migrate to external storage").setDesc("Move all context data from note frontmatter to the plugin folder. This cleans up your notes by removing perspecta-arrangement properties.").addButton((btn) => btn.setButtonText("Migrate to external").setCta().onClick(async () => {
         btn.setDisabled(true);
@@ -2692,6 +3457,56 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
       btn.setDisabled(false);
       btn.setButtonText("Clean up");
     }));
+    containerEl.createEl("h3", { text: "Backup & Restore" });
+    new import_obsidian2.Setting(containerEl).setName("Backup arrangements").setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`).addButton((btn) => btn.setButtonText("Create backup").onClick(async () => {
+      btn.setDisabled(true);
+      btn.setButtonText("Backing up...");
+      try {
+        const result = await this.plugin.backupArrangements();
+        new import_obsidian2.Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`);
+        this.display();
+      } catch (e) {
+        new import_obsidian2.Notice("Backup failed: " + e.message);
+      }
+      btn.setDisabled(false);
+      btn.setButtonText("Create backup");
+    }));
+    new import_obsidian2.Setting(containerEl).setName("Restore from backup").setDesc("Restore arrangements from a previous backup. This will overwrite existing arrangements with the same UIDs.");
+    const backupListContainer = containerEl.createDiv({ cls: "perspecta-backup-list-container" });
+    this.plugin.listBackups().then((backups) => {
+      if (backups.length === 0) {
+        backupListContainer.createDiv({
+          cls: "perspecta-backup-empty",
+          text: "No backups available"
+        });
+      } else {
+        backups.forEach((backup) => {
+          const item = backupListContainer.createDiv({ cls: "perspecta-backup-item" });
+          const info = item.createDiv({ cls: "perspecta-backup-info" });
+          info.createDiv({ cls: "perspecta-backup-name", text: backup.name });
+          info.createDiv({
+            cls: "perspecta-backup-date",
+            text: backup.date.toLocaleString()
+          });
+          const restoreBtn = item.createEl("button", {
+            cls: "perspecta-backup-restore-btn",
+            text: "Restore"
+          });
+          restoreBtn.addEventListener("click", async () => {
+            restoreBtn.disabled = true;
+            restoreBtn.textContent = "Restoring...";
+            try {
+              const result = await this.plugin.restoreFromBackup(backup.path);
+              new import_obsidian2.Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
+            } catch (e) {
+              new import_obsidian2.Notice("Restore failed: " + e.message);
+            }
+            restoreBtn.disabled = false;
+            restoreBtn.textContent = "Restore";
+          });
+        });
+      }
+    });
     containerEl.createEl("h3", { text: "Debug" });
     new import_obsidian2.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
       this.plugin.settings.showDebugModal = v;
