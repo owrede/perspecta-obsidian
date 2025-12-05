@@ -665,6 +665,13 @@
    Settings Tabs
    ============================================================================ */
 
+.perspecta-settings-title {
+    margin: 0 0 16px 0;
+    font-size: 1.5em;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
 .perspecta-settings-tabs {
     display: flex;
     gap: 4px;

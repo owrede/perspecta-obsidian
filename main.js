@@ -3369,6 +3369,7 @@ var PerspectaSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.createEl("h1", { text: "Perspecta", cls: "perspecta-settings-title" });
     const tabNav = containerEl.createDiv({ cls: "perspecta-settings-tabs" });
     const tabs = [
       { id: "changelog", label: "Changelog" },

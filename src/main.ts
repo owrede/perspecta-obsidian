@@ -2914,6 +2914,9 @@ class PerspectaSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		// Plugin title
+		containerEl.createEl('h1', { text: 'Perspecta', cls: 'perspecta-settings-title' });
+
 		// Create tab navigation
 		const tabNav = containerEl.createDiv({ cls: 'perspecta-settings-tabs' });
 
