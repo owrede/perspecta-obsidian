@@ -32,6 +32,15 @@ var import_obsidian3 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.11",
+    date: "2025-12-06",
+    changes: [
+      "Proxy windows now show image thumbnails for image files",
+      "Proxy windows show file type icon for PDFs and other binary files",
+      "Fixed broken display when converting image/PDF windows to proxy"
+    ]
+  },
+  {
     version: "0.1.10",
     date: "2025-12-06",
     changes: [
@@ -1374,7 +1383,7 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
     }
   }
   async renderContent(container) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const headerRow = container.createDiv({ cls: "perspecta-proxy-header" });
     headerRow.style.cssText += "-webkit-app-region: drag; cursor: move;";
     headerRow.createDiv({
@@ -1390,12 +1399,20 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
     });
     const previewWrapper = container.createDiv({ cls: "perspecta-proxy-preview-wrapper" });
     const previewContent = previewWrapper.createDiv({ cls: "perspecta-proxy-preview-content" });
-    const plugin = this.app.plugins.plugins["perspecta-obsidian"];
-    const scale = (_c = (_b = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _b.proxyPreviewScale) != null ? _c : 0.35;
-    const inverseScale = 100 / (scale * 100);
-    previewContent.style.width = `${inverseScale * 100}%`;
-    previewContent.style.height = `${inverseScale * 100}%`;
-    previewContent.style.transform = `scale(${scale})`;
+    const ext = ((_b = this.file) == null ? void 0 : _b.extension.toLowerCase()) || "";
+    const needsScaling = !this.isImageFile(ext) && !this.isPdfFile(ext) && !this.isNonRenderableFile(ext);
+    if (needsScaling) {
+      const plugin = this.app.plugins.plugins["perspecta-obsidian"];
+      const scale = (_d = (_c = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _c.proxyPreviewScale) != null ? _d : 0.35;
+      const inverseScale = 100 / (scale * 100);
+      previewContent.style.width = `${inverseScale * 100}%`;
+      previewContent.style.height = `${inverseScale * 100}%`;
+      previewContent.style.transform = `scale(${scale})`;
+    } else {
+      previewContent.style.width = "100%";
+      previewContent.style.height = "100%";
+      previewContent.style.position = "relative";
+    }
     await this.renderMarkdownPreview(previewContent);
     previewWrapper.style.overflow = "auto";
     previewWrapper.style.cursor = "pointer";
@@ -1451,6 +1468,19 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
   async renderMarkdownPreview(container) {
     if (!this.file)
       return;
+    const ext = this.file.extension.toLowerCase();
+    if (this.isImageFile(ext)) {
+      this.renderImagePreview(container);
+      return;
+    }
+    if (this.isPdfFile(ext)) {
+      this.renderFileTypeIcon(container, "file-text", "PDF");
+      return;
+    }
+    if (this.isNonRenderableFile(ext)) {
+      this.renderFileTypeIcon(container, "file", ext.toUpperCase());
+      return;
+    }
     try {
       const content = await this.app.vault.cachedRead(this.file);
       if (this.renderComponent) {
@@ -1468,6 +1498,86 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
     } catch (e) {
       console.log("[Perspecta] Could not render preview:", e);
       container.setText("Preview unavailable");
+    }
+  }
+  isImageFile(ext) {
+    return ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "ico", "avif"].includes(ext);
+  }
+  isPdfFile(ext) {
+    return ext === "pdf";
+  }
+  isNonRenderableFile(ext) {
+    return [
+      "pdf",
+      "doc",
+      "docx",
+      "xls",
+      "xlsx",
+      "ppt",
+      "pptx",
+      "zip",
+      "rar",
+      "7z",
+      "tar",
+      "gz",
+      "mp3",
+      "wav",
+      "ogg",
+      "flac",
+      "m4a",
+      "mp4",
+      "mov",
+      "avi",
+      "mkv",
+      "webm",
+      "exe",
+      "dmg",
+      "app",
+      "bin"
+    ].includes(ext);
+  }
+  renderImagePreview(container) {
+    if (!this.file)
+      return;
+    const imgContainer = container.createDiv({ cls: "perspecta-proxy-image-preview" });
+    const resourcePath = this.app.vault.getResourcePath(this.file);
+    const img = imgContainer.createEl("img", {
+      attr: {
+        src: resourcePath,
+        alt: this.file.basename
+      }
+    });
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "100%";
+    img.style.objectFit = "contain";
+    imgContainer.style.display = "flex";
+    imgContainer.style.alignItems = "center";
+    imgContainer.style.justifyContent = "center";
+    imgContainer.style.height = "100%";
+    imgContainer.style.padding = "8px";
+    imgContainer.style.boxSizing = "border-box";
+  }
+  renderFileTypeIcon(container, iconName, fileType) {
+    const iconContainer = container.createDiv({ cls: "perspecta-proxy-file-icon" });
+    const iconEl = iconContainer.createDiv({ cls: "perspecta-proxy-file-icon-svg" });
+    (0, import_obsidian2.setIcon)(iconEl, iconName);
+    iconContainer.createDiv({
+      cls: "perspecta-proxy-file-type-label",
+      text: fileType
+    });
+    iconContainer.style.display = "flex";
+    iconContainer.style.flexDirection = "column";
+    iconContainer.style.alignItems = "center";
+    iconContainer.style.justifyContent = "center";
+    iconContainer.style.height = "100%";
+    iconContainer.style.gap = "8px";
+    iconContainer.style.color = "var(--text-muted)";
+    iconEl.style.width = "48px";
+    iconEl.style.height = "48px";
+    const svg = iconEl.querySelector("svg");
+    if (svg) {
+      svg.style.width = "100%";
+      svg.style.height = "100%";
     }
   }
   async onClose() {

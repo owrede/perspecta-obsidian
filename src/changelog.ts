@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.11',
+		date: '2025-12-06',
+		changes: [
+			'Proxy windows now show image thumbnails for image files',
+			'Proxy windows show file type icon for PDFs and other binary files',
+			'Fixed broken display when converting image/PDF windows to proxy',
+		],
+	},
+	{
 		version: '0.1.10',
 		date: '2025-12-06',
 		changes: [

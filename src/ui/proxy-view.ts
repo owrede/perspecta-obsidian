@@ -203,15 +203,26 @@ export class ProxyNoteView extends ItemView {
 		const previewWrapper = container.createDiv({ cls: 'perspecta-proxy-preview-wrapper' });
 		const previewContent = previewWrapper.createDiv({ cls: 'perspecta-proxy-preview-content' });
 
-		// Apply scale from settings
-		const plugin = (this.app as any).plugins.plugins['perspecta-obsidian'];
-		const scale = plugin?.settings?.proxyPreviewScale ?? 0.35;
-		const inverseScale = 100 / (scale * 100);
-		previewContent.style.width = `${inverseScale * 100}%`;
-		previewContent.style.height = `${inverseScale * 100}%`;
-		previewContent.style.transform = `scale(${scale})`;
+		// Check if this file needs scaled markdown preview or special handling
+		const ext = this.file?.extension.toLowerCase() || '';
+		const needsScaling = !this.isImageFile(ext) && !this.isPdfFile(ext) && !this.isNonRenderableFile(ext);
 
-		// Render markdown content
+		if (needsScaling) {
+			// Apply scale from settings for markdown/text content
+			const plugin = (this.app as any).plugins.plugins['perspecta-obsidian'];
+			const scale = plugin?.settings?.proxyPreviewScale ?? 0.35;
+			const inverseScale = 100 / (scale * 100);
+			previewContent.style.width = `${inverseScale * 100}%`;
+			previewContent.style.height = `${inverseScale * 100}%`;
+			previewContent.style.transform = `scale(${scale})`;
+		} else {
+			// For images/PDFs/binary files, use normal sizing
+			previewContent.style.width = '100%';
+			previewContent.style.height = '100%';
+			previewContent.style.position = 'relative';
+		}
+
+		// Render content (handles different file types)
 		await this.renderMarkdownPreview(previewContent);
 
 		// Make the preview wrapper scrollable and clickable for restore
@@ -283,8 +294,26 @@ export class ProxyNoteView extends ItemView {
 	private async renderMarkdownPreview(container: HTMLElement): Promise<void> {
 		if (!this.file) return;
 
+		const ext = this.file.extension.toLowerCase();
+
+		// Check if this is a binary/non-markdown file
+		if (this.isImageFile(ext)) {
+			this.renderImagePreview(container);
+			return;
+		}
+
+		if (this.isPdfFile(ext)) {
+			this.renderFileTypeIcon(container, 'file-text', 'PDF');
+			return;
+		}
+
+		if (this.isNonRenderableFile(ext)) {
+			this.renderFileTypeIcon(container, 'file', ext.toUpperCase());
+			return;
+		}
+
 		try {
-			// Read the file content
+			// Read the file content (only for text-based files)
 			const content = await this.app.vault.cachedRead(this.file);
 
 			// Clean up previous render component
@@ -307,6 +336,84 @@ export class ProxyNoteView extends ItemView {
 		} catch (e) {
 			console.log('[Perspecta] Could not render preview:', e);
 			container.setText('Preview unavailable');
+		}
+	}
+
+	private isImageFile(ext: string): boolean {
+		return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp', 'ico', 'avif'].includes(ext);
+	}
+
+	private isPdfFile(ext: string): boolean {
+		return ext === 'pdf';
+	}
+
+	private isNonRenderableFile(ext: string): boolean {
+		// Files that can't be rendered as markdown or displayed as images
+		return [
+			'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+			'zip', 'rar', '7z', 'tar', 'gz',
+			'mp3', 'wav', 'ogg', 'flac', 'm4a',
+			'mp4', 'mov', 'avi', 'mkv', 'webm',
+			'exe', 'dmg', 'app', 'bin'
+		].includes(ext);
+	}
+
+	private renderImagePreview(container: HTMLElement): void {
+		if (!this.file) return;
+
+		const imgContainer = container.createDiv({ cls: 'perspecta-proxy-image-preview' });
+
+		// Get the resource path for the image
+		const resourcePath = this.app.vault.getResourcePath(this.file);
+
+		const img = imgContainer.createEl('img', {
+			attr: {
+				src: resourcePath,
+				alt: this.file.basename
+			}
+		});
+
+		// Style the image to fit within the preview area
+		img.style.maxWidth = '100%';
+		img.style.maxHeight = '100%';
+		img.style.objectFit = 'contain';
+		imgContainer.style.display = 'flex';
+		imgContainer.style.alignItems = 'center';
+		imgContainer.style.justifyContent = 'center';
+		imgContainer.style.height = '100%';
+		imgContainer.style.padding = '8px';
+		imgContainer.style.boxSizing = 'border-box';
+	}
+
+	private renderFileTypeIcon(container: HTMLElement, iconName: string, fileType: string): void {
+		const iconContainer = container.createDiv({ cls: 'perspecta-proxy-file-icon' });
+
+		// Create icon
+		const iconEl = iconContainer.createDiv({ cls: 'perspecta-proxy-file-icon-svg' });
+		setIcon(iconEl, iconName);
+
+		// Create file type label
+		iconContainer.createDiv({
+			cls: 'perspecta-proxy-file-type-label',
+			text: fileType
+		});
+
+		// Style the container
+		iconContainer.style.display = 'flex';
+		iconContainer.style.flexDirection = 'column';
+		iconContainer.style.alignItems = 'center';
+		iconContainer.style.justifyContent = 'center';
+		iconContainer.style.height = '100%';
+		iconContainer.style.gap = '8px';
+		iconContainer.style.color = 'var(--text-muted)';
+
+		// Style the icon
+		iconEl.style.width = '48px';
+		iconEl.style.height = '48px';
+		const svg = iconEl.querySelector('svg');
+		if (svg) {
+			svg.style.width = '100%';
+			svg.style.height = '100%';
 		}
 	}
 

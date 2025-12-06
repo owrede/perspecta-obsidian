@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.11] - 2025-12-06
+
+- Proxy windows now show image thumbnails for image files
+- Proxy windows show file type icon for PDFs and other binary files
+- Fixed broken display when converting image/PDF windows to proxy
+
 ## [0.1.10] - 2025-12-06
 
 - Hide perspecta-uid property from Properties view (still visible in source mode)
