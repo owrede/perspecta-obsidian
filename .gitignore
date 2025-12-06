@@ -16,3 +16,6 @@ Thumbs.db
 # Obsidian
 data.json
 contexts/
+
+# Claude
+CLAUDE.md
