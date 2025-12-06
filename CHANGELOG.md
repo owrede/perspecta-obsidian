@@ -2,6 +2,11 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.12] - 2025-12-06
+
+- Save and restore active sidebar panel (File Explorer, Search, Bookmarks, etc.)
+- Improved sidebar state capture with multiple fallback methods
+
 ## [0.1.11] - 2025-12-06
 
 - Proxy windows now show image thumbnails for image files

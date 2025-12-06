@@ -32,6 +32,14 @@ var import_obsidian3 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.12",
+    date: "2025-12-06",
+    changes: [
+      "Save and restore active sidebar panel (File Explorer, Search, Bookmarks, etc.)",
+      "Improved sidebar state capture with multiple fallback methods"
+    ]
+  },
+  {
     version: "0.1.11",
     date: "2025-12-06",
     changes: [
@@ -2021,18 +2029,36 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
     return { type: "tabs", tabs };
   }
   captureSidebarState(side) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const workspace = this.app.workspace;
     const sidebar = side === "left" ? workspace.leftSplit : workspace.rightSplit;
     if (!sidebar)
       return { collapsed: true };
     let activeTab;
     try {
-      const leaf = side === "left" ? workspace.leftLeaf : workspace.rightLeaf;
-      activeTab = (_b = (_a = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a.getViewType) == null ? void 0 : _b.call(_a);
+      const activeTabGroup = sidebar.activeTabGroup;
+      if (activeTabGroup == null ? void 0 : activeTabGroup.currentTab) {
+        activeTab = (_c = (_b = (_a = activeTabGroup.currentTab) == null ? void 0 : _a.view) == null ? void 0 : _b.getViewType) == null ? void 0 : _c.call(_b);
+      }
+      if (!activeTab && sidebar.children) {
+        for (const child of sidebar.children) {
+          if ((_e = (_d = child.currentTab) == null ? void 0 : _d.view) == null ? void 0 : _e.getViewType) {
+            activeTab = child.currentTab.view.getViewType();
+            break;
+          }
+          if ((_h = (_g = (_f = child.activeTabGroup) == null ? void 0 : _f.currentTab) == null ? void 0 : _g.view) == null ? void 0 : _h.getViewType) {
+            activeTab = child.activeTabGroup.currentTab.view.getViewType();
+            break;
+          }
+        }
+      }
+      if (!activeTab) {
+        const leaf = side === "left" ? workspace.leftLeaf : workspace.rightLeaf;
+        activeTab = (_j = (_i = leaf == null ? void 0 : leaf.view) == null ? void 0 : _i.getViewType) == null ? void 0 : _j.call(_i);
+      }
     } catch (e) {
     }
-    return { collapsed: (_c = sidebar.collapsed) != null ? _c : false, activeTab };
+    return { collapsed: (_k = sidebar.collapsed) != null ? _k : false, activeTab };
   }
   getPopoutWindowObjects() {
     const start = performance.now();
@@ -3744,7 +3770,7 @@ ${content}`;
     return el ? !el.closest(".mod-left-split") && !el.closest(".mod-right-split") : true;
   }
   restoreSidebarState(side, state) {
-    var _a, _b;
+    var _a, _b, _c;
     try {
       const workspace = this.app.workspace;
       const sidebar = side === "left" ? workspace.leftSplit : workspace.rightSplit;
@@ -3755,16 +3781,26 @@ ${content}`;
         return;
       }
       (_b = sidebar.expand) == null ? void 0 : _b.call(sidebar);
-      const views = state.activeTab ? [state.activeTab, side === "left" ? "file-explorer" : "backlink"] : [side === "left" ? "file-explorer" : "backlink"];
-      for (const viewType of views) {
-        const leaves = this.app.workspace.getLeavesOfType(viewType);
+      if (state.activeTab) {
+        const sidebarSelector = side === "left" ? ".mod-left-split" : ".mod-right-split";
+        const leaves = this.app.workspace.getLeavesOfType(state.activeTab);
         const leaf = leaves.find((l) => {
           var _a2, _b2;
-          return (_b2 = (_a2 = l.view) == null ? void 0 : _a2.containerEl) == null ? void 0 : _b2.closest(side === "left" ? ".mod-left-split" : ".mod-right-split");
+          return (_b2 = (_a2 = l.view) == null ? void 0 : _a2.containerEl) == null ? void 0 : _b2.closest(sidebarSelector);
         });
         if (leaf) {
           this.app.workspace.revealLeaf(leaf);
-          break;
+          try {
+            const tabGroup = leaf.tabGroup || leaf.parent;
+            if (tabGroup == null ? void 0 : tabGroup.setActiveLeaf) {
+              tabGroup.setActiveLeaf(leaf);
+            } else if ((tabGroup == null ? void 0 : tabGroup.selectTab) && typeof tabGroup.selectTab === "function") {
+              const tabIndex = (_c = tabGroup.children) == null ? void 0 : _c.indexOf(leaf);
+              if (tabIndex >= 0)
+                tabGroup.selectTab(tabIndex);
+            }
+          } catch (e) {
+          }
         }
       }
     } catch (e) {

@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.12',
+		date: '2025-12-06',
+		changes: [
+			'Save and restore active sidebar panel (File Explorer, Search, Bookmarks, etc.)',
+			'Improved sidebar state capture with multiple fallback methods',
+		],
+	},
+	{
 		version: '0.1.11',
 		date: '2025-12-06',
 		changes: [

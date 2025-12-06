@@ -568,8 +568,33 @@ export default class PerspectaPlugin extends Plugin {
 
 		let activeTab: string | undefined;
 		try {
-			const leaf = side === 'left' ? workspace.leftLeaf : workspace.rightLeaf;
-			activeTab = leaf?.view?.getViewType?.();
+			// Method 1: Try to get active tab from the sidebar's active tab group
+			const activeTabGroup = sidebar.activeTabGroup;
+			if (activeTabGroup?.currentTab) {
+				activeTab = activeTabGroup.currentTab?.view?.getViewType?.();
+			}
+
+			// Method 2: Fall back to checking the sidebar's children for active leaf
+			if (!activeTab && sidebar.children) {
+				for (const child of sidebar.children) {
+					// Check if this is a tabs container with an active tab
+					if (child.currentTab?.view?.getViewType) {
+						activeTab = child.currentTab.view.getViewType();
+						break;
+					}
+					// Check if child has activeTabGroup
+					if (child.activeTabGroup?.currentTab?.view?.getViewType) {
+						activeTab = child.activeTabGroup.currentTab.view.getViewType();
+						break;
+					}
+				}
+			}
+
+			// Method 3: Last resort - use the old API
+			if (!activeTab) {
+				const leaf = side === 'left' ? workspace.leftLeaf : workspace.rightLeaf;
+				activeTab = leaf?.view?.getViewType?.();
+			}
 		} catch { /* ignore */ }
 
 		return { collapsed: sidebar.collapsed ?? false, activeTab };
@@ -2776,11 +2801,30 @@ export default class PerspectaPlugin extends Plugin {
 			if (state.collapsed) { sidebar.collapse?.(); return; }
 			sidebar.expand?.();
 
-			const views = state.activeTab ? [state.activeTab, side === 'left' ? 'file-explorer' : 'backlink'] : [side === 'left' ? 'file-explorer' : 'backlink'];
-			for (const viewType of views) {
-				const leaves = this.app.workspace.getLeavesOfType(viewType);
-				const leaf = leaves.find(l => l.view?.containerEl?.closest(side === 'left' ? '.mod-left-split' : '.mod-right-split'));
-				if (leaf) { this.app.workspace.revealLeaf(leaf); break; }
+			// If we have an active tab to restore, try to reveal it
+			if (state.activeTab) {
+				const sidebarSelector = side === 'left' ? '.mod-left-split' : '.mod-right-split';
+
+				// Find the leaf with this view type in the correct sidebar
+				const leaves = this.app.workspace.getLeavesOfType(state.activeTab);
+				const leaf = leaves.find(l => l.view?.containerEl?.closest(sidebarSelector));
+
+				if (leaf) {
+					// Method 1: Use revealLeaf (standard Obsidian API)
+					this.app.workspace.revealLeaf(leaf);
+
+					// Method 2: Also try to set as active in the tab group directly
+					try {
+						const tabGroup = (leaf as any).tabGroup || (leaf as any).parent;
+						if (tabGroup?.setActiveLeaf) {
+							tabGroup.setActiveLeaf(leaf);
+						} else if (tabGroup?.selectTab && typeof tabGroup.selectTab === 'function') {
+							// Some versions use selectTab
+							const tabIndex = tabGroup.children?.indexOf(leaf);
+							if (tabIndex >= 0) tabGroup.selectTab(tabIndex);
+						}
+					} catch { /* ignore */ }
+				}
 			}
 		} catch { /* ignore */ }
 	}
