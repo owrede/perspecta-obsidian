@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.13] - 2025-12-06
+
+- Experimental: Save and restore desktop wallpaper with context
+- Wallpaper support for macOS (AppleScript), Windows (PowerShell), Linux (GNOME)
+- New settings to enable wallpaper capture and restore independently
+
 ## [0.1.12] - 2025-12-06
 
 - Save and restore active sidebar panel (File Explorer, Search, Bookmarks, etc.)

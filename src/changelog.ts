@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.13',
+		date: '2025-12-06',
+		changes: [
+			'Experimental: Save and restore desktop wallpaper with context',
+			'Wallpaper support for macOS (AppleScript), Windows (PowerShell), Linux (GNOME)',
+			'New settings to enable wallpaper capture and restore independently',
+		],
+	},
+	{
 		version: '0.1.12',
 		date: '2025-12-06',
 		changes: [

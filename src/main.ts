@@ -33,6 +33,7 @@ import {
 	needsTiling,
 	calculateTiledLayout
 } from './utils/coordinates';
+import { getWallpaper, setWallpaper, getWallpaperPlatformNotes } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
 
 // Import storage
@@ -647,6 +648,19 @@ export default class PerspectaPlugin extends Plugin {
 		let context = this.captureWindowArrangement();
 		PerfTimer.mark('captureWindowArrangement');
 
+		// Capture wallpaper if enabled (experimental)
+		if (this.settings.enableWallpaperCapture) {
+			try {
+				const wallpaperResult = await getWallpaper();
+				if (wallpaperResult.success && wallpaperResult.path) {
+					context.wallpaper = wallpaperResult.path;
+					PerfTimer.mark('captureWallpaper');
+				}
+			} catch (e) {
+				console.log('[Perspecta] Could not capture wallpaper:', e);
+			}
+		}
+
 		// Auto-generate UIDs for files that don't have them (always needed for external storage)
 		if (this.settings.autoGenerateUids || this.settings.storageMode === 'external') {
 			context = await this.ensureUidsForContext(context);
@@ -1174,6 +1188,10 @@ export default class PerspectaPlugin extends Plugin {
 			compact.ar = Math.round(arr.sourceScreen.aspectRatio * 100) / 100;
 		}
 
+		if (arr.wallpaper) {
+			compact.wp = arr.wallpaper;  // short key: wallpaper
+		}
+
 		return compact;
 	}
 
@@ -1246,6 +1264,10 @@ export default class PerspectaPlugin extends Plugin {
 				height: 1117,
 				aspectRatio: compact.ar
 			};
+		}
+
+		if (compact.wp) {
+			arr.wallpaper = compact.wp;
 		}
 
 		return arr;
@@ -1587,6 +1609,20 @@ export default class PerspectaPlugin extends Plugin {
 			if (v2.leftSidebar) this.restoreSidebarState('left', v2.leftSidebar);
 			if (v2.rightSidebar) this.restoreSidebarState('right', v2.rightSidebar);
 			PerfTimer.mark('restoreSidebars');
+
+			// Restore wallpaper if enabled (experimental)
+			if (this.settings.enableWallpaperRestore && v2.wallpaper) {
+				try {
+					const result = await setWallpaper(v2.wallpaper);
+					if (result.success) {
+						PerfTimer.mark('restoreWallpaper');
+					} else {
+						console.log('[Perspecta] Could not restore wallpaper:', result.error);
+					}
+				} catch (e) {
+					console.log('[Perspecta] Wallpaper restoration failed:', e);
+				}
+			}
 
 			// Schedule scroll position restoration for all leaves
 			this.scheduleScrollRestoration(v2.main.root);
@@ -3660,6 +3696,35 @@ class PerspectaSettingTab extends PluginSettingTab {
 				• If the note has a saved arrangement, click anywhere to restore it
 			`;
 		}
+
+		// Wallpaper settings
+		containerEl.createEl('h4', { text: 'Desktop Wallpaper' });
+
+		new Setting(containerEl)
+			.setName('Save wallpaper with context')
+			.setDesc('Capture the current desktop wallpaper when saving a context.')
+			.addToggle(t => t.setValue(this.plugin.settings.enableWallpaperCapture).onChange(async v => {
+				this.plugin.settings.enableWallpaperCapture = v;
+				await this.plugin.saveSettings();
+				this.display();
+			}));
+
+		new Setting(containerEl)
+			.setName('Restore wallpaper with context')
+			.setDesc('Change the desktop wallpaper to match the saved context when restoring.')
+			.addToggle(t => t.setValue(this.plugin.settings.enableWallpaperRestore).onChange(async v => {
+				this.plugin.settings.enableWallpaperRestore = v;
+				await this.plugin.saveSettings();
+			}));
+
+		const wallpaperInfoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
+		wallpaperInfoDiv.style.marginTop = '12px';
+		wallpaperInfoDiv.style.marginBottom = '12px';
+		wallpaperInfoDiv.innerHTML = `
+			<strong>Platform support:</strong> ${getWallpaperPlatformNotes()}<br><br>
+			<strong>Note:</strong> This feature reads and modifies your desktop wallpaper setting.
+			The wallpaper path is stored with your context and can be restored when switching between projects.
+		`;
 	}
 
 	private displayDebugSettings(containerEl: HTMLElement): void {

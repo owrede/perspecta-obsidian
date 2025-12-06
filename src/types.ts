@@ -67,6 +67,7 @@ export interface WindowArrangementV2 {
 	leftSidebar?: SidebarState;
 	rightSidebar?: SidebarState;
 	sourceScreen?: ScreenInfo;
+	wallpaper?: string;  // Desktop wallpaper path (experimental)
 }
 
 export interface WindowArrangementV1 {
@@ -98,6 +99,8 @@ export interface PerspectaSettings {
 	// Experimental features
 	enableProxyWindows: boolean;
 	proxyPreviewScale: number;  // Scale factor for proxy window preview (0.1 to 1.0)
+	enableWallpaperCapture: boolean;  // Save desktop wallpaper with context
+	enableWallpaperRestore: boolean;  // Restore wallpaper when restoring context
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -114,7 +117,9 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	autoConfirmOverwrite: false,
 	// Experimental features
 	enableProxyWindows: false,
-	proxyPreviewScale: 0.35
+	proxyPreviewScale: 0.35,
+	enableWallpaperCapture: false,
+	enableWallpaperRestore: false
 };
 
 // Timestamped arrangement for multi-arrangement storage
