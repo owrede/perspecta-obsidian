@@ -1,10 +1,11 @@
 /* Perspecta Plugin Styles */
 
 /* ============================================================================
-   Hide perspecta-arrangement property in properties view
+   Hide perspecta properties in properties view (still visible in source mode)
    ============================================================================ */
 
-.metadata-container .metadata-property[data-property-key="perspecta-arrangement"] {
+.metadata-container .metadata-property[data-property-key="perspecta-arrangement"],
+.metadata-container .metadata-property[data-property-key="perspecta-uid"] {
     display: none;
 }
 

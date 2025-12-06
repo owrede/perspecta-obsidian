@@ -2,6 +2,10 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.10] - 2025-12-06
+
+- Hide perspecta-uid property from Properties view (still visible in source mode)
+
 ## [0.1.9] - 2025-12-06
 
 - Removed excess padding from proxy window preview content

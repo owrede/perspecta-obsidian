@@ -140,6 +140,9 @@ export default class PerspectaPlugin extends Plugin {
 			await this.externalStore.initialize();
 		}
 
+		// Hide perspecta-uid from the Properties view (keep it visible in source mode)
+		this.hideInternalProperties();
+
 		// Register proxy view (experimental)
 		this.registerView(PROXY_VIEW_TYPE, (leaf) => new ProxyNoteView(leaf));
 
@@ -734,6 +737,48 @@ export default class PerspectaPlugin extends Plugin {
 	// ============================================================================
 	// Storage Migration & Cleanup
 	// ============================================================================
+
+	// Hide internal properties (perspecta-uid) from the Properties view
+	// They remain visible in source mode for transparency
+	private hideInternalProperties(): void {
+		try {
+			// Access Obsidian's metadata type manager (internal API)
+			const metadataTypeManager = (this.app as any).metadataTypeManager;
+			if (!metadataTypeManager) return;
+
+			// Method 1: Try to add to the ignored/hidden properties list
+			// In Obsidian 1.4+, there's a configuredTypes property we can modify
+			if (metadataTypeManager.properties) {
+				const props = metadataTypeManager.properties;
+				if (props[UID_FRONTMATTER_KEY]) {
+					props[UID_FRONTMATTER_KEY].hidden = true;
+				} else {
+					props[UID_FRONTMATTER_KEY] = { name: UID_FRONTMATTER_KEY, type: 'text', hidden: true };
+				}
+			}
+
+			// Method 2: Use setType if available and try to persist
+			if (typeof metadataTypeManager.setType === 'function') {
+				metadataTypeManager.setType(UID_FRONTMATTER_KEY, 'text');
+			}
+
+			// Method 3: Access types directly and mark hidden
+			if (metadataTypeManager.types) {
+				if (!metadataTypeManager.types[UID_FRONTMATTER_KEY]) {
+					metadataTypeManager.types[UID_FRONTMATTER_KEY] = { type: 'text' };
+				}
+				metadataTypeManager.types[UID_FRONTMATTER_KEY].hidden = true;
+			}
+
+			// Try to save the changes
+			if (typeof metadataTypeManager.save === 'function') {
+				metadataTypeManager.save();
+			}
+		} catch (e) {
+			// Silently fail - hiding properties is non-critical
+			console.log('[Perspecta] Could not hide internal properties:', e);
+		}
+	}
 
 	// Clean up old 'uid' properties from all files that have perspecta-uid
 	async cleanupOldUidProperties(): Promise<number> {

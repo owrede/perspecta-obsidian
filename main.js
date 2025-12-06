@@ -32,6 +32,13 @@ var import_obsidian3 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.10",
+    date: "2025-12-06",
+    changes: [
+      "Hide perspecta-uid property from Properties view (still visible in source mode)"
+    ]
+  },
+  {
     version: "0.1.9",
     date: "2025-12-06",
     changes: [
@@ -1573,6 +1580,7 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
     if (this.settings.storageMode === "external") {
       await this.externalStore.initialize();
     }
+    this.hideInternalProperties();
     this.registerView(PROXY_VIEW_TYPE, (leaf) => new ProxyNoteView(leaf));
     this.addRibbonIcon("layout-grid", "Perspecta", () => {
     });
@@ -2039,6 +2047,37 @@ ${newFm}
   // ============================================================================
   // Storage Migration & Cleanup
   // ============================================================================
+  // Hide internal properties (perspecta-uid) from the Properties view
+  // They remain visible in source mode for transparency
+  hideInternalProperties() {
+    try {
+      const metadataTypeManager = this.app.metadataTypeManager;
+      if (!metadataTypeManager)
+        return;
+      if (metadataTypeManager.properties) {
+        const props = metadataTypeManager.properties;
+        if (props[UID_FRONTMATTER_KEY]) {
+          props[UID_FRONTMATTER_KEY].hidden = true;
+        } else {
+          props[UID_FRONTMATTER_KEY] = { name: UID_FRONTMATTER_KEY, type: "text", hidden: true };
+        }
+      }
+      if (typeof metadataTypeManager.setType === "function") {
+        metadataTypeManager.setType(UID_FRONTMATTER_KEY, "text");
+      }
+      if (metadataTypeManager.types) {
+        if (!metadataTypeManager.types[UID_FRONTMATTER_KEY]) {
+          metadataTypeManager.types[UID_FRONTMATTER_KEY] = { type: "text" };
+        }
+        metadataTypeManager.types[UID_FRONTMATTER_KEY].hidden = true;
+      }
+      if (typeof metadataTypeManager.save === "function") {
+        metadataTypeManager.save();
+      }
+    } catch (e) {
+      console.log("[Perspecta] Could not hide internal properties:", e);
+    }
+  }
   // Clean up old 'uid' properties from all files that have perspecta-uid
   async cleanupOldUidProperties() {
     const files = this.app.vault.getMarkdownFiles();

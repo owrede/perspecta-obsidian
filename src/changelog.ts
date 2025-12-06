@@ -11,6 +11,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.10',
+		date: '2025-12-06',
+		changes: [
+			'Hide perspecta-uid property from Properties view (still visible in source mode)',
+		],
+	},
+	{
 		version: '0.1.9',
 		date: '2025-12-06',
 		changes: [
