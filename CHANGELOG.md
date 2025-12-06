@@ -2,6 +2,14 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.8] - 2025-12-06
+
+- Unified changelog system - single source of truth for all changelogs
+- Added CHANGELOG.md file auto-generated from changelog data
+- Reorganized README features to match settings pane structure
+- Added Convert to proxy window command documentation
+- Added backup reminder to external storage warning
+
 ## [0.1.7] - 2025-12-06
 
 - Proxy windows now show scaled markdown preview of note content

@@ -32,6 +32,17 @@ var import_obsidian3 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.8",
+    date: "2025-12-06",
+    changes: [
+      "Unified changelog system - single source of truth for all changelogs",
+      "Added CHANGELOG.md file auto-generated from changelog data",
+      "Reorganized README features to match settings pane structure",
+      "Added Convert to proxy window command documentation",
+      "Added backup reminder to external storage warning"
+    ]
+  },
+  {
     version: "0.1.7",
     date: "2025-12-06",
     changes: [
