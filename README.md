@@ -93,7 +93,7 @@ All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
 
 ### Storage Mode Warning
 
-> **WARNING**: External storage mode stores data in the plugin folder. **All saved contexts will be lost if the plugin is removed or reinstalled.** Use Frontmatter mode if you value data persistence.
+> **WARNING**: External storage mode stores data in the plugin folder. **All saved contexts will be lost if the plugin is removed or reinstalled.** Use Frontmatter mode if you value data persistence, or create regular backups via Settings → Backup.
 
 ### Unique IDs (UIDs)
 
