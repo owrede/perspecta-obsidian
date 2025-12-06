@@ -29,6 +29,89 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian3 = require("obsidian");
 
+// src/changelog.ts
+var CHANGELOG = [
+  {
+    version: "0.1.7",
+    date: "2025-12-06",
+    changes: [
+      "Proxy windows now show scaled markdown preview of note content",
+      "Draggable title bar - drag header to move proxy window",
+      "Scrollable content - use mouse wheel or arrow keys to scroll preview",
+      "Keyboard navigation: \u2191/\u2193, j/k, Page Up/Down, Home/End, Enter/Space",
+      "Configurable preview scale factor in Experimental settings (default 35%)",
+      "Canvas viewport and zoom level now saved and restored",
+      "Context indicator (target icon) now appears correctly in popout windows",
+      "Fixed duplicate proxy windows when restoring contexts",
+      "Fixed concurrent restore guard to prevent window duplication"
+    ]
+  },
+  {
+    version: "0.1.6",
+    date: "2025-12-05",
+    changes: [
+      "Experimental: Proxy windows - minimalist window showing only note title",
+      "Click proxy to restore latest arrangement, Shift+click for selector",
+      "Click proxy without arrangement to expand to full window",
+      "Proxy window positions and sizes saved/restored with arrangements",
+      "Added Experimental settings tab to enable/disable proxy windows",
+      "Fixed notifications not auto-dismissing (4 second timeout)",
+      "Notifications and focus tints no longer appear in proxy windows"
+    ]
+  },
+  {
+    version: "0.1.3",
+    date: "2025-12-04",
+    changes: [
+      "Multi-arrangement storage: store up to 5 arrangements per note",
+      "Arrangement selector modal with visual SVG previews",
+      "Delete button to remove specific arrangements from history",
+      "Confirmation dialog when overwriting single arrangement",
+      "Backup & restore functionality to perspecta folder",
+      "SVG previews show windows, splits, sidebars, and focus highlight",
+      "Instant tooltips on SVG areas showing note names",
+      'Renamed "Focus tint duration" setting for clarity',
+      "Fixed notification toast not disappearing"
+    ]
+  },
+  {
+    version: "0.1.2",
+    changes: [
+      "Improved plugin compliance with Obsidian guidelines"
+    ]
+  },
+  {
+    version: "0.1.1",
+    changes: [
+      "Save and restore scroll position for all tabs",
+      "Save and restore split sizes (pane proportions)"
+    ]
+  },
+  {
+    version: "0.1.0",
+    changes: [
+      "Initial release",
+      "Save and restore window arrangements (tabs, splits, popouts)",
+      "External storage mode for cleaner notes",
+      "Frontmatter storage mode for portability",
+      "Auto-generate UIDs for file tracking",
+      "Context indicators in file explorer",
+      "Focus tint animation on restore"
+    ]
+  }
+];
+function renderChangelogToContainer(containerEl) {
+  containerEl.createEl("h2", { text: "Changelog" });
+  for (const entry of CHANGELOG) {
+    const versionDiv = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    versionDiv.createEl("h3", { text: `v${entry.version}` });
+    const list = versionDiv.createEl("ul");
+    for (const change of entry.changes) {
+      list.createEl("li", { text: change });
+    }
+  }
+}
+
 // src/types.ts
 var DEFAULT_SETTINGS = {
   enableVisualMapping: true,
@@ -3991,60 +4074,7 @@ var PerspectaSettingTab = class extends import_obsidian3.PluginSettingTab {
     }
   }
   displayChangelog(containerEl) {
-    containerEl.createEl("h2", { text: "Changelog" });
-    const v017 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v017.createEl("h3", { text: "v0.1.7" });
-    const v017List = v017.createEl("ul");
-    v017List.createEl("li", { text: "Proxy windows now show scaled markdown preview of note content" });
-    v017List.createEl("li", { text: "Draggable title bar - drag header to move proxy window" });
-    v017List.createEl("li", { text: "Scrollable content - use mouse wheel or arrow keys to scroll preview" });
-    v017List.createEl("li", { text: "Keyboard navigation: \u2191/\u2193, j/k, Page Up/Down, Home/End, Enter/Space" });
-    v017List.createEl("li", { text: "Configurable preview scale factor in Experimental settings (default 35%)" });
-    v017List.createEl("li", { text: "Canvas viewport and zoom level now saved and restored" });
-    v017List.createEl("li", { text: "Context indicator (target icon) now appears correctly in popout windows" });
-    v017List.createEl("li", { text: "Fixed duplicate proxy windows when restoring contexts" });
-    v017List.createEl("li", { text: "Fixed concurrent restore guard to prevent window duplication" });
-    const v016 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v016.createEl("h3", { text: "v0.1.6" });
-    const v016List = v016.createEl("ul");
-    v016List.createEl("li", { text: "Experimental: Proxy windows - minimalist window showing only note title" });
-    v016List.createEl("li", { text: "Click proxy to restore latest arrangement, Shift+click for selector" });
-    v016List.createEl("li", { text: "Click proxy without arrangement to expand to full window" });
-    v016List.createEl("li", { text: "Proxy window positions and sizes saved/restored with arrangements" });
-    v016List.createEl("li", { text: "Added Experimental settings tab to enable/disable proxy windows" });
-    v016List.createEl("li", { text: "Fixed notifications not auto-dismissing (4 second timeout)" });
-    v016List.createEl("li", { text: "Notifications and focus tints no longer appear in proxy windows" });
-    const v013 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v013.createEl("h3", { text: "v0.1.3" });
-    const v013List = v013.createEl("ul");
-    v013List.createEl("li", { text: "Multi-arrangement storage: store up to 5 arrangements per note" });
-    v013List.createEl("li", { text: "Arrangement selector modal with visual SVG previews" });
-    v013List.createEl("li", { text: "Delete button to remove specific arrangements from history" });
-    v013List.createEl("li", { text: "Confirmation dialog when overwriting single arrangement" });
-    v013List.createEl("li", { text: "Backup & restore functionality to perspecta folder" });
-    v013List.createEl("li", { text: "SVG previews show windows, splits, sidebars, and focus highlight" });
-    v013List.createEl("li", { text: "Instant tooltips on SVG areas showing note names" });
-    v013List.createEl("li", { text: 'Renamed "Focus tint duration" setting for clarity' });
-    v013List.createEl("li", { text: "Fixed notification toast not disappearing" });
-    const v012 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v012.createEl("h3", { text: "v0.1.2" });
-    const v012List = v012.createEl("ul");
-    v012List.createEl("li", { text: "Improved plugin compliance with Obsidian guidelines" });
-    const v011 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v011.createEl("h3", { text: "v0.1.1" });
-    const v011List = v011.createEl("ul");
-    v011List.createEl("li", { text: "Save and restore scroll position for all tabs" });
-    v011List.createEl("li", { text: "Save and restore split sizes (pane proportions)" });
-    const v010 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
-    v010.createEl("h3", { text: "v0.1.0" });
-    const v010List = v010.createEl("ul");
-    v010List.createEl("li", { text: "Initial release" });
-    v010List.createEl("li", { text: "Save and restore window arrangements (tabs, splits, popouts)" });
-    v010List.createEl("li", { text: "External storage mode for cleaner notes" });
-    v010List.createEl("li", { text: "Frontmatter storage mode for portability" });
-    v010List.createEl("li", { text: "Auto-generate UIDs for file tracking" });
-    v010List.createEl("li", { text: "Context indicators in file explorer" });
-    v010List.createEl("li", { text: "Focus tint animation on restore" });
+    renderChangelogToContainer(containerEl);
   }
   displayContextSettings(containerEl) {
     const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
