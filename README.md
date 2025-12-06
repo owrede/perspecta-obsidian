@@ -18,8 +18,9 @@ Perspecta is an Obsidian plugin for saving and restoring window arrangements. It
 
 ## Features
 
-### Context
-Core functionality for saving and restoring window arrangements.
+### Context: Save and restore windows/tabs in the context of one note
+
+Core functionality for saving and restoring window arrangements. You can save several window arrangements per note.
 
 - **Save & Restore Window Arrangements**: Capture tabs, splits, and popout windows
 - **Split Size Preservation**: Restore exact split proportions (e.g., 30%/70% layouts)
@@ -31,7 +32,8 @@ Core functionality for saving and restoring window arrangements.
 - **Focus Highlight**: Brief visual highlight on restored notes (configurable duration)
 - **File Explorer Indicators**: Visual markers show which files have saved contexts
 
-### Storage
+### Storage: Decide how the data is stored (within the note or in the plugin folder)
+
 Options for where and how context data is stored.
 
 - **Frontmatter Mode** (Default): Store context directly in your notes
@@ -43,14 +45,16 @@ Options for where and how context data is stored.
   - Arrangement selector with visual SVG previews
   - Auto-confirm option for single-arrangement overwrites
 
-### Backup
+### Backup and restore the plugin data
+
 Protect your saved arrangements.
 
 - **Create Backups**: Save all arrangements to the perspecta folder
 - **Restore from Backup**: Recover arrangements from previous backups
 - **Timestamped Backups**: Multiple backup versions with dates
 
-### Experimental
+### Experimental features
+
 Features still in development.
 
 - **Proxy Windows**: Minimalist windows showing scaled note previews
@@ -59,7 +63,8 @@ Features still in development.
   - Click preview to restore the full arrangement
   - Configurable preview scale (default 35%)
 
-### Debug
+### Debug options
+
 Tools for troubleshooting.
 
 - **Debug Modal**: Show context details when saving
