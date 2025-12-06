@@ -142,16 +142,20 @@ export class ProxyNoteView extends ItemView {
 	}
 
 	private renderContent(container: HTMLElement): void {
-		// Make the whole container clickable to restore arrangement
-		if (this.state.arrangementUid) {
-			container.addEventListener('click', (e) => {
-				// Don't trigger if clicking the expand button
-				if ((e.target as HTMLElement).closest('.perspecta-proxy-expand')) return;
-				// Hold Shift to show arrangement selector, otherwise use latest
+		// Make the whole container clickable
+		container.addEventListener('click', (e) => {
+			// Don't trigger if clicking the expand button
+			if ((e.target as HTMLElement).closest('.perspecta-proxy-expand')) return;
+
+			if (this.state.arrangementUid) {
+				// Has arrangement - restore it (hold Shift for selector)
 				const forceLatest = !e.shiftKey;
 				this.restoreArrangement(forceLatest);
-			});
-		}
+			} else {
+				// No arrangement - just expand to full window
+				this.expandToFullWindow();
+			}
+		});
 
 		// Add hover effect via JavaScript (more reliable than CSS in popout windows)
 		container.addEventListener('mouseenter', () => {

@@ -576,7 +576,7 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.mark('getActiveFile');
 
 		if (!targetFile) {
-			new Notice('No active file to save context to');
+			new Notice('No active file to save context to', 4000);
 			return;
 		}
 
@@ -586,7 +586,7 @@ export default class PerspectaPlugin extends Plugin {
 		const isBase = targetFile.extension === 'base';
 
 		if (!isMarkdown && !isCanvas && !isBase) {
-			new Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`);
+			new Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`, 4000);
 			PerfTimer.end('saveContext');
 			return;
 		}
@@ -1213,7 +1213,7 @@ export default class PerspectaPlugin extends Plugin {
 		const targetFile = file ?? this.app.workspace.getActiveFile();
 		PerfTimer.mark('getActiveFile');
 
-		if (!targetFile) { new Notice('No active file'); return; }
+		if (!targetFile) { new Notice('No active file', 4000); return; }
 
 		// Get context - may show selector if multiple arrangements exist (unless forceLatest)
 		const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
@@ -1225,7 +1225,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		const context = contextResult.context;
-		if (!context) { new Notice('No context found in this note'); return; }
+		if (!context) { new Notice('No context found in this note', 4000); return; }
 
 		const focusedWin = await this.applyArrangement(context, targetFile.path);
 		PerfTimer.mark('applyArrangement');
@@ -1499,7 +1499,7 @@ export default class PerspectaPlugin extends Plugin {
 
 			return focusedWin;
 		} catch (e) {
-			new Notice('Error restoring context: ' + (e as Error).message);
+			new Notice('Error restoring context: ' + (e as Error).message, 4000);
 			return null;
 		}
 	}
@@ -2647,11 +2647,11 @@ export default class PerspectaPlugin extends Plugin {
 		setTimeout(() => overlay.parentNode && overlay.remove(), duration * 1000 + 500);
 	}
 
-	private showNoticeInWindow(win: Window | null, message: string) {
+	private showNoticeInWindow(win: Window | null, message: string, timeout: number = 4000) {
 		if (win && win !== window) {
 			// Don't show notices in proxy windows
 			if (win.document.body.classList.contains('perspecta-proxy-window')) {
-				new Notice(message);
+				new Notice(message, timeout);
 				return;
 			}
 			const el = win.document.createElement('div');
@@ -2664,9 +2664,9 @@ export default class PerspectaPlugin extends Plugin {
 				win.document.body.appendChild(container);
 			}
 			container.appendChild(el);
-			setTimeout(() => el.remove(), 4000);
+			setTimeout(() => el.remove(), timeout);
 		} else {
-			new Notice(message);
+			new Notice(message, timeout);
 		}
 	}
 
@@ -2677,13 +2677,13 @@ export default class PerspectaPlugin extends Plugin {
 	private async showContextDetails() {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) {
-			new Notice('No active file');
+			new Notice('No active file', 4000);
 			return;
 		}
 
 		const context = await this.getContextForFile(file);
 		if (!context) {
-			new Notice('No context found in this note');
+			new Notice('No context found in this note', 4000);
 			return;
 		}
 
@@ -3181,6 +3181,18 @@ class PerspectaSettingTab extends PluginSettingTab {
 	private displayChangelog(containerEl: HTMLElement): void {
 		containerEl.createEl('h2', { text: 'Changelog' });
 
+		// Version 0.1.6
+		const v016 = containerEl.createDiv({ cls: 'perspecta-changelog-version' });
+		v016.createEl('h3', { text: 'v0.1.6' });
+		const v016List = v016.createEl('ul');
+		v016List.createEl('li', { text: 'Experimental: Proxy windows - minimalist window showing only note title' });
+		v016List.createEl('li', { text: 'Click proxy to restore latest arrangement, Shift+click for selector' });
+		v016List.createEl('li', { text: 'Click proxy without arrangement to expand to full window' });
+		v016List.createEl('li', { text: 'Proxy window positions and sizes saved/restored with arrangements' });
+		v016List.createEl('li', { text: 'Added Experimental settings tab to enable/disable proxy windows' });
+		v016List.createEl('li', { text: 'Fixed notifications not auto-dismissing (4 second timeout)' });
+		v016List.createEl('li', { text: 'Notifications and focus tints no longer appear in proxy windows' });
+
 		// Version 0.1.3
 		const v013 = containerEl.createDiv({ cls: 'perspecta-changelog-version' });
 		v013.createEl('h3', { text: 'v0.1.3' });
@@ -3317,10 +3329,10 @@ class PerspectaSettingTab extends PluginSettingTab {
 						btn.setButtonText('Migrating...');
 						try {
 							const result = await this.plugin.migrateToExternalStorage();
-							new Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ''}`);
+							new Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ''}`, 4000);
 							this.display(); // Refresh to show updated state
 						} catch (e) {
-							new Notice('Migration failed: ' + (e as Error).message);
+							new Notice('Migration failed: ' + (e as Error).message, 4000);
 							btn.setDisabled(false);
 							btn.setButtonText('Migrate to external');
 						}
@@ -3337,10 +3349,10 @@ class PerspectaSettingTab extends PluginSettingTab {
 						btn.setButtonText('Migrating...');
 						try {
 							const result = await this.plugin.migrateToFrontmatter();
-							new Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ''}`);
+							new Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ''}`, 4000);
 							this.display(); // Refresh to show updated state
 						} catch (e) {
-							new Notice('Migration failed: ' + (e as Error).message);
+							new Notice('Migration failed: ' + (e as Error).message, 4000);
 							btn.setDisabled(false);
 							btn.setButtonText('Migrate to frontmatter');
 						}
@@ -3357,9 +3369,9 @@ class PerspectaSettingTab extends PluginSettingTab {
 					btn.setButtonText('Cleaning...');
 					try {
 						const count = await this.plugin.cleanupOldUidProperties();
-						new Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? 's' : ''}` : 'No old uid properties found');
+						new Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? 's' : ''}` : 'No old uid properties found', 4000);
 					} catch (e) {
-						new Notice('Cleanup failed: ' + (e as Error).message);
+						new Notice('Cleanup failed: ' + (e as Error).message, 4000);
 					}
 					btn.setDisabled(false);
 					btn.setButtonText('Clean up');
@@ -3377,10 +3389,10 @@ class PerspectaSettingTab extends PluginSettingTab {
 					btn.setButtonText('Backing up...');
 					try {
 						const result = await this.plugin.backupArrangements();
-						new Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`);
+						new Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`, 4000);
 						this.display(); // Refresh to show new backup in restore list
 					} catch (e) {
-						new Notice('Backup failed: ' + (e as Error).message);
+						new Notice('Backup failed: ' + (e as Error).message, 4000);
 					}
 					btn.setDisabled(false);
 					btn.setButtonText('Create backup');
@@ -3422,9 +3434,9 @@ class PerspectaSettingTab extends PluginSettingTab {
 						restoreBtn.textContent = 'Restoring...';
 						try {
 							const result = await this.plugin.restoreFromBackup(backup.path);
-							new Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ''}`);
+							new Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ''}`, 4000);
 						} catch (e) {
-							new Notice('Restore failed: ' + (e as Error).message);
+							new Notice('Restore failed: ' + (e as Error).message, 4000);
 						}
 						restoreBtn.disabled = false;
 						restoreBtn.textContent = 'Restore';
