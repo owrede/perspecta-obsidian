@@ -2,6 +2,11 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.9] - 2025-12-06
+
+- Removed excess padding from proxy window preview content
+- Fixed bottom margin in proxy windows
+
 ## [0.1.8] - 2025-12-06
 
 - Unified changelog system - single source of truth for all changelogs

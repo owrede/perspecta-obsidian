@@ -784,6 +784,14 @@ body.perspecta-proxy-window .workspace-split.mod-root {
 .perspecta-proxy-window .workspace-leaf-content,
 body.perspecta-proxy-window .workspace-leaf-content {
     padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Remove all gaps/margins in proxy window */
+.perspecta-proxy-window .view-content,
+body.perspecta-proxy-window .view-content {
+    padding: 0 !important;
+    margin: 0 !important;
 }
 
 /* Make the workspace fill the window */
@@ -877,6 +885,8 @@ body.perspecta-proxy-window .workspace-leaf {
     overflow: auto;
     position: relative;
     cursor: pointer;
+    margin: 0;
+    padding: 0;
 }
 
 /* Preview content - scaled down markdown (scale set dynamically via JS) */
@@ -885,7 +895,8 @@ body.perspecta-proxy-window .workspace-leaf {
     top: 0;
     left: 0;
     transform-origin: top left;
-    padding: 1em;
+    padding: 0;
+    margin: 0;
     overflow: visible;
     pointer-events: auto; /* Allow scrolling and clicks */
 }

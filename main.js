@@ -32,6 +32,14 @@ var import_obsidian3 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.9",
+    date: "2025-12-06",
+    changes: [
+      "Removed excess padding from proxy window preview content",
+      "Fixed bottom margin in proxy windows"
+    ]
+  },
+  {
     version: "0.1.8",
     date: "2025-12-06",
     changes: [
