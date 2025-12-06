@@ -8,6 +8,12 @@ export interface TabState {
 	uid?: string;   // Unique ID from frontmatter (for move/rename resilience)
 	name?: string;  // Filename without extension (fallback for search)
 	scroll?: number; // Scroll position (from view.currentMode.getScroll())
+	// Canvas viewport state
+	canvasViewport?: {
+		tx: number;    // Horizontal pan position
+		ty: number;    // Vertical pan position
+		zoom: number;  // Zoom level
+	};
 }
 
 export interface SplitState {
@@ -91,6 +97,7 @@ export interface PerspectaSettings {
 	autoConfirmOverwrite: boolean;
 	// Experimental features
 	enableProxyWindows: boolean;
+	proxyPreviewScale: number;  // Scale factor for proxy window preview (0.1 to 1.0)
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -106,7 +113,8 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	maxArrangementsPerNote: 1,
 	autoConfirmOverwrite: false,
 	// Experimental features
-	enableProxyWindows: false
+	enableProxyWindows: false,
+	proxyPreviewScale: 0.35
 };
 
 // Timestamped arrangement for multi-arrangement storage

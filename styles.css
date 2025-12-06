@@ -807,14 +807,12 @@ body.perspecta-proxy-window .workspace-leaf {
     z-index: 100 !important;
     display: flex !important;
     flex-direction: column;
-    align-items: flex-start;
-    justify-content: flex-start;
-    padding: 2em;
     background-color: var(--background-primary);
     user-select: none;
     cursor: pointer;
     transition: background-color 0.15s ease;
-    /* Exclude from drag so clicking works, we handle drag via title row */
+    overflow: hidden;
+    /* Exclude from drag so clicking works */
     -webkit-app-region: no-drag;
     app-region: no-drag;
 }
@@ -822,42 +820,43 @@ body.perspecta-proxy-window .workspace-leaf {
 /* Note: CSS :hover doesn't work reliably in Electron popout windows.
    Hover highlighting is handled via JavaScript mouseenter/mouseleave events. */
 
-/* Title row - spread title and button apart */
-.perspecta-proxy-title-row {
+/* Header row - title and expand button */
+.perspecta-proxy-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     width: 100%;
+    padding: 8px 12px;
+    background: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
 }
 
-/* Note title - clickable */
+/* Note title */
 .perspecta-proxy-title {
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-normal);
-    text-align: left;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
     min-width: 0;
-    cursor: pointer;
 }
 
-/* Expand button - top right */
+/* Expand button */
 .perspecta-proxy-expand {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
     border-radius: 4px;
     color: var(--text-muted);
     cursor: pointer;
     flex-shrink: 0;
     margin-left: 8px;
     transition: color 0.15s ease, background-color 0.15s ease;
-    /* Exclude from drag region so it's clickable */
     -webkit-app-region: no-drag;
     app-region: no-drag;
 }
@@ -868,8 +867,51 @@ body.perspecta-proxy-window .workspace-leaf {
 }
 
 .perspecta-proxy-expand svg {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
+}
+
+/* Preview wrapper - contains the scaled content, scrollable */
+.perspecta-proxy-preview-wrapper {
+    flex: 1;
+    overflow: auto;
+    position: relative;
+    cursor: pointer;
+}
+
+/* Preview content - scaled down markdown (scale set dynamically via JS) */
+.perspecta-proxy-preview-content {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: top left;
+    padding: 1em;
+    overflow: visible;
+    pointer-events: auto; /* Allow scrolling and clicks */
+}
+
+/* Style the rendered markdown in preview */
+.perspecta-proxy-preview-content p,
+.perspecta-proxy-preview-content h1,
+.perspecta-proxy-preview-content h2,
+.perspecta-proxy-preview-content h3,
+.perspecta-proxy-preview-content h4,
+.perspecta-proxy-preview-content h5,
+.perspecta-proxy-preview-content h6,
+.perspecta-proxy-preview-content ul,
+.perspecta-proxy-preview-content ol,
+.perspecta-proxy-preview-content li,
+.perspecta-proxy-preview-content blockquote,
+.perspecta-proxy-preview-content pre,
+.perspecta-proxy-preview-content code,
+.perspecta-proxy-preview-content table {
+    margin: 0.5em 0;
+}
+
+/* Ensure images don't overflow */
+.perspecta-proxy-preview-content img {
+    max-width: 100%;
+    height: auto;
 }
 
 /* Experimental settings section */

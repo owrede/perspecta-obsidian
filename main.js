@@ -43,7 +43,8 @@ var DEFAULT_SETTINGS = {
   maxArrangementsPerNote: 1,
   autoConfirmOverwrite: false,
   // Experimental features
-  enableProxyWindows: false
+  enableProxyWindows: false,
+  proxyPreviewScale: 0.35
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
@@ -1159,7 +1160,7 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
     super(leaf);
     this.state = { filePath: "" };
     this.file = null;
-    this.originalTitleBarStyle = null;
+    this.renderComponent = null;
   }
   getViewType() {
     return PROXY_VIEW_TYPE;
@@ -1218,31 +1219,79 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
     this.configureElectronBrowserWindow();
   }
   configureElectronBrowserWindow() {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const remote = getElectronRemote();
     if (!remote)
+      return;
+    const win = this.containerEl.win || ((_b = (_a = this.leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win);
+    if (!win || win === window)
       return;
     try {
       const allWindows = remote.BrowserWindow.getAllWindows();
       for (const bw of allWindows) {
-        const title = ((_a = bw.getTitle) == null ? void 0 : _a.call(bw)) || "";
-        if (title.includes("Proxy") || title.includes(((_b = this.file) == null ? void 0 : _b.basename) || "")) {
-          bw.setMinimumSize(150, 40);
-          if (import_obsidian2.Platform.isMacOS && typeof bw.setWindowButtonVisibility === "function") {
-            bw.setWindowButtonVisibility(false);
+        const webContents = bw.webContents;
+        if (webContents) {
+          try {
+            const bwDoc = (_d = (_c = webContents.mainFrame) == null ? void 0 : _c.window) == null ? void 0 : _d.document;
+            if (bwDoc === win.document) {
+              this.applyBrowserWindowConfig(bw);
+              return;
+            }
+          } catch (e) {
           }
-          break;
+        }
+        const title = ((_e = bw.getTitle) == null ? void 0 : _e.call(bw)) || "";
+        if (((_f = this.file) == null ? void 0 : _f.basename) && title.includes(this.file.basename)) {
+          this.applyBrowserWindowConfig(bw);
+          return;
+        }
+      }
+      for (const bw of allWindows) {
+        if (!((_g = bw.isMainWindow) == null ? void 0 : _g.call(bw)) && ((_i = (_h = bw.getMinimumSize) == null ? void 0 : _h.call(bw)) == null ? void 0 : _i[0]) !== 150) {
+          const title = ((_j = bw.getTitle) == null ? void 0 : _j.call(bw)) || "";
+          if (title.includes("Proxy") || ((_k = this.file) == null ? void 0 : _k.basename) && title.includes(this.file.basename)) {
+            this.applyBrowserWindowConfig(bw);
+          }
         }
       }
     } catch (e) {
       console.log("[Perspecta] Could not configure window:", e);
     }
   }
-  renderContent(container) {
-    var _a;
-    container.addEventListener("click", (e) => {
-      if (e.target.closest(".perspecta-proxy-expand"))
-        return;
+  applyBrowserWindowConfig(bw) {
+    bw.setMinimumSize(150, 40);
+    if (import_obsidian2.Platform.isMacOS && typeof bw.setWindowButtonVisibility === "function") {
+      bw.setWindowButtonVisibility(false);
+    }
+  }
+  async renderContent(container) {
+    var _a, _b, _c;
+    const headerRow = container.createDiv({ cls: "perspecta-proxy-header" });
+    headerRow.style.cssText += "-webkit-app-region: drag; cursor: move;";
+    headerRow.createDiv({
+      cls: "perspecta-proxy-title",
+      text: ((_a = this.file) == null ? void 0 : _a.basename) || "No file"
+    });
+    const expandBtn = headerRow.createDiv({ cls: "perspecta-proxy-expand" });
+    expandBtn.style.cssText += "-webkit-app-region: no-drag; cursor: pointer;";
+    (0, import_obsidian2.setIcon)(expandBtn, "maximize-2");
+    expandBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.expandToFullWindow();
+    });
+    const previewWrapper = container.createDiv({ cls: "perspecta-proxy-preview-wrapper" });
+    const previewContent = previewWrapper.createDiv({ cls: "perspecta-proxy-preview-content" });
+    const plugin = this.app.plugins.plugins["perspecta-obsidian"];
+    const scale = (_c = (_b = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _b.proxyPreviewScale) != null ? _c : 0.35;
+    const inverseScale = 100 / (scale * 100);
+    previewContent.style.width = `${inverseScale * 100}%`;
+    previewContent.style.height = `${inverseScale * 100}%`;
+    previewContent.style.transform = `scale(${scale})`;
+    await this.renderMarkdownPreview(previewContent);
+    previewWrapper.style.overflow = "auto";
+    previewWrapper.style.cursor = "pointer";
+    previewContent.style.pointerEvents = "auto";
+    previewWrapper.addEventListener("click", (e) => {
       if (this.state.arrangementUid) {
         const forceLatest = !e.shiftKey;
         this.restoreArrangement(forceLatest);
@@ -1250,25 +1299,73 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
         this.expandToFullWindow();
       }
     });
-    container.addEventListener("mouseenter", () => {
-      container.style.backgroundColor = "var(--background-secondary)";
+    container.tabIndex = 0;
+    container.addEventListener("keydown", (e) => {
+      const scrollAmount = 50;
+      if (e.key === "ArrowDown" || e.key === "j") {
+        previewWrapper.scrollTop += scrollAmount;
+        e.preventDefault();
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        previewWrapper.scrollTop -= scrollAmount;
+        e.preventDefault();
+      } else if (e.key === "PageDown") {
+        previewWrapper.scrollTop += previewWrapper.clientHeight;
+        e.preventDefault();
+      } else if (e.key === "PageUp") {
+        previewWrapper.scrollTop -= previewWrapper.clientHeight;
+        e.preventDefault();
+      } else if (e.key === "Home") {
+        previewWrapper.scrollTop = 0;
+        e.preventDefault();
+      } else if (e.key === "End") {
+        previewWrapper.scrollTop = previewWrapper.scrollHeight;
+        e.preventDefault();
+      } else if (e.key === "Enter" || e.key === " ") {
+        if (this.state.arrangementUid) {
+          this.restoreArrangement(true);
+        } else {
+          this.expandToFullWindow();
+        }
+        e.preventDefault();
+      }
     });
-    container.addEventListener("mouseleave", () => {
-      container.style.backgroundColor = "var(--background-primary)";
+    container.addEventListener("mousedown", () => {
+      container.focus();
     });
-    const titleRow = container.createDiv({ cls: "perspecta-proxy-title-row" });
-    titleRow.createDiv({
-      cls: "perspecta-proxy-title",
-      text: ((_a = this.file) == null ? void 0 : _a.basename) || "No file"
+    previewWrapper.addEventListener("mouseenter", () => {
+      previewWrapper.style.backgroundColor = "var(--background-secondary)";
     });
-    const expandBtn = titleRow.createDiv({ cls: "perspecta-proxy-expand" });
-    (0, import_obsidian2.setIcon)(expandBtn, "maximize-2");
-    expandBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.expandToFullWindow();
+    previewWrapper.addEventListener("mouseleave", () => {
+      previewWrapper.style.backgroundColor = "";
     });
   }
+  async renderMarkdownPreview(container) {
+    if (!this.file)
+      return;
+    try {
+      const content = await this.app.vault.cachedRead(this.file);
+      if (this.renderComponent) {
+        this.renderComponent.unload();
+      }
+      this.renderComponent = new import_obsidian2.Component();
+      this.renderComponent.load();
+      await import_obsidian2.MarkdownRenderer.render(
+        this.app,
+        content,
+        container,
+        this.file.path,
+        this.renderComponent
+      );
+    } catch (e) {
+      console.log("[Perspecta] Could not render preview:", e);
+      container.setText("Preview unavailable");
+    }
+  }
   async onClose() {
+    if (this.renderComponent) {
+      this.renderComponent.unload();
+      this.renderComponent = null;
+    }
   }
   async setState(state, result) {
     this.state = state;
@@ -1288,9 +1385,11 @@ var ProxyNoteView = class extends import_obsidian2.ItemView {
   async restoreArrangement(forceLatest = true) {
     if (!this.state.arrangementUid || !this.file)
       return;
+    const file = this.file;
     const plugin = this.app.plugins.plugins["perspecta-obsidian"];
+    this.leaf.detach();
     if (plugin && typeof plugin.restoreContext === "function") {
-      await plugin.restoreContext(this.file, forceLatest);
+      await plugin.restoreContext(file, forceLatest);
     }
   }
   async expandToFullWindow() {
@@ -1361,6 +1460,7 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
     // ============================================================================
     // Track path corrections during restore (populated by restoreTabGroup and helpers)
     this.pathCorrections = /* @__PURE__ */ new Map();
+    this.isRestoring = false;
     // Queue of pending tab activations to process after restore
     this.pendingTabActivations = [];
   }
@@ -1568,10 +1668,16 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
     const floatingSplit = workspace.floatingSplit;
     if (!(floatingSplit == null ? void 0 : floatingSplit.children))
       return states;
+    const seenWindows = /* @__PURE__ */ new Set();
     for (const container of floatingSplit.children) {
       const win = container == null ? void 0 : container.win;
       if (!win || win === window)
         continue;
+      if (seenWindows.has(win)) {
+        console.log("[Perspecta] Skipping duplicate window in capturePopoutStates");
+        continue;
+      }
+      seenWindows.add(win);
       if (COORDINATE_DEBUG) {
         console.log(`[Perspecta] capturePopoutStates container:`, {
           containerType: (_a = container == null ? void 0 : container.constructor) == null ? void 0 : _a.name,
@@ -1655,7 +1761,7 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
     return this.captureTabGroup(node);
   }
   captureTabGroup(tabContainer) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const tabs = [];
     const children = (tabContainer == null ? void 0 : tabContainer.children) || [];
     const currentTabIndex = (_a = tabContainer == null ? void 0 : tabContainer.currentTab) != null ? _a : 0;
@@ -1669,16 +1775,26 @@ var PerspectaPlugin = class extends import_obsidian3.Plugin {
         const uid = getUidFromCache(this.app, file);
         const name = file.basename;
         const scroll = (_e = (_d = (_c = leaf == null ? void 0 : leaf.view) == null ? void 0 : _c.currentMode) == null ? void 0 : _d.getScroll) == null ? void 0 : _e.call(_d);
+        let canvasViewport;
+        const canvas = (_f = leaf == null ? void 0 : leaf.view) == null ? void 0 : _f.canvas;
+        if (canvas && typeof canvas.tx === "number") {
+          canvasViewport = {
+            tx: canvas.tx,
+            ty: canvas.ty,
+            zoom: canvas.tZoom
+          };
+        }
         const isActive = i === currentTabIndex;
         if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}`);
+          console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ""}`);
         }
         tabs.push({
           path: file.path,
           active: isActive,
           uid,
           name,
-          scroll: typeof scroll === "number" ? scroll : void 0
+          scroll: typeof scroll === "number" ? scroll : void 0,
+          canvasViewport
         });
       }
     }
@@ -2199,7 +2315,13 @@ ${content}`;
       };
     }
   }
+  // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
+    if (this.isRestoring) {
+      console.log("[Perspecta] Skipping restoreContext - already restoring");
+      return;
+    }
+    this.isRestoring = true;
     const fullStart = performance.now();
     PerfTimer.begin("restoreContext");
     this.pathCorrections.clear();
@@ -2207,35 +2329,36 @@ ${content}`;
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
       new import_obsidian3.Notice("No active file", 4e3);
+      this.isRestoring = false;
       return;
     }
-    const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
-    PerfTimer.mark("getContextForFileWithSelection");
-    if (!contextResult || contextResult.cancelled) {
+    try {
+      const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
+      PerfTimer.mark("getContextForFileWithSelection");
+      if (!contextResult || contextResult.cancelled) {
+        PerfTimer.end("restoreContext");
+        return;
+      }
+      const context = contextResult.context;
+      if (!context) {
+        new import_obsidian3.Notice("No context found in this note", 4e3);
+        return;
+      }
+      const focusedWin = await this.applyArrangement(context, targetFile.path);
+      PerfTimer.mark("applyArrangement");
+      if (this.pathCorrections.size > 0) {
+        await this.updateContextWithCorrectedPaths(targetFile, context);
+        PerfTimer.mark("updateContextWithCorrectedPaths");
+      }
       PerfTimer.end("restoreContext");
-      return;
-    }
-    const context = contextResult.context;
-    if (!context) {
-      new import_obsidian3.Notice("No context found in this note", 4e3);
-      return;
-    }
-    const focusedWin = await this.applyArrangement(context, targetFile.path);
-    PerfTimer.mark("applyArrangement");
-    if (this.pathCorrections.size > 0) {
-      await this.updateContextWithCorrectedPaths(targetFile, context);
-      PerfTimer.mark("updateContextWithCorrectedPaths");
-      const count = this.pathCorrections.size;
-      new import_obsidian3.Notice(`Context restored (${count} file path${count > 1 ? "s" : ""} updated)`, 4e3);
-    } else {
-      this.showNoticeInWindow(focusedWin, "Context restored");
-    }
-    PerfTimer.end("restoreContext");
-    if (PerfTimer.isEnabled()) {
-      requestIdleCallback(() => {
-        const totalTime = performance.now() - fullStart;
-        console.log(`[Perspecta] \u{1F3C1} Full restore (including render): ${totalTime.toFixed(0)}ms`);
-      }, { timeout: 5e3 });
+      if (PerfTimer.isEnabled()) {
+        requestIdleCallback(() => {
+          const totalTime = performance.now() - fullStart;
+          console.log(`[Perspecta] \u{1F3C1} Full restore (including render): ${totalTime.toFixed(0)}ms`);
+        }, { timeout: 5e3 });
+      }
+    } finally {
+      this.isRestoring = false;
     }
   }
   // Get context with potential user selection for multiple arrangements
@@ -2380,7 +2503,16 @@ ${content}`;
       const workspace = this.app.workspace;
       await this.restoreWorkspaceNode(workspace.rootSplit, v2.main.root, mainLeaves[0]);
       PerfTimer.mark("restoreMainWorkspace");
+      const restoredPaths = /* @__PURE__ */ new Set();
       for (let i = 0; i < v2.popouts.length; i++) {
+        const firstTab = this.getFirstTab(v2.popouts[i].root);
+        const popoutPath = firstTab == null ? void 0 : firstTab.path;
+        if (popoutPath && restoredPaths.has(popoutPath)) {
+          continue;
+        }
+        if (popoutPath) {
+          restoredPaths.add(popoutPath);
+        }
         const tiledPosition = useTiling && tiledPositions.length > i + 1 ? tiledPositions[i + 1] : void 0;
         await this.restorePopoutWindow(v2.popouts[i], v2.sourceScreen, tiledPosition);
         PerfTimer.mark(`restorePopout[${i}]`);
@@ -2699,42 +2831,89 @@ ${content}`;
     }, 100);
   }
   /**
-   * Collect scroll positions from a workspace node state and apply them to matching leaves.
+   * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
    */
   scheduleScrollRestoration(state) {
     const scrollMap = /* @__PURE__ */ new Map();
-    this.collectScrollPositions(state, scrollMap);
-    if (scrollMap.size === 0)
+    const canvasViewportMap = /* @__PURE__ */ new Map();
+    this.collectViewPositions(state, scrollMap, canvasViewportMap);
+    if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
-    console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll positions to restore`);
+    if (PerfTimer.isEnabled()) {
+      console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
+    }
     setTimeout(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         var _a, _b;
         const file = (_a = leaf.view) == null ? void 0 : _a.file;
-        if (file && scrollMap.has(file.path)) {
+        if (!file)
+          return;
+        if (scrollMap.has(file.path)) {
           const scroll = scrollMap.get(file.path);
           if (scroll !== void 0 && scroll > 0) {
             const view = leaf.view;
             if ((_b = view == null ? void 0 : view.currentMode) == null ? void 0 : _b.applyScroll) {
               view.currentMode.applyScroll(scroll);
-              console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> ${scroll}`);
+              if (PerfTimer.isEnabled()) {
+                console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
+              }
             }
+          }
+        }
+        if (canvasViewportMap.has(file.path)) {
+          const viewport = canvasViewportMap.get(file.path);
+          if (viewport) {
+            this.restoreCanvasViewport(leaf, viewport);
           }
         }
       });
     }, 500);
   }
-  collectScrollPositions(node, map) {
+  collectViewPositions(node, scrollMap, canvasViewportMap) {
     if (node.type === "tabs") {
       for (const tab of node.tabs) {
         if (tab.scroll !== void 0 && tab.scroll > 0) {
-          map.set(tab.path, tab.scroll);
+          scrollMap.set(tab.path, tab.scroll);
+        }
+        if (tab.canvasViewport) {
+          canvasViewportMap.set(tab.path, tab.canvasViewport);
         }
       }
     } else {
       for (const child of node.children) {
-        this.collectScrollPositions(child, map);
+        this.collectViewPositions(child, scrollMap, canvasViewportMap);
       }
+    }
+  }
+  /**
+   * Restore canvas viewport (pan and zoom)
+   */
+  restoreCanvasViewport(leaf, viewport) {
+    var _a, _b;
+    const canvas = (_a = leaf.view) == null ? void 0 : _a.canvas;
+    if (!canvas)
+      return;
+    try {
+      const currentZoom = canvas.tZoom || 1;
+      const zoomDelta = viewport.zoom / currentZoom;
+      if (typeof canvas.zoomBy === "function") {
+        canvas.zoomBy(zoomDelta);
+      }
+      if (typeof canvas.panTo === "function") {
+        canvas.panTo(viewport.tx, viewport.ty);
+      }
+      if (typeof canvas.markViewportChanged === "function") {
+        canvas.markViewportChanged();
+      }
+      if (typeof canvas.requestFrame === "function") {
+        canvas.requestFrame();
+      }
+      if (PerfTimer.isEnabled()) {
+        const file = (_b = leaf.view) == null ? void 0 : _b.file;
+        console.log(`[Perspecta] restoreCanvasViewport: ${file == null ? void 0 : file.basename} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+      }
+    } catch (e) {
+      console.log("[Perspecta] Could not restore canvas viewport:", e);
     }
   }
   /**
@@ -3555,7 +3734,10 @@ ${content}`;
   updateContextIndicator(file) {
     var _a, _b;
     PerfTimer.begin("updateContextIndicator");
-    document.querySelectorAll(".view-header-title-container .perspecta-context-indicator").forEach((el) => el.remove());
+    const allDocs = this.getAllWindowDocuments();
+    for (const doc of allDocs) {
+      doc.querySelectorAll(".view-header-title-container .perspecta-context-indicator").forEach((el) => el.remove());
+    }
     PerfTimer.mark("removeOldIndicators");
     if (!file) {
       PerfTimer.end("updateContextIndicator");
@@ -3572,18 +3754,37 @@ ${content}`;
     const hasContext = hasContextFrontmatter || hasContextExternal;
     PerfTimer.mark("checkHasContext");
     if (hasContext) {
-      const header = document.querySelector(".workspace-leaf.mod-active .view-header-title-container");
-      if (header && !header.querySelector(".perspecta-context-indicator")) {
-        const icon = this.createTargetIcon();
-        icon.setAttribute("aria-label", "Has saved context - click to restore");
-        icon.addEventListener("click", () => this.restoreContext(file));
-        header.appendChild(icon);
+      for (const doc of allDocs) {
+        const header = doc.querySelector(".workspace-leaf.mod-active .view-header-title-container");
+        if (header && !header.querySelector(".perspecta-context-indicator")) {
+          const icon = this.createTargetIcon(doc);
+          icon.setAttribute("aria-label", "Has saved context - click to restore");
+          icon.addEventListener("click", () => this.restoreContext(file));
+          header.appendChild(icon);
+        }
       }
     }
     PerfTimer.end("updateContextIndicator");
   }
-  createTargetIcon() {
-    const el = document.createElement("span");
+  /**
+   * Get all window documents (main window + popouts)
+   */
+  getAllWindowDocuments() {
+    const docs = [document];
+    const workspace = this.app.workspace;
+    const floatingSplit = workspace.floatingSplit;
+    if (floatingSplit == null ? void 0 : floatingSplit.children) {
+      for (const container of floatingSplit.children) {
+        const win = container == null ? void 0 : container.win;
+        if (win && win !== window && win.document) {
+          docs.push(win.document);
+        }
+      }
+    }
+    return docs;
+  }
+  createTargetIcon(doc = document) {
+    const el = doc.createElement("span");
     el.className = "perspecta-context-indicator";
     (0, import_obsidian3.setIcon)(el, "target");
     return el;
@@ -3791,6 +3992,18 @@ var PerspectaSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   displayChangelog(containerEl) {
     containerEl.createEl("h2", { text: "Changelog" });
+    const v017 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
+    v017.createEl("h3", { text: "v0.1.7" });
+    const v017List = v017.createEl("ul");
+    v017List.createEl("li", { text: "Proxy windows now show scaled markdown preview of note content" });
+    v017List.createEl("li", { text: "Draggable title bar - drag header to move proxy window" });
+    v017List.createEl("li", { text: "Scrollable content - use mouse wheel or arrow keys to scroll preview" });
+    v017List.createEl("li", { text: "Keyboard navigation: \u2191/\u2193, j/k, Page Up/Down, Home/End, Enter/Space" });
+    v017List.createEl("li", { text: "Configurable preview scale factor in Experimental settings (default 35%)" });
+    v017List.createEl("li", { text: "Canvas viewport and zoom level now saved and restored" });
+    v017List.createEl("li", { text: "Context indicator (target icon) now appears correctly in popout windows" });
+    v017List.createEl("li", { text: "Fixed duplicate proxy windows when restoring contexts" });
+    v017List.createEl("li", { text: "Fixed concurrent restore guard to prevent window duplication" });
     const v016 = containerEl.createDiv({ cls: "perspecta-changelog-version" });
     v016.createEl("h3", { text: "v0.1.6" });
     const v016List = v016.createEl("ul");
@@ -3984,15 +4197,19 @@ var PerspectaSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.display();
     }));
     if (this.plugin.settings.enableProxyWindows) {
+      new import_obsidian3.Setting(containerEl).setName("Preview scale").setDesc("Scale factor for the note preview in proxy windows (10% to 100%)").addSlider((slider) => slider.setLimits(10, 100, 5).setValue(this.plugin.settings.proxyPreviewScale * 100).setDynamicTooltip().onChange(async (value) => {
+        this.plugin.settings.proxyPreviewScale = value / 100;
+        await this.plugin.saveSettings();
+      }));
       const infoDiv = containerEl.createDiv({ cls: "setting-item-description" });
       infoDiv.style.marginTop = "12px";
       infoDiv.style.marginBottom = "12px";
       infoDiv.innerHTML = `
 				<strong>How to use:</strong><br>
 				\u2022 Use command "Convert to proxy window" on any popout window<br>
-				\u2022 The proxy shows only the note title<br>
+				\u2022 The proxy shows a scaled preview of the note content<br>
 				\u2022 Click the expand icon (\u2197) to restore the full window<br>
-				\u2022 If the note has a saved arrangement, click the title to restore it
+				\u2022 If the note has a saved arrangement, click anywhere to restore it
 			`;
     }
   }

@@ -390,9 +390,19 @@ export default class PerspectaPlugin extends Plugin {
 		const floatingSplit = workspace.floatingSplit;
 		if (!floatingSplit?.children) return states;
 
+		// Track seen windows to prevent duplicates
+		const seenWindows = new Set<Window>();
+
 		for (const container of floatingSplit.children) {
 			const win = container?.win;
 			if (!win || win === window) continue;
+
+			// Skip if we've already captured this window
+			if (seenWindows.has(win)) {
+				console.log('[Perspecta] Skipping duplicate window in capturePopoutStates');
+				continue;
+			}
+			seenWindows.add(win);
 
 			if (COORDINATE_DEBUG) {
 				console.log(`[Perspecta] capturePopoutStates container:`, {
@@ -516,9 +526,20 @@ export default class PerspectaPlugin extends Plugin {
 				// Get scroll position if available
 				const scroll = (leaf?.view as any)?.currentMode?.getScroll?.();
 
+				// Get canvas viewport if this is a canvas view
+				let canvasViewport: { tx: number; ty: number; zoom: number } | undefined;
+				const canvas = (leaf?.view as any)?.canvas;
+				if (canvas && typeof canvas.tx === 'number') {
+					canvasViewport = {
+						tx: canvas.tx,
+						ty: canvas.ty,
+						zoom: canvas.tZoom
+					};
+				}
+
 				const isActive = i === currentTabIndex;
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}`);
+					console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ''}`);
 				}
 
 				tabs.push({
@@ -526,7 +547,8 @@ export default class PerspectaPlugin extends Plugin {
 					active: isActive,
 					uid,
 					name,
-					scroll: typeof scroll === 'number' ? scroll : undefined
+					scroll: typeof scroll === 'number' ? scroll : undefined,
+					canvasViewport
 				});
 			}
 		}
@@ -1202,8 +1224,16 @@ export default class PerspectaPlugin extends Plugin {
 
 	// Track path corrections during restore (populated by restoreTabGroup and helpers)
 	private pathCorrections: Map<string, { newPath: string; newName: string }> = new Map();
+	private isRestoring = false;  // Guard against concurrent restores
 
 	async restoreContext(file?: TFile, forceLatest: boolean = false) {
+		// Prevent concurrent restores which can cause duplicate windows
+		if (this.isRestoring) {
+			console.log('[Perspecta] Skipping restoreContext - already restoring');
+			return;
+		}
+		this.isRestoring = true;
+
 		const fullStart = performance.now();
 		PerfTimer.begin('restoreContext');
 
@@ -1213,40 +1243,44 @@ export default class PerspectaPlugin extends Plugin {
 		const targetFile = file ?? this.app.workspace.getActiveFile();
 		PerfTimer.mark('getActiveFile');
 
-		if (!targetFile) { new Notice('No active file', 4000); return; }
-
-		// Get context - may show selector if multiple arrangements exist (unless forceLatest)
-		const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
-		PerfTimer.mark('getContextForFileWithSelection');
-
-		if (!contextResult || contextResult.cancelled) {
-			PerfTimer.end('restoreContext');
+		if (!targetFile) {
+			new Notice('No active file', 4000);
+			this.isRestoring = false;
 			return;
 		}
 
-		const context = contextResult.context;
-		if (!context) { new Notice('No context found in this note', 4000); return; }
+		try {
+			// Get context - may show selector if multiple arrangements exist (unless forceLatest)
+			const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
+			PerfTimer.mark('getContextForFileWithSelection');
 
-		const focusedWin = await this.applyArrangement(context, targetFile.path);
-		PerfTimer.mark('applyArrangement');
+			if (!contextResult || contextResult.cancelled) {
+				PerfTimer.end('restoreContext');
+				return;
+			}
 
-		// If any files were resolved via fallback, update the saved context with corrected paths
-		if (this.pathCorrections.size > 0) {
-			await this.updateContextWithCorrectedPaths(targetFile, context);
-			PerfTimer.mark('updateContextWithCorrectedPaths');
-			const count = this.pathCorrections.size;
-			new Notice(`Context restored (${count} file path${count > 1 ? 's' : ''} updated)`, 4000);
-		} else {
-			this.showNoticeInWindow(focusedWin, 'Context restored');
-		}
-		PerfTimer.end('restoreContext');
+			const context = contextResult.context;
+			if (!context) { new Notice('No context found in this note', 4000); return; }
 
-		// Measure time until next idle - this captures rendering/painting time
-		if (PerfTimer.isEnabled()) {
-			requestIdleCallback(() => {
-				const totalTime = performance.now() - fullStart;
-				console.log(`[Perspecta] 🏁 Full restore (including render): ${totalTime.toFixed(0)}ms`);
-			}, { timeout: 5000 });
+			const focusedWin = await this.applyArrangement(context, targetFile.path);
+			PerfTimer.mark('applyArrangement');
+
+			// If any files were resolved via fallback, update the saved context with corrected paths
+			if (this.pathCorrections.size > 0) {
+				await this.updateContextWithCorrectedPaths(targetFile, context);
+				PerfTimer.mark('updateContextWithCorrectedPaths');
+			}
+			PerfTimer.end('restoreContext');
+
+			// Measure time until next idle - this captures rendering/painting time
+			if (PerfTimer.isEnabled()) {
+				requestIdleCallback(() => {
+					const totalTime = performance.now() - fullStart;
+					console.log(`[Perspecta] 🏁 Full restore (including render): ${totalTime.toFixed(0)}ms`);
+				}, { timeout: 5000 });
+			}
+		} finally {
+			this.isRestoring = false;
 		}
 	}
 
@@ -1446,8 +1480,21 @@ export default class PerspectaPlugin extends Plugin {
 			await this.restoreWorkspaceNode(workspace.rootSplit, v2.main.root, mainLeaves[0]);
 			PerfTimer.mark('restoreMainWorkspace');
 
-			// Restore popouts
+			// Restore popouts (with deduplication to prevent duplicate windows)
+			const restoredPaths = new Set<string>();
 			for (let i = 0; i < v2.popouts.length; i++) {
+				// Get the primary file path for this popout to detect duplicates
+				const firstTab = this.getFirstTab(v2.popouts[i].root);
+				const popoutPath = firstTab?.path;
+
+				// Skip if we've already restored a popout with this exact path
+				if (popoutPath && restoredPaths.has(popoutPath)) {
+					continue;
+				}
+				if (popoutPath) {
+					restoredPaths.add(popoutPath);
+				}
+
 				const tiledPosition = useTiling && tiledPositions.length > i + 1 ? tiledPositions[i + 1] : undefined;
 				await this.restorePopoutWindow(v2.popouts[i], v2.sourceScreen, tiledPosition);
 				PerfTimer.mark(`restorePopout[${i}]`);
@@ -1836,47 +1883,107 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	/**
-	 * Collect scroll positions from a workspace node state and apply them to matching leaves.
+	 * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
 	 */
 	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
-		// Build a map of path -> scroll from the state
+		// Build maps of path -> scroll and path -> canvasViewport from the state
 		const scrollMap = new Map<string, number>();
-		this.collectScrollPositions(state, scrollMap);
+		const canvasViewportMap = new Map<string, { tx: number; ty: number; zoom: number }>();
+		this.collectViewPositions(state, scrollMap, canvasViewportMap);
 
-		if (scrollMap.size === 0) return;
+		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll positions to restore`);
+		if (PerfTimer.isEnabled()) {
+			console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
+		}
 
-		// Apply scroll positions after a longer delay to ensure all views in splits are loaded
+		// Apply positions after a longer delay to ensure all views in splits are loaded
 		// Re-iterate leaves inside timeout since split views may not exist yet when this is called
 		setTimeout(() => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				const file = (leaf.view as any)?.file as TFile | undefined;
-				if (file && scrollMap.has(file.path)) {
+				if (!file) return;
+
+				// Restore scroll position for markdown files
+				if (scrollMap.has(file.path)) {
 					const scroll = scrollMap.get(file.path);
 					if (scroll !== undefined && scroll > 0) {
 						const view = leaf.view as any;
 						if (view?.currentMode?.applyScroll) {
 							view.currentMode.applyScroll(scroll);
-							console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> ${scroll}`);
+							if (PerfTimer.isEnabled()) {
+								console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
+							}
 						}
+					}
+				}
+
+				// Restore canvas viewport
+				if (canvasViewportMap.has(file.path)) {
+					const viewport = canvasViewportMap.get(file.path);
+					if (viewport) {
+						this.restoreCanvasViewport(leaf, viewport);
 					}
 				}
 			});
 		}, 500);
 	}
 
-	private collectScrollPositions(node: WorkspaceNodeState, map: Map<string, number>): void {
+	private collectViewPositions(
+		node: WorkspaceNodeState,
+		scrollMap: Map<string, number>,
+		canvasViewportMap: Map<string, { tx: number; ty: number; zoom: number }>
+	): void {
 		if (node.type === 'tabs') {
 			for (const tab of node.tabs) {
 				if (tab.scroll !== undefined && tab.scroll > 0) {
-					map.set(tab.path, tab.scroll);
+					scrollMap.set(tab.path, tab.scroll);
+				}
+				if (tab.canvasViewport) {
+					canvasViewportMap.set(tab.path, tab.canvasViewport);
 				}
 			}
 		} else {
 			for (const child of node.children) {
-				this.collectScrollPositions(child, map);
+				this.collectViewPositions(child, scrollMap, canvasViewportMap);
 			}
+		}
+	}
+
+	/**
+	 * Restore canvas viewport (pan and zoom)
+	 */
+	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): void {
+		const canvas = (leaf.view as any)?.canvas;
+		if (!canvas) return;
+
+		try {
+			// Calculate zoom delta and apply
+			const currentZoom = canvas.tZoom || 1;
+			const zoomDelta = viewport.zoom / currentZoom;
+
+			if (typeof canvas.zoomBy === 'function') {
+				canvas.zoomBy(zoomDelta);
+			}
+
+			if (typeof canvas.panTo === 'function') {
+				canvas.panTo(viewport.tx, viewport.ty);
+			}
+
+			if (typeof canvas.markViewportChanged === 'function') {
+				canvas.markViewportChanged();
+			}
+
+			if (typeof canvas.requestFrame === 'function') {
+				canvas.requestFrame();
+			}
+
+			if (PerfTimer.isEnabled()) {
+				const file = (leaf.view as any)?.file as TFile | undefined;
+				console.log(`[Perspecta] restoreCanvasViewport: ${file?.basename} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+			}
+		} catch (e) {
+			console.log('[Perspecta] Could not restore canvas viewport:', e);
 		}
 	}
 
@@ -2878,7 +2985,12 @@ export default class PerspectaPlugin extends Plugin {
 
 	private updateContextIndicator(file: TFile | null) {
 		PerfTimer.begin('updateContextIndicator');
-		document.querySelectorAll('.view-header-title-container .perspecta-context-indicator').forEach(el => el.remove());
+
+		// Remove old indicators from all windows (main + popouts)
+		const allDocs = this.getAllWindowDocuments();
+		for (const doc of allDocs) {
+			doc.querySelectorAll('.view-header-title-container .perspecta-context-indicator').forEach(el => el.remove());
+		}
 		PerfTimer.mark('removeOldIndicators');
 
 		if (!file) {
@@ -2902,19 +3014,40 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.mark('checkHasContext');
 
 		if (hasContext) {
-			const header = document.querySelector('.workspace-leaf.mod-active .view-header-title-container');
-			if (header && !header.querySelector('.perspecta-context-indicator')) {
-				const icon = this.createTargetIcon();
-				icon.setAttribute('aria-label', 'Has saved context - click to restore');
-				icon.addEventListener('click', () => this.restoreContext(file));
-				header.appendChild(icon);
+			// Find the active leaf's header in any window
+			for (const doc of allDocs) {
+				const header = doc.querySelector('.workspace-leaf.mod-active .view-header-title-container');
+				if (header && !header.querySelector('.perspecta-context-indicator')) {
+					const icon = this.createTargetIcon(doc);
+					icon.setAttribute('aria-label', 'Has saved context - click to restore');
+					icon.addEventListener('click', () => this.restoreContext(file));
+					header.appendChild(icon);
+				}
 			}
 		}
 		PerfTimer.end('updateContextIndicator');
 	}
 
-	private createTargetIcon(): HTMLElement {
-		const el = document.createElement('span');
+	/**
+	 * Get all window documents (main window + popouts)
+	 */
+	private getAllWindowDocuments(): Document[] {
+		const docs: Document[] = [document];
+		const workspace = this.app.workspace as any;
+		const floatingSplit = workspace.floatingSplit;
+		if (floatingSplit?.children) {
+			for (const container of floatingSplit.children) {
+				const win = container?.win;
+				if (win && win !== window && win.document) {
+					docs.push(win.document);
+				}
+			}
+		}
+		return docs;
+	}
+
+	private createTargetIcon(doc: Document = document): HTMLElement {
+		const el = doc.createElement('span');
 		el.className = 'perspecta-context-indicator';
 		setIcon(el, 'target');
 		return el;
@@ -3180,6 +3313,20 @@ class PerspectaSettingTab extends PluginSettingTab {
 
 	private displayChangelog(containerEl: HTMLElement): void {
 		containerEl.createEl('h2', { text: 'Changelog' });
+
+		// Version 0.1.7
+		const v017 = containerEl.createDiv({ cls: 'perspecta-changelog-version' });
+		v017.createEl('h3', { text: 'v0.1.7' });
+		const v017List = v017.createEl('ul');
+		v017List.createEl('li', { text: 'Proxy windows now show scaled markdown preview of note content' });
+		v017List.createEl('li', { text: 'Draggable title bar - drag header to move proxy window' });
+		v017List.createEl('li', { text: 'Scrollable content - use mouse wheel or arrow keys to scroll preview' });
+		v017List.createEl('li', { text: 'Keyboard navigation: ↑/↓, j/k, Page Up/Down, Home/End, Enter/Space' });
+		v017List.createEl('li', { text: 'Configurable preview scale factor in Experimental settings (default 35%)' });
+		v017List.createEl('li', { text: 'Canvas viewport and zoom level now saved and restored' });
+		v017List.createEl('li', { text: 'Context indicator (target icon) now appears correctly in popout windows' });
+		v017List.createEl('li', { text: 'Fixed duplicate proxy windows when restoring contexts' });
+		v017List.createEl('li', { text: 'Fixed concurrent restore guard to prevent window duplication' });
 
 		// Version 0.1.6
 		const v016 = containerEl.createDiv({ cls: 'perspecta-changelog-version' });
@@ -3463,15 +3610,27 @@ class PerspectaSettingTab extends PluginSettingTab {
 			}));
 
 		if (this.plugin.settings.enableProxyWindows) {
+			new Setting(containerEl)
+				.setName('Preview scale')
+				.setDesc('Scale factor for the note preview in proxy windows (10% to 100%)')
+				.addSlider(slider => slider
+					.setLimits(10, 100, 5)
+					.setValue(this.plugin.settings.proxyPreviewScale * 100)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.proxyPreviewScale = value / 100;
+						await this.plugin.saveSettings();
+					}));
+
 			const infoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
 			infoDiv.style.marginTop = '12px';
 			infoDiv.style.marginBottom = '12px';
 			infoDiv.innerHTML = `
 				<strong>How to use:</strong><br>
 				• Use command "Convert to proxy window" on any popout window<br>
-				• The proxy shows only the note title<br>
+				• The proxy shows a scaled preview of the note content<br>
 				• Click the expand icon (↗) to restore the full window<br>
-				• If the note has a saved arrangement, click the title to restore it
+				• If the note has a saved arrangement, click anywhere to restore it
 			`;
 		}
 	}
