@@ -56,6 +56,7 @@ import { ExternalContextStore } from './storage/external-store';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite } from './ui/modals';
+import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 
 // ============================================================================
 // Unified file helpers (works for markdown, canvas, and base files)
@@ -136,6 +137,9 @@ export default class PerspectaPlugin extends Plugin {
 			await this.externalStore.initialize();
 		}
 
+		// Register proxy view (experimental)
+		this.registerView(PROXY_VIEW_TYPE, (leaf) => new ProxyNoteView(leaf));
+
 		this.addRibbonIcon('layout-grid', 'Perspecta', () => {});
 
 		this.addCommand({
@@ -155,6 +159,31 @@ export default class PerspectaPlugin extends Plugin {
 			name: 'Show context details',
 			callback: () => this.showContextDetails()
 		});
+
+		this.addCommand({
+			id: 'convert-to-proxy',
+			name: 'Convert to proxy window',
+			checkCallback: (checking: boolean) => {
+				// Only available if proxy windows are enabled
+				if (!this.settings.enableProxyWindows) return false;
+
+				// Only available in popout windows
+				const activeLeaf = this.app.workspace.activeLeaf;
+				if (!activeLeaf) return false;
+
+				const win = activeLeaf.view.containerEl.win;
+				if (!win || win === window) return false; // Must be a popout, not main window
+
+				const file = (activeLeaf.view as any)?.file as TFile | undefined;
+				if (!file) return false;
+
+				if (!checking) {
+					this.convertToProxyWindow(activeLeaf, file);
+				}
+				return true;
+			}
+		});
+
 		this.setupFocusTracking();
 		this.setupContextIndicator();
 		this.setupFileExplorerIndicators();
@@ -386,17 +415,45 @@ export default class PerspectaPlugin extends Plugin {
 					height: win.outerHeight
 				});
 
+				// Check if this is a proxy window
+				const isProxy = this.isProxyWindow(container);
+
 				// Capture from the container - it handles both splits and single tab groups
 				states.push({
 					root: this.captureSplitOrTabs(container),
 					x: virtual.x,
 					y: virtual.y,
 					width: virtual.width,
-					height: virtual.height
+					height: virtual.height,
+					isProxy
 				});
 			}
 		}
 		return states;
+	}
+
+	/**
+	 * Check if a popout container contains a proxy view
+	 */
+	private isProxyWindow(container: any): boolean {
+		if (!container?.children) return false;
+
+		// Check all leaves in this container for proxy view type
+		for (const child of container.children) {
+			// Direct leaf check
+			if (child?.view?.getViewType?.() === PROXY_VIEW_TYPE) {
+				return true;
+			}
+			// Check nested children (for tab groups)
+			if (child?.children) {
+				for (const leaf of child.children) {
+					if (leaf?.view?.getViewType?.() === PROXY_VIEW_TYPE) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
 	}
 
 	private captureSplitOrTabs(node: any): WorkspaceNodeState {
@@ -1146,7 +1203,7 @@ export default class PerspectaPlugin extends Plugin {
 	// Track path corrections during restore (populated by restoreTabGroup and helpers)
 	private pathCorrections: Map<string, { newPath: string; newName: string }> = new Map();
 
-	async restoreContext(file?: TFile) {
+	async restoreContext(file?: TFile, forceLatest: boolean = false) {
 		const fullStart = performance.now();
 		PerfTimer.begin('restoreContext');
 
@@ -1158,8 +1215,8 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (!targetFile) { new Notice('No active file'); return; }
 
-		// Get context - may show selector if multiple arrangements exist
-		const contextResult = await this.getContextForFileWithSelection(targetFile);
+		// Get context - may show selector if multiple arrangements exist (unless forceLatest)
+		const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
 		PerfTimer.mark('getContextForFileWithSelection');
 
 		if (!contextResult || contextResult.cancelled) {
@@ -1194,7 +1251,8 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// Get context with potential user selection for multiple arrangements
-	private async getContextForFileWithSelection(file: TFile): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
+	// If forceLatest is true, always use the most recent arrangement without showing selector
+	private async getContextForFileWithSelection(file: TFile, forceLatest: boolean = false): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
 		// Canvas files store context directly in their JSON (single arrangement)
 		if (file.extension === 'canvas') {
 			return { context: await getContextFromCanvas(this.app, file), cancelled: false };
@@ -1221,8 +1279,9 @@ export default class PerspectaPlugin extends Plugin {
 					return { context: this.getContextFromNote(file), cancelled: false };
 				}
 
-				if (arrangements.length === 1) {
-					// Single arrangement - use it directly
+				if (arrangements.length === 1 || forceLatest) {
+					// Single arrangement or forceLatest - use the most recent one
+					// Arrangements are sorted by savedAt descending, so first is most recent
 					return { context: arrangements[0].arrangement, cancelled: false };
 				}
 
@@ -1917,6 +1976,12 @@ export default class PerspectaPlugin extends Plugin {
 	) {
 		const popoutStart = performance.now();
 
+		// Handle proxy windows specially
+		if (state.isProxy && this.settings.enableProxyWindows) {
+			await this.restoreProxyWindow(state, sourceScreen, tiledPosition);
+			return;
+		}
+
 		// For simple tabs root, find any tab to start with (we'll reorder later)
 		// For splits, use the first tab as before
 		const firstTab = this.getFirstTab(state.root);
@@ -1965,6 +2030,80 @@ export default class PerspectaPlugin extends Plugin {
 			// For complex splits, use outer-first approach:
 			// First create all outer splits, then fill in nested structures
 			await this.restoreSplitOuterFirst(popoutLeaf, state.root);
+		}
+	}
+
+	/**
+	 * Restore a proxy window (minimalist window showing just the note title)
+	 */
+	private async restoreProxyWindow(
+		state: WindowStateV2,
+		sourceScreen?: ScreenInfo,
+		tiledPosition?: { x: number; y: number; width: number; height: number }
+	) {
+		// Get the first tab's file path from the state
+		const firstTab = this.getFirstTab(state.root);
+		if (!firstTab) return;
+
+		// Use fallback resolution: path → UID → filename
+		const { file } = resolveFile(this.app, firstTab);
+		if (!file) return;
+
+		// Check if this file has a saved arrangement for the proxy to reference
+		let arrangementUid: string | undefined;
+		const uid = await getUidFromFile(this.app, file);
+		if (uid) {
+			arrangementUid = uid;
+		}
+
+		// Calculate the actual size to use (from stored state or tiled position)
+		let initialWidth = 250;
+		let initialHeight = 80;
+
+		if (tiledPosition) {
+			initialWidth = tiledPosition.width;
+			initialHeight = tiledPosition.height;
+		} else if (state.width !== undefined && state.height !== undefined) {
+			// Convert virtual coordinates to physical
+			const physical = virtualToPhysical({
+				x: state.x || 0,
+				y: state.y || 0,
+				width: state.width,
+				height: state.height
+			});
+			initialWidth = physical.width;
+			initialHeight = physical.height;
+		}
+
+		// Create a new proxy popout with the correct size
+		const proxyLeaf = this.app.workspace.openPopoutLeaf({
+			size: { width: initialWidth, height: initialHeight }
+		});
+
+		// Set the view to proxy type
+		await proxyLeaf.setViewState({
+			type: PROXY_VIEW_TYPE,
+			state: {
+				filePath: file.path,
+				arrangementUid
+			} as ProxyViewState
+		});
+
+		// Wait for view to be ready
+		await new Promise(resolve => setTimeout(resolve, 100));
+
+		// Restore window position (and size if needed)
+		const win = proxyLeaf.view?.containerEl?.win;
+		if (win) {
+			if (tiledPosition) {
+				this.restoreWindowGeometryDirect(win, tiledPosition);
+			} else {
+				this.restoreWindowGeometry(win, state, sourceScreen);
+			}
+		}
+
+		if (PerfTimer.isEnabled()) {
+			console.log(`[Perspecta]     ✓ restoreProxyWindow: ${file.basename}`);
 		}
 	}
 
@@ -2354,14 +2493,24 @@ export default class PerspectaPlugin extends Plugin {
 	private getFocusedWindow(arr: WindowArrangementV2): Window | null {
 		if (arr.focusedWindow === -1) return window;
 		const popouts = this.getPopoutWindowObjects();
-		return popouts[arr.focusedWindow] ?? window;
+		const win = popouts[arr.focusedWindow];
+		// Skip proxy windows, fall back to main window
+		if (win && win.document.body.classList.contains('perspecta-proxy-window')) {
+			return window;
+		}
+		return win ?? window;
 	}
 
 	private findWindowContainingFile(filePath: string): Window | null {
 		let foundWin: Window | null = null;
 		this.app.workspace.iterateAllLeaves((leaf) => {
 			if (!foundWin && (leaf.view as any)?.file?.path === filePath) {
-				foundWin = leaf.view?.containerEl?.win ?? window;
+				const win = leaf.view?.containerEl?.win ?? window;
+				// Skip proxy windows
+				if (win !== window && win.document.body.classList.contains('perspecta-proxy-window')) {
+					return;
+				}
+				foundWin = win;
 			}
 		});
 		return foundWin;
@@ -2485,6 +2634,11 @@ export default class PerspectaPlugin extends Plugin {
 		const duration = this.settings.focusTintDuration;
 		if (duration <= 0) return;
 
+		// Don't show focus tint in proxy windows
+		if (win.document.body.classList.contains('perspecta-proxy-window')) {
+			return;
+		}
+
 		const overlay = win.document.createElement('div');
 		overlay.className = 'perspecta-focus-tint';
 		overlay.style.animationDuration = `${duration}s`;
@@ -2495,6 +2649,11 @@ export default class PerspectaPlugin extends Plugin {
 
 	private showNoticeInWindow(win: Window | null, message: string) {
 		if (win && win !== window) {
+			// Don't show notices in proxy windows
+			if (win.document.body.classList.contains('perspecta-proxy-window')) {
+				new Notice(message);
+				return;
+			}
 			const el = win.document.createElement('div');
 			el.className = 'notice';
 			el.textContent = message;
@@ -2882,6 +3041,62 @@ export default class PerspectaPlugin extends Plugin {
 		await leaf.openFile(file);
 	}
 
+	/**
+	 * Convert a popout window to a minimalist proxy window (experimental)
+	 */
+	async convertToProxyWindow(leaf: WorkspaceLeaf, file: TFile) {
+		// Get current window position
+		const win = leaf.view.containerEl.win;
+		const x = win?.screenX || 100;
+		const y = win?.screenY || 100;
+
+		// Check if this file has a saved arrangement
+		let arrangementUid: string | undefined;
+		const uid = await getUidFromFile(this.app, file);
+		if (uid && this.settings.storageMode === 'external') {
+			const arrangements = this.externalStore.getAll(uid);
+			if (arrangements.length > 0) {
+				arrangementUid = uid;
+			}
+		} else if (this.settings.storageMode === 'frontmatter' && file.extension === 'md') {
+			const hasContext = await markdownHasContext(this.app, file);
+			if (hasContext) {
+				arrangementUid = uid || 'frontmatter';
+			}
+		}
+
+		// Close the current leaf first and wait a moment for cleanup
+		leaf.detach();
+		await new Promise(resolve => setTimeout(resolve, 100));
+
+		// Open a new proxy leaf with small initial size
+		const proxyLeaf = this.app.workspace.openPopoutLeaf({
+			size: { width: 250, height: 50 }
+		});
+
+		// Set the view to proxy type
+		await proxyLeaf.setViewState({
+			type: PROXY_VIEW_TYPE,
+			state: {
+				filePath: file.path,
+				arrangementUid
+			} as ProxyViewState
+		});
+
+		// Wait for view to be ready, then position
+		await new Promise(resolve => setTimeout(resolve, 100));
+
+		// Try to position the window at the original location
+		const newWin = proxyLeaf.view?.containerEl?.win;
+		if (newWin && newWin !== window) {
+			try {
+				newWin.moveTo(x, y);
+			} catch (e) {
+				// Silently fail - window positioning may not be allowed
+			}
+		}
+	}
+
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		PerfTimer.setEnabled(this.settings.enableDebugLogging);
@@ -2899,7 +3114,7 @@ export default class PerspectaPlugin extends Plugin {
 // Settings Tab
 // ============================================================================
 
-type SettingsTab = 'changelog' | 'context' | 'storage' | 'backup' | 'debug';
+type SettingsTab = 'changelog' | 'context' | 'storage' | 'backup' | 'experimental' | 'debug';
 
 class PerspectaSettingTab extends PluginSettingTab {
 	plugin: PerspectaPlugin;
@@ -2925,6 +3140,7 @@ class PerspectaSettingTab extends PluginSettingTab {
 			{ id: 'context', label: 'Context' },
 			{ id: 'storage', label: 'Storage' },
 			{ id: 'backup', label: 'Backup' },
+			{ id: 'experimental', label: 'Experimental' },
 			{ id: 'debug', label: 'Debug' }
 		];
 
@@ -2952,6 +3168,9 @@ class PerspectaSettingTab extends PluginSettingTab {
 				break;
 			case 'backup':
 				this.displayBackupSettings(containerEl);
+				break;
+			case 'experimental':
+				this.displayExperimentalSettings(containerEl);
 				break;
 			case 'debug':
 				this.displayDebugSettings(containerEl);
@@ -3213,6 +3432,36 @@ class PerspectaSettingTab extends PluginSettingTab {
 				});
 			}
 		});
+	}
+
+	private displayExperimentalSettings(containerEl: HTMLElement): void {
+		// Warning banner
+		const warning = containerEl.createDiv({ cls: 'perspecta-experimental-warning' });
+		warning.createSpan({ cls: 'perspecta-experimental-warning-icon', text: '⚠️' });
+		warning.createSpan({ text: 'These features are experimental and may change or break in future updates.' });
+
+		new Setting(containerEl)
+			.setName('Enable proxy windows')
+			.setDesc('Allows converting popout windows to minimalist "proxy" windows that show only the note title. Click the title to restore its arrangement.')
+			.addToggle(t => t.setValue(this.plugin.settings.enableProxyWindows).onChange(async v => {
+				this.plugin.settings.enableProxyWindows = v;
+				await this.plugin.saveSettings();
+				// Refresh to show/hide related options
+				this.display();
+			}));
+
+		if (this.plugin.settings.enableProxyWindows) {
+			const infoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
+			infoDiv.style.marginTop = '12px';
+			infoDiv.style.marginBottom = '12px';
+			infoDiv.innerHTML = `
+				<strong>How to use:</strong><br>
+				• Use command "Convert to proxy window" on any popout window<br>
+				• The proxy shows only the note title<br>
+				• Click the expand icon (↗) to restore the full window<br>
+				• If the note has a saved arrangement, click the title to restore it
+			`;
+		}
 	}
 
 	private displayDebugSettings(containerEl: HTMLElement): void {

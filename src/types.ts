@@ -30,6 +30,7 @@ export interface WindowStateV2 {
 	y?: number;
 	width?: number;
 	height?: number;
+	isProxy?: boolean;  // True if this is a minimalist proxy window
 }
 
 export interface WindowStateV1 {
@@ -88,6 +89,8 @@ export interface PerspectaSettings {
 	storageMode: StorageMode;
 	maxArrangementsPerNote: number;
 	autoConfirmOverwrite: boolean;
+	// Experimental features
+	enableProxyWindows: boolean;
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -101,7 +104,9 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	autoGenerateUids: true,
 	storageMode: 'frontmatter',
 	maxArrangementsPerNote: 1,
-	autoConfirmOverwrite: false
+	autoConfirmOverwrite: false,
+	// Experimental features
+	enableProxyWindows: false
 };
 
 // Timestamped arrangement for multi-arrangement storage

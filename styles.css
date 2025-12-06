@@ -726,3 +726,162 @@
     font-size: 0.9em;
     line-height: 1.4;
 }
+
+/* ============================================================================
+   Proxy Window Styles (Experimental)
+   ============================================================================ */
+
+/* Hide all standard Obsidian chrome in proxy windows */
+/* Target both body class and workspace class for reliability */
+.perspecta-proxy-window .workspace-tab-header-container,
+.perspecta-proxy-workspace .workspace-tab-header-container,
+.perspecta-proxy-container ~ .view-header,
+body.perspecta-proxy-window .workspace-tab-header-container {
+    display: none !important;
+}
+
+/* Hide the view header (contains nav arrows, title "Proxy", menu) */
+.perspecta-proxy-window .view-header,
+.perspecta-proxy-workspace .view-header,
+body.perspecta-proxy-window .view-header {
+    display: none !important;
+}
+
+/* Hide all workspace tab elements */
+.perspecta-proxy-window .workspace-tab-header,
+.perspecta-proxy-window .workspace-tab-header-inner,
+.perspecta-proxy-window .workspace-tab-header-tab-list,
+.perspecta-proxy-window .workspace-tab-header-new-tab,
+.perspecta-proxy-window .workspace-tab-header-spacer,
+.perspecta-proxy-window .workspace-tab-container-inner,
+.perspecta-proxy-window .workspace-tabs,
+body.perspecta-proxy-window .workspace-tab-header,
+body.perspecta-proxy-window .workspace-tabs {
+    display: none !important;
+}
+
+/* Hide siblings of proxy container (the view-header) */
+.perspecta-proxy-container ~ * {
+    display: none !important;
+}
+
+/* Make workspace-leaf-content fill the space */
+.workspace-leaf-content:has(.perspecta-proxy-container) {
+    padding: 0 !important;
+}
+
+/* Target the leaf that contains our proxy view */
+.workspace-leaf:has(.perspecta-proxy-container) .view-header {
+    display: none !important;
+}
+
+/* Remove all padding/margin from workspace in proxy */
+.perspecta-proxy-window .workspace-split.mod-root,
+body.perspecta-proxy-window .workspace-split.mod-root {
+    padding: 0 !important;
+}
+
+.perspecta-proxy-window .workspace-leaf-content,
+body.perspecta-proxy-window .workspace-leaf-content {
+    padding: 0 !important;
+}
+
+/* Make the workspace fill the window */
+.perspecta-proxy-window .workspace-split,
+body.perspecta-proxy-window .workspace-split {
+    height: 100% !important;
+}
+
+.perspecta-proxy-window .workspace-leaf,
+body.perspecta-proxy-window .workspace-leaf {
+    height: 100% !important;
+}
+
+/* Proxy view container - combines positioning and styling */
+.perspecta-proxy-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 100 !important;
+    display: flex !important;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding: 2em;
+    background-color: var(--background-primary);
+    user-select: none;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    /* Exclude from drag so clicking works, we handle drag via title row */
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+}
+
+/* Note: CSS :hover doesn't work reliably in Electron popout windows.
+   Hover highlighting is handled via JavaScript mouseenter/mouseleave events. */
+
+/* Title row - spread title and button apart */
+.perspecta-proxy-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+}
+
+/* Note title - clickable */
+.perspecta-proxy-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-normal);
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+}
+
+/* Expand button - top right */
+.perspecta-proxy-expand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-left: 8px;
+    transition: color 0.15s ease, background-color 0.15s ease;
+    /* Exclude from drag region so it's clickable */
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+}
+
+.perspecta-proxy-expand:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.perspecta-proxy-expand svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Experimental settings section */
+.perspecta-experimental-warning {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--background-modifier-error);
+    border-radius: 6px;
+    color: var(--text-on-accent);
+    font-size: 0.9em;
+}
+
+.perspecta-experimental-warning-icon {
+    margin-right: 8px;
+}
