@@ -7,6 +7,20 @@
 
 import { ScreenInfo, WindowStateV2 } from '../types';
 
+/**
+ * Extended Screen interface with non-standard but widely supported properties.
+ * availLeft and availTop are supported in Chrome, Safari, Firefox (with prefix),
+ * but not in the TypeScript lib.dom.d.ts definitions.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/Screen/availLeft
+ */
+interface ExtendedScreen extends Screen {
+	/** X coordinate of the first pixel not allocated to system UI (non-standard) */
+	availLeft?: number;
+	/** Y coordinate of the first pixel not allocated to system UI (non-standard) */
+	availTop?: number;
+}
+
 export const VIRTUAL_SCREEN = {
 	width: 1728,
 	height: 1117
@@ -27,11 +41,12 @@ export interface PhysicalScreen {
 }
 
 export function getPhysicalScreen(): PhysicalScreen {
+	const screen = window.screen as ExtendedScreen;
 	return {
-		width: window.screen.availWidth,
-		height: window.screen.availHeight,
-		x: (window.screen as any).availLeft ?? 0,
-		y: (window.screen as any).availTop ?? 0
+		width: screen.availWidth,
+		height: screen.availHeight,
+		x: screen.availLeft ?? 0,
+		y: screen.availTop ?? 0
 	};
 }
 

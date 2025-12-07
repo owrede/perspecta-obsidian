@@ -1,4 +1,56 @@
-import { App, Menu, MenuItem, Platform, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice, setIcon } from 'obsidian';
+/**
+ * Perspecta Plugin - Main Entry Point
+ *
+ * A context-switching plugin for Obsidian that saves and restores window arrangements,
+ * allowing users to quickly switch between different workspace configurations.
+ *
+ * @module main
+ *
+ * ## Architecture
+ *
+ * The plugin is organized into several modules:
+ *
+ * - **main.ts** (this file): Plugin entry point, commands, settings
+ * - **types/**: Type definitions including internal Obsidian API types
+ * - **utils/**: Utility functions (coordinates, wallpaper, file resolution, UID management)
+ * - **storage/**: Context storage backends (markdown, canvas, base, external)
+ * - **services/**: Window capture and restore services
+ * - **ui/**: UI components (modals, proxy view)
+ *
+ * ## Obsidian API Usage
+ *
+ * ### Public APIs
+ * - `Plugin` base class for plugin lifecycle
+ * - `App.workspace` for workspace manipulation
+ * - `App.vault` for file operations
+ * - `App.metadataCache` for frontmatter access
+ *
+ * ### Internal APIs (undocumented)
+ * These are used for advanced window management features.
+ * All usage includes fallbacks for API changes.
+ *
+ * - `workspace.rootSplit` - Main window workspace root
+ * - `workspace.floatingSplit` - Popout windows container
+ * - `workspace.leftSplit` / `rightSplit` - Sidebars
+ * - `WorkspaceLeaf.parent` - Parent container access
+ * - `WorkspaceTabContainer.currentTab` - Active tab index
+ * - `WorkspaceTabContainer.dimension` - Split size
+ *
+ * @see types/obsidian-internal.ts for type definitions
+ * @see https://docs.obsidian.md/Plugins for official API docs
+ *
+ * ## Security Considerations
+ *
+ * - Path validation in file resolution prevents directory traversal
+ * - Wallpaper operations use whitelisted commands only
+ * - No arbitrary shell command execution
+ * - Input validation on all user-provided data
+ *
+ * @author Perspecta Contributors
+ * @license MIT
+ */
+
+import { App, FileSystemAdapter, Menu, MenuItem, Platform, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, WorkspaceLeaf, Notice, setIcon } from 'obsidian';
 
 // Import changelog
 import { renderChangelogToContainer } from './changelog';
@@ -9,7 +61,6 @@ import {
 	SplitState,
 	TabGroupState,
 	WorkspaceNodeState,
-	WindowStateV1,
 	WindowStateV2,
 	SidebarState,
 	ScreenInfo,
@@ -19,12 +70,36 @@ import {
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
 	FRONTMATTER_KEY,
-	UID_FRONTMATTER_KEY,
-	TimestampedArrangement
+	UID_FRONTMATTER_KEY
 } from './types';
+
+// Import internal API type definitions
+import {
+	ExtendedWorkspace,
+	ExtendedView,
+	ExtendedApp,
+	WorkspaceSplit,
+	WorkspaceTabContainer,
+	hasFloatingSplit,
+	isSplit,
+	getCurrentTabIndex,
+	getScrollPosition,
+	getCanvasViewport,
+	hasFile,
+	hasMetadataTypeManager,
+	isCanvasView,
+	setContainerDimension,
+	triggerWorkspaceResize,
+	asExtendedLeaf,
+	hasParent,
+	getLeafTabGroup,
+	asExtendedWorkspace,
+	applyScrollPosition
+} from './types/obsidian-internal';
 
 // Import utilities
 import { PerfTimer } from './utils/perf-timer';
+import { Logger, LogLevel } from './utils/logger';
 import {
 	setCoordinateDebug,
 	getPhysicalScreen,
@@ -33,8 +108,9 @@ import {
 	needsTiling,
 	calculateTiledLayout
 } from './utils/coordinates';
-import { getWallpaper, setWallpaper, getWallpaperPlatformNotes } from './utils/wallpaper';
+import { getWallpaper, setWallpaper, getWallpaperPlatformNotes, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
+import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
 
 // Import storage
 import {
@@ -88,36 +164,19 @@ async function addUidToAnyFile(app: App, file: TFile, uid: string): Promise<void
 	}
 }
 
-// Resolve a file using fallback strategy: path → UID → filename
+/**
+ * Resolve a file using fallback strategy: path → UID → filename
+ * Wrapper around the file-resolver utility for backward compatibility.
+ *
+ * @see utils/file-resolver for the full implementation
+ */
 function resolveFile(app: App, tab: TabState): { file: TFile | null; method: 'path' | 'uid' | 'name' | 'not_found' } {
-	const fileByPath = app.vault.getAbstractFileByPath(tab.path);
-	if (fileByPath instanceof TFile) {
-		return { file: fileByPath, method: 'path' };
-	}
-
-	if (tab.uid) {
-		const files = app.vault.getMarkdownFiles();
-		for (const file of files) {
-			const fileUid = getUidFromCache(app, file);
-			if (fileUid === tab.uid) {
-				return { file, method: 'uid' };
-			}
-		}
-	}
-
-	if (tab.name) {
-		const files = app.vault.getMarkdownFiles();
-		const matches = files.filter(f => f.basename === tab.name);
-		if (matches.length === 1) {
-			return { file: matches[0], method: 'name' };
-		}
-	}
-
-	return { file: null, method: 'not_found' };
+	const result = resolveFileWithFallback(app, tab);
+	return { file: result.file, method: result.method };
 }
 
-// Global debug flag for coordinate conversions
-let COORDINATE_DEBUG = false;
+// Global debug flag for coordinate conversions (exposed from coordinates module)
+let COORDINATE_DEBUG = false;  // Local reference for quick access
 
 // ============================================================================
 // Main Plugin Class
@@ -130,10 +189,15 @@ export default class PerspectaPlugin extends Plugin {
 	private filesWithContext = new Set<string>();
 	private refreshIndicatorsTimeout: ReturnType<typeof setTimeout> | null = null;
 	private isClosingWindow = false; // Guard against operations during window close
+	private isUnloading = false; // Guard against operations during plugin unload
+	private pendingTimeouts = new Set<ReturnType<typeof setTimeout>>(); // Track timeouts for cleanup
 	externalStore: ExternalContextStore;  // External context storage
 
 	async onload() {
 		await this.loadSettings();
+
+		// Check Obsidian version compatibility
+		this.checkVersionCompatibility();
 
 		// Initialize external store
 		this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
@@ -181,7 +245,9 @@ export default class PerspectaPlugin extends Plugin {
 				const win = activeLeaf.view.containerEl.win;
 				if (!win || win === window) return false; // Must be a popout, not main window
 
-				const file = (activeLeaf.view as any)?.file as TFile | undefined;
+				// Use type-safe accessor for file property
+				if (!hasFile(activeLeaf.view)) return false;
+				const file = this.app.vault.getAbstractFileByPath(activeLeaf.view.file.path) as TFile | null;
 				if (!file) return false;
 
 				if (!checking) {
@@ -239,13 +305,43 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	async onunload() {
+		// Set unloading flag to prevent new operations
+		this.isUnloading = true;
+
+		// Clear all pending timeouts
+		if (this.refreshIndicatorsTimeout) {
+			clearTimeout(this.refreshIndicatorsTimeout);
+			this.refreshIndicatorsTimeout = null;
+		}
+		this.pendingTimeouts.forEach(timeout => clearTimeout(timeout));
+		this.pendingTimeouts.clear();
+
 		// Cleanup external store (flush pending saves)
 		await this.externalStore.cleanup();
 
+		// Remove window focus listeners
 		this.windowFocusListeners.forEach((listener, win) => {
 			win.removeEventListener('focus', listener);
 		});
 		this.windowFocusListeners.clear();
+
+		// Clear cached context indicators
+		this.filesWithContext.clear();
+	}
+
+	/**
+	 * Creates a tracked timeout that will be automatically cleared on unload.
+	 * Use this instead of raw setTimeout for operations that might outlive the plugin.
+	 */
+	private safeTimeout(callback: () => void, delay: number): ReturnType<typeof setTimeout> {
+		const timeout = setTimeout(() => {
+			this.pendingTimeouts.delete(timeout);
+			if (!this.isUnloading) {
+				callback();
+			}
+		}, delay);
+		this.pendingTimeouts.add(timeout);
+		return timeout;
 	}
 
 	// ============================================================================
@@ -337,7 +433,7 @@ export default class PerspectaPlugin extends Plugin {
 
 	private captureWindowArrangement(): WindowArrangementV2 {
 		PerfTimer.mark('captureWindowArrangement:start');
-		const workspace = this.app.workspace as any;
+		const workspace = this.app.workspace as unknown as ExtendedWorkspace;
 
 		const main = this.captureWindowState(workspace.rootSplit, window);
 		PerfTimer.mark('captureMainWindow');
@@ -369,7 +465,7 @@ export default class PerspectaPlugin extends Plugin {
 		};
 	}
 
-	private captureWindowState(rootSplit: any, win: Window): WindowStateV2 {
+	private captureWindowState(rootSplit: WorkspaceSplit | null, win: Window): WindowStateV2 {
 		const physical = {
 			x: win.screenX,
 			y: win.screenY,
@@ -380,10 +476,12 @@ export default class PerspectaPlugin extends Plugin {
 		// Convert physical coordinates to virtual coordinate system
 		const virtual = physicalToVirtual(physical);
 
-		console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+		if (COORDINATE_DEBUG) {
+			console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+		}
 
 		return {
-			root: this.captureSplitOrTabs(rootSplit),
+			root: rootSplit ? this.captureSplitOrTabs(rootSplit) : { type: 'tabs', tabs: [] },
 			x: virtual.x,
 			y: virtual.y,
 			width: virtual.width,
@@ -393,14 +491,15 @@ export default class PerspectaPlugin extends Plugin {
 
 	private capturePopoutStates(): WindowStateV2[] {
 		const states: WindowStateV2[] = [];
-		const workspace = this.app.workspace as any;
-		const floatingSplit = workspace.floatingSplit;
-		if (!floatingSplit?.children) return states;
+		const workspace = this.app.workspace as unknown;
+
+		// Use type guard for safe access to floatingSplit
+		if (!hasFloatingSplit(workspace)) return states;
 
 		// Track seen windows to prevent duplicates
 		const seenWindows = new Set<Window>();
 
-		for (const container of floatingSplit.children) {
+		for (const container of workspace.floatingSplit.children) {
 			const win = container?.win;
 			if (!win || win === window) continue;
 
@@ -412,18 +511,19 @@ export default class PerspectaPlugin extends Plugin {
 			seenWindows.add(win);
 
 			if (COORDINATE_DEBUG) {
+				const firstChild = container?.children?.[0] as WorkspaceSplit | WorkspaceTabContainer | undefined;
 				console.log(`[Perspecta] capturePopoutStates container:`, {
 					containerType: container?.constructor?.name,
 					containerDirection: container?.direction,
 					containerChildren: container?.children?.length,
-					firstChildType: container?.children?.[0]?.constructor?.name,
-					firstChildDirection: container?.children?.[0]?.direction
+					firstChildType: firstChild?.constructor?.name,
+					firstChildDirection: isSplit(firstChild) ? firstChild.direction : undefined
 				});
 			}
 
 			// The container itself may be a split (when popout has multiple panes)
 			// or it may contain a single tab group. We capture from the container level.
-			if (container?.children?.length > 0) {
+			if (container?.children && container.children.length > 0) {
 				// Convert physical coordinates to virtual coordinate system
 				const virtual = physicalToVirtual({
 					x: win.screenX,
@@ -473,10 +573,15 @@ export default class PerspectaPlugin extends Plugin {
 		return false;
 	}
 
-	private captureSplitOrTabs(node: any): WorkspaceNodeState {
+	/**
+	 * Captures split or tab group state recursively.
+	 * Uses isSplit type guard for safe type narrowing.
+	 */
+	private captureSplitOrTabs(node: WorkspaceSplit | WorkspaceTabContainer | unknown): WorkspaceNodeState {
 		if (!node) return { type: 'tabs', tabs: [] };
 
-		if (node.direction && Array.isArray(node.children)) {
+		// Use type guard for proper type narrowing
+		if (isSplit(node)) {
 			const children: WorkspaceNodeState[] = [];
 			const sizes: number[] = [];
 
@@ -486,8 +591,9 @@ export default class PerspectaPlugin extends Plugin {
 					children.push(childState);
 					// Capture the size/dimension of each child
 					// Obsidian uses 'dimension' property for split sizes
-					const size = child.dimension ?? child.size ?? child.width ?? child.height;
-					sizes.push(size ?? 50); // Default to 50 if not found
+					const tabContainer = child as WorkspaceTabContainer;
+					const size = tabContainer.dimension ?? tabContainer.size ?? 50;
+					sizes.push(size);
 				}
 			}
 			if (children.length === 1) return children[0];
@@ -495,52 +601,52 @@ export default class PerspectaPlugin extends Plugin {
 
 			if (COORDINATE_DEBUG) {
 				console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
-				// Debug: log all properties on the first child to discover size property
-				if (node.children[0]) {
-					const props = Object.keys(node.children[0]).filter(k =>
-						typeof node.children[0][k] === 'number' ||
-						(typeof node.children[0][k] === 'string' && !k.startsWith('_'))
-					);
-					console.log(`[Perspecta] Child properties:`, props.map(p => `${p}=${node.children[0][p]}`));
-				}
 			}
 
 			return { type: 'split', direction: node.direction, children, sizes };
 		}
-		return this.captureTabGroup(node);
+		return this.captureTabGroup(node as WorkspaceTabContainer);
 	}
 
-	private captureTabGroup(tabContainer: any): TabGroupState {
+	/**
+	 * Captures the state of a tab group.
+	 * Uses type-safe accessors for internal API access.
+	 */
+	private captureTabGroup(tabContainer: WorkspaceTabContainer): TabGroupState {
 		const tabs: TabState[] = [];
 		const children = tabContainer?.children || [];
 
-		// Get the active leaf within THIS tab container (not the global active leaf)
-		// tabContainer.currentTab is the index of the active tab in this group
-		const currentTabIndex = tabContainer?.currentTab ?? 0;
+		// Use type-safe accessor for current tab index
+		const currentTabIndex = getCurrentTabIndex(tabContainer);
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${tabContainer?.currentTab}, using index=${currentTabIndex}`);
+			console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
 		}
 
 		for (let i = 0; i < children.length; i++) {
 			const leaf = children[i];
-			const file = (leaf?.view as any)?.file as TFile | undefined;
-			if (file) {
-				// Get UID from frontmatter cache (if exists)
-				const uid = getUidFromCache(this.app, file);
+			const view = leaf?.view as unknown as ExtendedView;
+
+			// Use type guard for file access
+			if (hasFile(view)) {
+				const file = view.file;
+				// Get UID from frontmatter cache (if exists) - use the file's path to get TFile
+				const tFile = this.app.vault.getAbstractFileByPath(file.path);
+				const uid = tFile instanceof TFile ? getUidFromCache(this.app, tFile) : undefined;
 				// Get filename without extension for fallback search
 				const name = file.basename;
-				// Get scroll position if available
-				const scroll = (leaf?.view as any)?.currentMode?.getScroll?.();
 
-				// Get canvas viewport if this is a canvas view
+				// Use type-safe scroll accessor
+				const scroll = getScrollPosition(view);
+
+				// Use type-safe canvas viewport accessor
 				let canvasViewport: { tx: number; ty: number; zoom: number } | undefined;
-				const canvas = (leaf?.view as any)?.canvas;
-				if (canvas && typeof canvas.tx === 'number') {
+				const viewport = getCanvasViewport(view);
+				if (viewport) {
 					canvasViewport = {
-						tx: canvas.tx,
-						ty: canvas.ty,
-						zoom: canvas.tZoom
+						tx: viewport.tx,
+						ty: viewport.ty,
+						zoom: viewport.tZoom
 					};
 				}
 
@@ -562,31 +668,37 @@ export default class PerspectaPlugin extends Plugin {
 		return { type: 'tabs', tabs };
 	}
 
+	/**
+	 * Captures sidebar state including collapse state and active tab.
+	 * Uses multiple fallback methods for compatibility across Obsidian versions.
+	 *
+	 * @internal Uses internal Obsidian APIs: leftSplit, rightSplit, activeTabGroup
+	 */
 	private captureSidebarState(side: 'left' | 'right'): SidebarState {
-		const workspace = this.app.workspace as any;
+		const workspace = this.app.workspace as unknown as ExtendedWorkspace;
 		const sidebar = side === 'left' ? workspace.leftSplit : workspace.rightSplit;
 		if (!sidebar) return { collapsed: true };
 
 		let activeTab: string | undefined;
 		try {
 			// Method 1: Try to get active tab from the sidebar's active tab group
-			const activeTabGroup = sidebar.activeTabGroup;
-			if (activeTabGroup?.currentTab) {
-				activeTab = activeTabGroup.currentTab?.view?.getViewType?.();
+			const sidebarWithGroup = sidebar as { activeTabGroup?: { currentTab?: WorkspaceLeaf } };
+			if (sidebarWithGroup.activeTabGroup?.currentTab) {
+				activeTab = sidebarWithGroup.activeTabGroup.currentTab?.view?.getViewType?.();
 			}
 
 			// Method 2: Fall back to checking the sidebar's children for active leaf
 			if (!activeTab && sidebar.children) {
 				for (const child of sidebar.children) {
-					// Check if this is a tabs container with an active tab
-					if (child.currentTab?.view?.getViewType) {
-						activeTab = child.currentTab.view.getViewType();
-						break;
-					}
-					// Check if child has activeTabGroup
-					if (child.activeTabGroup?.currentTab?.view?.getViewType) {
-						activeTab = child.activeTabGroup.currentTab.view.getViewType();
-						break;
+					const container = child as WorkspaceTabContainer;
+					// Check if this is a tabs container with children
+					if (container.children) {
+						const currentIdx = getCurrentTabIndex(container);
+						const currentLeaf = container.children[currentIdx];
+						if (currentLeaf?.view?.getViewType && typeof currentLeaf.view.getViewType === 'function') {
+							activeTab = currentLeaf.view.getViewType();
+							break;
+						}
 					}
 				}
 			}
@@ -596,7 +708,7 @@ export default class PerspectaPlugin extends Plugin {
 				const leaf = side === 'left' ? workspace.leftLeaf : workspace.rightLeaf;
 				activeTab = leaf?.view?.getViewType?.();
 			}
-		} catch { /* ignore */ }
+		} catch { /* ignore errors accessing sidebar state */ }
 
 		return { collapsed: sidebar.collapsed ?? false, activeTab };
 	}
@@ -653,7 +765,23 @@ export default class PerspectaPlugin extends Plugin {
 			try {
 				const wallpaperResult = await getWallpaper();
 				if (wallpaperResult.success && wallpaperResult.path) {
-					context.wallpaper = wallpaperResult.path;
+					let wallpaperPath = wallpaperResult.path;
+
+					// Copy wallpaper to local storage if enabled
+					if (this.settings.storeWallpapersLocally) {
+						const adapter = this.app.vault.adapter;
+						if (adapter instanceof FileSystemAdapter) {
+							const vaultPath = adapter.getBasePath();
+							const wallpapersDir = getWallpapersDir(vaultPath, this.settings.perspectaFolderPath);
+							const copyResult = await copyWallpaperToLocal(wallpaperPath, wallpapersDir);
+							if (copyResult.success && copyResult.path) {
+								wallpaperPath = copyResult.path;
+								PerfTimer.mark('copyWallpaperToLocal');
+							}
+						}
+					}
+
+					context.wallpaper = wallpaperPath;
 					PerfTimer.mark('captureWallpaper');
 				}
 			} catch (e) {
@@ -781,9 +909,9 @@ export default class PerspectaPlugin extends Plugin {
 	// They remain visible in source mode for transparency
 	private hideInternalProperties(): void {
 		try {
-			// Access Obsidian's metadata type manager (internal API)
-			const metadataTypeManager = (this.app as any).metadataTypeManager;
-			if (!metadataTypeManager) return;
+			// Access Obsidian's metadata type manager (internal API) with type guard
+			if (!hasMetadataTypeManager(this.app)) return;
+			const metadataTypeManager = this.app.metadataTypeManager;
 
 			// Method 1: Try to add to the ignored/hidden properties list
 			// In Obsidian 1.4+, there's a configuredTypes property we can modify
@@ -1034,13 +1162,13 @@ export default class PerspectaPlugin extends Plugin {
 		for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
 			try {
 				// Restore each arrangement
-				const arrList = arrangements as Array<{ arrangement: unknown; savedAt: number }>;
+				const arrList = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
 				for (const item of arrList) {
-					this.externalStore.set(uid, item.arrangement as any, this.settings.maxArrangementsPerNote);
+					this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
 				}
 				restored++;
 			} catch (e) {
-				console.error(`[Perspecta] Failed to restore arrangements for UID ${uid}:`, e);
+				Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
 				errors++;
 			}
 		}
@@ -1571,7 +1699,7 @@ export default class PerspectaPlugin extends Plugin {
 			PerfTimer.mark('restoreWindowGeometry');
 
 			// Restore main workspace
-			const workspace = this.app.workspace as any;
+			const workspace = asExtendedWorkspace(this.app.workspace);
 			await this.restoreWorkspaceNode(workspace.rootSplit, v2.main.root, mainLeaves[0]);
 			PerfTimer.mark('restoreMainWorkspace');
 
@@ -1682,9 +1810,14 @@ export default class PerspectaPlugin extends Plugin {
 		};
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private async restoreWorkspaceNode(parent: any, state: WorkspaceNodeState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state?.type) {
-			if ('tabs' in state) return this.restoreTabGroup(parent, { type: 'tabs', tabs: (state as any).tabs }, existingLeaf);
+			// Handle legacy states without explicit type - check for tabs property
+			const legacyState = state as unknown as { tabs?: TabState[] };
+			if (Array.isArray(legacyState.tabs)) {
+				return this.restoreTabGroup(parent, { type: 'tabs', tabs: legacyState.tabs }, existingLeaf);
+			}
 			return existingLeaf;
 		}
 		return state.type === 'tabs'
@@ -1692,7 +1825,8 @@ export default class PerspectaPlugin extends Plugin {
 			: this.restoreSplit(parent, state as SplitState, existingLeaf);
 	}
 
-	private async restoreTabGroup(parent: any, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private async restoreTabGroup(_parent: any, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.tabs?.length) return existingLeaf;
 
 		// Find the active tab index
@@ -1718,7 +1852,8 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		let firstLeaf: WorkspaceLeaf | undefined;
-		let container: any = null;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		let container: any = null;  // Obsidian's internal WorkspaceParent type
 		let isFirstTabOpened = false;
 
 		for (let i = 0; i < reorderedTabs.length; i++) {
@@ -1755,7 +1890,7 @@ export default class PerspectaPlugin extends Plugin {
 				isFirstTabOpened = true;
 			} else if (!isFirstTabOpened) {
 				// No existing leaf, create new one
-				leaf = this.app.workspace.createLeafInParent(parent, 0);
+				leaf = this.app.workspace.createLeafInParent(_parent, 0);
 				await leaf.openFile(file);
 				container = leaf.parent;
 				firstLeaf = leaf;
@@ -1763,7 +1898,7 @@ export default class PerspectaPlugin extends Plugin {
 			} else {
 				// Subsequent tabs go into the same container
 				if (!container) continue;
-				leaf = this.app.workspace.createLeafInParent(container, (container as any).children?.length ?? 0);
+				leaf = this.app.workspace.createLeafInParent(container, container.children?.length ?? 0);
 				await leaf.openFile(file);
 			}
 
@@ -1908,7 +2043,8 @@ export default class PerspectaPlugin extends Plugin {
 		await new Promise(resolve => setTimeout(resolve, 200));
 
 		// Navigate up the parent chain to find the split container with matching child count
-		let parent = (anyLeaf as any).parent;
+		const extLeaf = asExtendedLeaf(anyLeaf);
+		let parent: WorkspaceSplit | null = hasParent(extLeaf) && isSplit(extLeaf.parent) ? extLeaf.parent : null;
 		let attempts = 0;
 		const maxAttempts = 5;
 
@@ -1917,12 +2053,12 @@ export default class PerspectaPlugin extends Plugin {
 				// Found the right split container
 				break;
 			}
-			parent = parent.parent;
+			parent = parent.parent ?? null;
 			attempts++;
 		}
 
 		if (!parent?.children || parent.children.length !== sizes.length) {
-			console.log(`[Perspecta] applySplitSizes: could not find matching parent - expected ${sizes.length} children`);
+			Logger.debug(`applySplitSizes: could not find matching parent - expected ${sizes.length} children`);
 			return;
 		}
 
@@ -1930,63 +2066,34 @@ export default class PerspectaPlugin extends Plugin {
 		const total = sizes.reduce((a, b) => a + b, 0);
 		const normalizedSizes = sizes.map(s => (s / total) * 100);
 
-		console.log(`[Perspecta] applySplitSizes: found parent with ${parent.children.length} children, direction=${parent.direction}, applying sizes:`, normalizedSizes);
+		Logger.debug(`applySplitSizes: found parent with ${parent.children.length} children, direction=${parent.direction}, applying sizes:`, normalizedSizes);
 
 		// Apply dimension to each child using setDimension if available, otherwise direct assignment
 		for (let i = 0; i < normalizedSizes.length; i++) {
-			const child = parent.children[i];
+			const child = parent.children[i] as WorkspaceTabContainer | WorkspaceSplit;
 			if (child && normalizedSizes[i] !== undefined) {
-				if (typeof child.setDimension === 'function') {
-					child.setDimension(normalizedSizes[i]);
-					console.log(`[Perspecta] applySplitSizes: called child[${i}].setDimension(${normalizedSizes[i]})`);
-				} else {
-					child.dimension = normalizedSizes[i];
-					console.log(`[Perspecta] applySplitSizes: set child[${i}].dimension = ${normalizedSizes[i]}`);
-				}
+				setContainerDimension(child, normalizedSizes[i]);
+				Logger.debug(`applySplitSizes: set child[${i}].dimension = ${normalizedSizes[i]}`);
 			}
 		}
 
-		// Trigger resize - try multiple methods
-		// Method 1: parent's onResize
-		if (typeof parent.onResize === 'function') {
-			parent.onResize();
-			console.log(`[Perspecta] applySplitSizes: called parent.onResize()`);
-		}
-
-		// Method 2: workspace requestResize (used by obsidian-resize-split plugin)
-		const workspace = this.app.workspace as any;
-		if (typeof workspace.requestResize === 'function') {
-			workspace.requestResize();
-			console.log(`[Perspecta] applySplitSizes: called workspace.requestResize()`);
-		}
-
-		// Method 3: root split's onResize
-		const rootSplit = workspace.rootSplit;
-		if (rootSplit && typeof rootSplit.onResize === 'function') {
-			rootSplit.onResize();
-			console.log(`[Perspecta] applySplitSizes: called rootSplit.onResize()`);
-		}
-
-		// Method 4: trigger window resize event (forces Obsidian to recalculate layout)
-		window.dispatchEvent(new Event('resize'));
-		console.log(`[Perspecta] applySplitSizes: dispatched window resize event`);
+		// Trigger resize using helper function
+		const workspace = asExtendedWorkspace(this.app.workspace);
+		triggerWorkspaceResize(workspace, workspace.rootSplit);
+		Logger.debug(`applySplitSizes: triggered workspace resize`);
 	}
 
 	/**
 	 * Apply scroll position to a leaf's view.
 	 * Must be called after the file is fully loaded.
 	 */
-	private applyScrollPosition(leaf: WorkspaceLeaf, scroll: number | undefined): void {
+	private applyScrollToLeaf(leaf: WorkspaceLeaf, scroll: number | undefined): void {
 		if (scroll === undefined || scroll === 0) return;
 
 		// Delay to ensure view is fully rendered
 		setTimeout(() => {
-			const view = leaf.view as any;
-			if (view?.currentMode?.applyScroll) {
-				view.currentMode.applyScroll(scroll);
-				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta] applyScrollPosition: scrolled to ${scroll}`);
-				}
+			if (applyScrollPosition(leaf.view, scroll)) {
+				Logger.debug(`applyScrollToLeaf: scrolled to ${scroll}`);
 			}
 		}, 100);
 	}
@@ -2002,27 +2109,21 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
-		}
+		Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
 
 		// Apply positions after a longer delay to ensure all views in splits are loaded
 		// Re-iterate leaves inside timeout since split views may not exist yet when this is called
 		setTimeout(() => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
-				const file = (leaf.view as any)?.file as TFile | undefined;
-				if (!file) return;
+				if (!hasFile(leaf.view)) return;
+				const file = leaf.view.file;
 
 				// Restore scroll position for markdown files
 				if (scrollMap.has(file.path)) {
 					const scroll = scrollMap.get(file.path);
 					if (scroll !== undefined && scroll > 0) {
-						const view = leaf.view as any;
-						if (view?.currentMode?.applyScroll) {
-							view.currentMode.applyScroll(scroll);
-							if (PerfTimer.isEnabled()) {
-								console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-							}
+						if (applyScrollPosition(leaf.view, scroll)) {
+							Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
 						}
 					}
 				}
@@ -2063,8 +2164,9 @@ export default class PerspectaPlugin extends Plugin {
 	 * Restore canvas viewport (pan and zoom)
 	 */
 	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): void {
-		const canvas = (leaf.view as any)?.canvas;
-		if (!canvas) return;
+		// Use type-safe canvas view check
+		if (!isCanvasView(leaf.view)) return;
+		const canvas = leaf.view.canvas;
 
 		try {
 			// Calculate zoom delta and apply
@@ -2087,12 +2189,9 @@ export default class PerspectaPlugin extends Plugin {
 				canvas.requestFrame();
 			}
 
-			if (PerfTimer.isEnabled()) {
-				const file = (leaf.view as any)?.file as TFile | undefined;
-				console.log(`[Perspecta] restoreCanvasViewport: ${file?.basename} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
-			}
+			Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : 'unknown'} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
 		} catch (e) {
-			console.log('[Perspecta] Could not restore canvas viewport:', e);
+			Logger.debug('Could not restore canvas viewport:', e);
 		}
 	}
 
@@ -2386,10 +2485,10 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
+			Logger.debug(`restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
 			leafSlots.forEach((leaf, idx) => {
-				const path = (leaf?.view as any)?.file?.path || 'unknown';
-				console.log(`  slot[${idx}]: ${path}`);
+				const path = leaf && hasFile(leaf.view) ? leaf.view.file.path : 'unknown';
+				Logger.debug(`  slot[${idx}]: ${path}`);
 			});
 		}
 
@@ -2507,12 +2606,11 @@ export default class PerspectaPlugin extends Plugin {
 		let activeTabIndex = tabs.findIndex(t => t.active);
 		if (activeTabIndex < 0) activeTabIndex = 0;
 
-		const container = existingLeaf.parent as any;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const container = existingLeaf.parent as any;  // Obsidian's internal WorkspaceParent
 		if (!container) return;
 
-		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] restorePopoutTabs: ${tabs.length} tabs, active at index ${activeTabIndex}`);
-		}
+		Logger.debug(`restorePopoutTabs: ${tabs.length} tabs, active at index ${activeTabIndex}`);
 
 		// Track leaves as we open them (in correct order)
 		const openedLeaves: WorkspaceLeaf[] = [];
@@ -2525,9 +2623,7 @@ export default class PerspectaPlugin extends Plugin {
 			const tab = tabs[i];
 			const { file, method } = resolveFile(this.app, tab);
 			if (!file) {
-				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   ✗ File not found: ${tab.path}`);
-				}
+				Logger.debug(`  ✗ File not found: ${tab.path}`);
 				continue;
 			}
 
@@ -2542,9 +2638,7 @@ export default class PerspectaPlugin extends Plugin {
 			await leaf.openFile(file);
 			openedLeaves.push(leaf);
 
-			if (PerfTimer.isEnabled()) {
-				console.log(`[Perspecta]   ✓ Opened[${i}]: ${file.basename}`);
-			}
+			Logger.debug(`  ✓ Opened[${i}]: ${file.basename}`);
 		}
 
 		// Now all tabs are open in correct order
@@ -2562,14 +2656,13 @@ export default class PerspectaPlugin extends Plugin {
 			activeLeaf
 		});
 
-		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]   Queued tab activation for index ${activeTabIndex}`);
-		}
+		Logger.debug(`  Queued tab activation for index ${activeTabIndex}`);
 	}
 
 	// Queue of pending tab activations to process after restore
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private pendingTabActivations: Array<{
-		container: any;
+		container: any;  // Obsidian's internal WorkspaceParent
 		activeTabIndex: number;
 		activeLeaf: WorkspaceLeaf;
 	}> = [];
@@ -2618,9 +2711,7 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private async restoreRemainingTabs(existingLeaf: WorkspaceLeaf, tabs: TabState[], startIndex: number) {
-		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] restoreRemainingTabs: ${tabs.length} total tabs, starting from index ${startIndex}`);
-		}
+		Logger.debug(`restoreRemainingTabs: ${tabs.length} total tabs, starting from index ${startIndex}`);
 
 		// Find which tab should be active
 		let activeTabIndex = 0;
@@ -2633,7 +2724,8 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Strategy: Open inactive tabs first, then open the active tab last
 		// This way Obsidian naturally makes the last-opened tab active
-		const parent = existingLeaf.parent;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const parent = existingLeaf.parent as any;  // Obsidian's internal WorkspaceParent
 		if (!parent) return;
 
 		// Collect all tabs to open (excluding the first one which is already open via existingLeaf)
@@ -2657,9 +2749,7 @@ export default class PerspectaPlugin extends Plugin {
 		for (const { tab, index } of tabsToOpen) {
 			const { file, method } = resolveFile(this.app, tab);
 			if (!file) {
-				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   tab[${index}]: file not found for ${tab.path}`);
-				}
+				Logger.debug(`  tab[${index}]: file not found for ${tab.path}`);
 				continue;
 			}
 
@@ -2670,11 +2760,9 @@ export default class PerspectaPlugin extends Plugin {
 				});
 			}
 
-			const leaf = this.app.workspace.createLeafInParent(parent, (parent as any).children?.length ?? 0);
+			const leaf = this.app.workspace.createLeafInParent(parent, parent.children?.length ?? 0);
 			await leaf.openFile(file);
-			if (PerfTimer.isEnabled()) {
-				console.log(`[Perspecta]   tab[${index}]: opened ${file.basename}, active=${tab.active}`);
-			}
+			Logger.debug(`  tab[${index}]: opened ${file.basename}, active=${tab.active}`);
 		}
 
 		// If active tab was the first tab (in existingLeaf), we need to switch to it
@@ -2682,9 +2770,7 @@ export default class PerspectaPlugin extends Plugin {
 			// Re-activate the first leaf by opening its file again or using setActiveLeaf
 			setTimeout(() => {
 				this.app.workspace.setActiveLeaf(existingLeaf, { focus: false });
-				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   Activated first tab (existingLeaf)`);
-				}
+				Logger.debug(`  Activated first tab (existingLeaf)`);
 			}, 100);
 		}
 	}
@@ -2720,7 +2806,7 @@ export default class PerspectaPlugin extends Plugin {
 	private findWindowContainingFile(filePath: string): Window | null {
 		let foundWin: Window | null = null;
 		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (!foundWin && (leaf.view as any)?.file?.path === filePath) {
+			if (!foundWin && hasFile(leaf.view) && leaf.view.file.path === filePath) {
 				const win = leaf.view?.containerEl?.win ?? window;
 				// Skip proxy windows
 				if (win !== window && win.document.body.classList.contains('perspecta-proxy-window')) {
@@ -2734,7 +2820,7 @@ export default class PerspectaPlugin extends Plugin {
 
 	private activateLeafByPath(win: Window, filePath: string) {
 		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (leaf.view?.containerEl?.win === win && (leaf.view as any)?.file?.path === filePath) {
+			if (leaf.view?.containerEl?.win === win && hasFile(leaf.view) && leaf.view.file.path === filePath) {
 				this.app.workspace.setActiveLeaf(leaf, { focus: false });
 			}
 		});
@@ -2751,7 +2837,7 @@ export default class PerspectaPlugin extends Plugin {
 		// Find the target leaf without using iterateAllLeaves during the search
 		let targetLeaf: WorkspaceLeaf | null = null;
 		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (!targetLeaf && leaf.view?.containerEl?.win === win && (leaf.view as any)?.file?.path === activePath) {
+			if (!targetLeaf && leaf.view?.containerEl?.win === win && hasFile(leaf.view) && leaf.view.file.path === activePath) {
 				targetLeaf = leaf;
 			}
 		});
@@ -2764,7 +2850,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		const elapsed = performance.now() - start;
 		if (elapsed > 50) {
-			console.warn(`[Perspecta] ⚠ SLOW activateWindowLeaf: ${elapsed.toFixed(1)}ms`);
+			Logger.warn(`⚠ SLOW activateWindowLeaf: ${elapsed.toFixed(1)}ms`);
 		}
 	}
 
@@ -2830,12 +2916,12 @@ export default class PerspectaPlugin extends Plugin {
 
 	private restoreSidebarState(side: 'left' | 'right', state: SidebarState) {
 		try {
-			const workspace = this.app.workspace as any;
+			const workspace = asExtendedWorkspace(this.app.workspace);
 			const sidebar = side === 'left' ? workspace.leftSplit : workspace.rightSplit;
 			if (!sidebar) return;
 
-			if (state.collapsed) { sidebar.collapse?.(); return; }
-			sidebar.expand?.();
+			if (state.collapsed) { (sidebar as { collapse?: () => void }).collapse?.(); return; }
+			(sidebar as { expand?: () => void }).expand?.();
 
 			// If we have an active tab to restore, try to reveal it
 			if (state.activeTab) {
@@ -2851,13 +2937,13 @@ export default class PerspectaPlugin extends Plugin {
 
 					// Method 2: Also try to set as active in the tab group directly
 					try {
-						const tabGroup = (leaf as any).tabGroup || (leaf as any).parent;
+						const tabGroup = getLeafTabGroup(leaf);
 						if (tabGroup?.setActiveLeaf) {
 							tabGroup.setActiveLeaf(leaf);
 						} else if (tabGroup?.selectTab && typeof tabGroup.selectTab === 'function') {
 							// Some versions use selectTab
 							const tabIndex = tabGroup.children?.indexOf(leaf);
-							if (tabIndex >= 0) tabGroup.selectTab(tabIndex);
+							if (typeof tabIndex === 'number' && tabIndex >= 0) tabGroup.selectTab(tabIndex);
 						}
 					} catch { /* ignore */ }
 				}
@@ -3161,10 +3247,8 @@ export default class PerspectaPlugin extends Plugin {
 	 */
 	private getAllWindowDocuments(): Document[] {
 		const docs: Document[] = [document];
-		const workspace = this.app.workspace as any;
-		const floatingSplit = workspace.floatingSplit;
-		if (floatingSplit?.children) {
-			for (const container of floatingSplit.children) {
+		if (hasFloatingSplit(this.app.workspace)) {
+			for (const container of this.app.workspace.floatingSplit.children) {
 				const win = container?.win;
 				if (win && win !== window && win.document) {
 					docs.push(win.document);
@@ -3358,16 +3442,105 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Checks if the current Obsidian version is compatible with the plugin.
+	 * Warns users about potential issues with older versions.
+	 *
+	 * Minimum recommended version: 1.4.0 (for metadataTypeManager API)
+	 */
+	private checkVersionCompatibility(): void {
+		const MIN_RECOMMENDED_VERSION = '1.4.0';
+
+		try {
+			// Version is available but not typed in public API
+			const currentVersion = (this.app as { version?: string }).version;
+			if (!currentVersion) return;
+
+			// Parse version strings into comparable numbers
+			const parseVersion = (v: string): number[] => {
+				return v.split('.').map(n => parseInt(n, 10) || 0);
+			};
+
+			const current = parseVersion(currentVersion);
+			const minimum = parseVersion(MIN_RECOMMENDED_VERSION);
+
+			// Compare version arrays
+			let isOlder = false;
+			for (let i = 0; i < minimum.length; i++) {
+				if ((current[i] || 0) < minimum[i]) {
+					isOlder = true;
+					break;
+				} else if ((current[i] || 0) > minimum[i]) {
+					break;
+				}
+			}
+
+			if (isOlder) {
+				console.warn(
+					`[Perspecta] Obsidian version ${currentVersion} detected. ` +
+					`Some features may not work correctly. ` +
+					`Recommended version: ${MIN_RECOMMENDED_VERSION} or later.`
+				);
+			}
+		} catch {
+			// Silently ignore version check errors
+		}
+	}
+
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		PerfTimer.setEnabled(this.settings.enableDebugLogging);
-		COORDINATE_DEBUG = this.settings.enableDebugLogging;
+		this.validateSettings();
+		this.configureLogging();
 	}
 
 	async saveSettings() {
+		this.validateSettings();
 		await this.saveData(this.settings);
-		PerfTimer.setEnabled(this.settings.enableDebugLogging);
-		COORDINATE_DEBUG = this.settings.enableDebugLogging;
+		this.configureLogging();
+	}
+
+	/**
+	 * Configures logging based on settings.
+	 * Per plugin guidelines: minimize console logging in production.
+	 */
+	private configureLogging(): void {
+		const debugEnabled = this.settings.enableDebugLogging;
+		PerfTimer.setEnabled(debugEnabled);
+		COORDINATE_DEBUG = debugEnabled;
+		setCoordinateDebug(debugEnabled);  // Also update in coordinates module
+		Logger.setLevel(debugEnabled ? LogLevel.DEBUG : LogLevel.ERROR);
+	}
+
+	/**
+	 * Validates settings values are within acceptable ranges.
+	 * Clamps or resets invalid values to defaults.
+	 */
+	private validateSettings(): void {
+		// proxyPreviewScale: 0.1 to 1.0
+		if (typeof this.settings.proxyPreviewScale !== 'number' || isNaN(this.settings.proxyPreviewScale)) {
+			this.settings.proxyPreviewScale = DEFAULT_SETTINGS.proxyPreviewScale;
+		} else {
+			this.settings.proxyPreviewScale = Math.max(0.1, Math.min(1.0, this.settings.proxyPreviewScale));
+		}
+
+		// focusTintDuration: 0 to 60 seconds
+		if (typeof this.settings.focusTintDuration !== 'number' || isNaN(this.settings.focusTintDuration)) {
+			this.settings.focusTintDuration = DEFAULT_SETTINGS.focusTintDuration;
+		} else {
+			this.settings.focusTintDuration = Math.max(0, Math.min(60, this.settings.focusTintDuration));
+		}
+
+		// maxArrangementsPerNote: 1 to 50
+		if (typeof this.settings.maxArrangementsPerNote !== 'number' || isNaN(this.settings.maxArrangementsPerNote)) {
+			this.settings.maxArrangementsPerNote = DEFAULT_SETTINGS.maxArrangementsPerNote;
+		} else {
+			this.settings.maxArrangementsPerNote = Math.max(1, Math.min(50, Math.floor(this.settings.maxArrangementsPerNote)));
+		}
+
+		// storageMode: must be valid enum value
+		if (this.settings.storageMode !== 'frontmatter' && this.settings.storageMode !== 'external') {
+			this.settings.storageMode = DEFAULT_SETTINGS.storageMode;
+		}
 	}
 }
 
@@ -3688,43 +3861,57 @@ class PerspectaSettingTab extends PluginSettingTab {
 			const infoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
 			infoDiv.style.marginTop = '12px';
 			infoDiv.style.marginBottom = '12px';
-			infoDiv.innerHTML = `
-				<strong>How to use:</strong><br>
-				• Use command "Convert to proxy window" on any popout window<br>
-				• The proxy shows a scaled preview of the note content<br>
-				• Click the expand icon (↗) to restore the full window<br>
-				• If the note has a saved arrangement, click anywhere to restore it
-			`;
+			// Build instructions using safe DOM methods (no innerHTML)
+			const strongEl = infoDiv.createEl('strong');
+			strongEl.textContent = 'How to use:';
+			infoDiv.createEl('br');
+			infoDiv.appendText('• Use command "Convert to proxy window" on any popout window');
+			infoDiv.createEl('br');
+			infoDiv.appendText('• The proxy shows a scaled preview of the note content');
+			infoDiv.createEl('br');
+			infoDiv.appendText('• Click the expand icon (↗) to restore the full window');
+			infoDiv.createEl('br');
+			infoDiv.appendText('• If the note has a saved arrangement, click anywhere to restore it');
 		}
 
 		// Wallpaper settings
-		containerEl.createEl('h4', { text: 'Desktop Wallpaper' });
+		containerEl.createEl('h4', { text: 'Desktop wallpaper' });
 
 		new Setting(containerEl)
 			.setName('Save wallpaper with context')
-			.setDesc('Capture the current desktop wallpaper when saving a context.')
+			.setDesc('Capture the current desktop wallpaper when saving a context. The wallpaper can be restored when switching between projects.')
 			.addToggle(t => t.setValue(this.plugin.settings.enableWallpaperCapture).onChange(async v => {
 				this.plugin.settings.enableWallpaperCapture = v;
 				await this.plugin.saveSettings();
 				this.display();
 			}));
 
-		new Setting(containerEl)
-			.setName('Restore wallpaper with context')
-			.setDesc('Change the desktop wallpaper to match the saved context when restoring.')
-			.addToggle(t => t.setValue(this.plugin.settings.enableWallpaperRestore).onChange(async v => {
-				this.plugin.settings.enableWallpaperRestore = v;
-				await this.plugin.saveSettings();
-			}));
+		// Only show additional wallpaper options when capture is enabled
+		if (this.plugin.settings.enableWallpaperCapture) {
+			new Setting(containerEl)
+				.setName('Restore wallpaper with context')
+				.setDesc('Automatically change the desktop wallpaper to match the saved context when restoring.')
+				.addToggle(t => t.setValue(this.plugin.settings.enableWallpaperRestore).onChange(async v => {
+					this.plugin.settings.enableWallpaperRestore = v;
+					await this.plugin.saveSettings();
+				}));
+
+			new Setting(containerEl)
+				.setName('Store wallpapers in vault')
+				.setDesc(`Copy wallpapers to ${this.plugin.settings.perspectaFolderPath}/wallpapers/ for portability. When disabled, the original system path is stored.`)
+				.addToggle(t => t.setValue(this.plugin.settings.storeWallpapersLocally).onChange(async v => {
+					this.plugin.settings.storeWallpapersLocally = v;
+					await this.plugin.saveSettings();
+				}));
+		}
 
 		const wallpaperInfoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
 		wallpaperInfoDiv.style.marginTop = '12px';
 		wallpaperInfoDiv.style.marginBottom = '12px';
-		wallpaperInfoDiv.innerHTML = `
-			<strong>Platform support:</strong> ${getWallpaperPlatformNotes()}<br><br>
-			<strong>Note:</strong> This feature reads and modifies your desktop wallpaper setting.
-			The wallpaper path is stored with your context and can be restored when switching between projects.
-		`;
+		// Platform support info
+		const platformStrong = wallpaperInfoDiv.createEl('strong');
+		platformStrong.textContent = 'Platform support:';
+		wallpaperInfoDiv.appendText(' ' + getWallpaperPlatformNotes());
 	}
 
 	private displayDebugSettings(containerEl: HTMLElement): void {
@@ -3743,7 +3930,8 @@ class PerspectaSettingTab extends PluginSettingTab {
 
 	private getHotkeyDisplay(commandId: string): string {
 		// Access Obsidian's internal hotkey manager to get current hotkey for a command
-		const hotkeyManager = (this.app as any).hotkeyManager;
+		const extApp = this.app as ExtendedApp;
+		const hotkeyManager = extApp.hotkeyManager;
 		if (!hotkeyManager) return 'Not set';
 
 		// Get custom hotkeys first, then fall back to defaults

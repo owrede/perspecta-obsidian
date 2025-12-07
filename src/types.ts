@@ -2,6 +2,43 @@
 // Types and Interfaces
 // ============================================================================
 
+/**
+ * Generic Result type for operations that can fail.
+ * Provides type-safe error handling without exceptions.
+ *
+ * @example
+ * ```typescript
+ * function doOperation(): Result<string> {
+ *   if (error) return { success: false, error: 'Something went wrong' };
+ *   return { success: true, data: 'result' };
+ * }
+ *
+ * const result = doOperation();
+ * if (result.success) {
+ *   console.log(result.data);
+ * } else {
+ *   console.error(result.error);
+ * }
+ * ```
+ */
+export type Result<T> =
+	| { success: true; data: T }
+	| { success: false; error: string };
+
+/**
+ * Helper to create a successful result.
+ */
+export function ok<T>(data: T): Result<T> {
+	return { success: true, data };
+}
+
+/**
+ * Helper to create a failed result.
+ */
+export function err<T>(error: string): Result<T> {
+	return { success: false, error };
+}
+
 export interface TabState {
 	path: string;
 	active: boolean;
@@ -101,6 +138,7 @@ export interface PerspectaSettings {
 	proxyPreviewScale: number;  // Scale factor for proxy window preview (0.1 to 1.0)
 	enableWallpaperCapture: boolean;  // Save desktop wallpaper with context
 	enableWallpaperRestore: boolean;  // Restore wallpaper when restoring context
+	storeWallpapersLocally: boolean;  // Copy wallpapers to perspecta/wallpapers folder
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -119,7 +157,8 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	enableProxyWindows: false,
 	proxyPreviewScale: 0.35,
 	enableWallpaperCapture: false,
-	enableWallpaperRestore: false
+	enableWallpaperRestore: false,
+	storeWallpapersLocally: true  // Default to local storage for portability
 };
 
 // Timestamped arrangement for multi-arrangement storage

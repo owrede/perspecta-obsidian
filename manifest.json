@@ -1,11 +1,11 @@
 {
-  "id": "perspecta-obsidian",
-  "name": "Perspecta",
-  "version": "0.1.13",
-  "minAppVersion": "0.15.0",
-  "description": "Knowledge management, visual mapping, and automation tools for recontextualizing information",
-  "author": "",
-  "authorUrl": "",
-  "fundingUrl": "",
-  "isDesktopOnly": false
+	"id": "perspecta-obsidian",
+	"name": "Perspecta",
+	"version": "0.1.14",
+	"minAppVersion": "1.4.0",
+	"description": "Context-switching plugin that saves and restores window arrangements for knowledge work",
+	"author": "Perspecta Contributors",
+	"authorUrl": "https://github.com/perspecta-obsidian",
+	"fundingUrl": "",
+	"isDesktopOnly": true
 }

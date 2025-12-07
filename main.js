@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => PerspectaPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/changelog.ts
 var CHANGELOG = [
@@ -181,10 +181,135 @@ var DEFAULT_SETTINGS = {
   enableProxyWindows: false,
   proxyPreviewScale: 0.35,
   enableWallpaperCapture: false,
-  enableWallpaperRestore: false
+  enableWallpaperRestore: false,
+  storeWallpapersLocally: true
+  // Default to local storage for portability
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
+
+// src/types/obsidian-internal.ts
+function asExtendedLeaf(leaf) {
+  return leaf;
+}
+function hasFloatingSplit(workspace) {
+  if (workspace === null || typeof workspace !== "object")
+    return false;
+  const ws = workspace;
+  if (!("floatingSplit" in ws) || ws.floatingSplit === void 0 || ws.floatingSplit === null)
+    return false;
+  const fs = ws.floatingSplit;
+  return Array.isArray(fs.children);
+}
+function isSplit(container) {
+  return container !== null && typeof container === "object" && "direction" in container && "children" in container && Array.isArray(container.children);
+}
+function hasMetadataTypeManager(app) {
+  if (app === null || typeof app !== "object")
+    return false;
+  const a = app;
+  return "metadataTypeManager" in a && a.metadataTypeManager !== void 0 && a.metadataTypeManager !== null;
+}
+function hasFile(view) {
+  if (view === null || typeof view !== "object")
+    return false;
+  const v = view;
+  return "file" in v && v.file !== void 0 && v.file !== null;
+}
+function hasScrollableMode(view) {
+  if (view === null || typeof view !== "object")
+    return false;
+  const v = view;
+  if (!("currentMode" in v) || v.currentMode === void 0 || v.currentMode === null)
+    return false;
+  const mode = v.currentMode;
+  return typeof mode.getScroll === "function" && typeof mode.applyScroll === "function";
+}
+function isCanvasView(view) {
+  if (view === null || typeof view !== "object")
+    return false;
+  const v = view;
+  if (!("canvas" in v) || v.canvas === void 0 || v.canvas === null)
+    return false;
+  const canvas = v.canvas;
+  return typeof canvas.tx === "number";
+}
+function getCurrentTabIndex(container) {
+  if (container === null || typeof container !== "object")
+    return 0;
+  const c = container;
+  if ("currentTab" in c && typeof c.currentTab === "number") {
+    return c.currentTab;
+  }
+  return 0;
+}
+function getScrollPosition(view) {
+  if (hasScrollableMode(view)) {
+    return view.currentMode.getScroll();
+  }
+  return void 0;
+}
+function applyScrollPosition(view, position) {
+  if (hasScrollableMode(view)) {
+    view.currentMode.applyScroll(position);
+    return true;
+  }
+  return false;
+}
+function getCanvasViewport(view) {
+  if (isCanvasView(view)) {
+    return view.canvas;
+  }
+  return void 0;
+}
+function setContainerDimension(container, dimension) {
+  if (container === null || typeof container !== "object") {
+    return false;
+  }
+  const c = container;
+  if (typeof c.setDimension === "function") {
+    c.setDimension(dimension);
+    return true;
+  }
+  if ("dimension" in c) {
+    c.dimension = dimension;
+    return true;
+  }
+  return false;
+}
+function triggerWorkspaceResize(workspace, rootSplit) {
+  let triggered = false;
+  const ws = workspace;
+  if (typeof ws.requestResize === "function") {
+    ws.requestResize();
+    triggered = true;
+  }
+  if (rootSplit && typeof rootSplit.onResize === "function") {
+    rootSplit.onResize();
+    triggered = true;
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("resize"));
+    triggered = true;
+  }
+  return triggered;
+}
+function hasParent(obj) {
+  return obj !== null && typeof obj === "object" && "parent" in obj;
+}
+function getLeafTabGroup(leaf) {
+  var _a;
+  if (leaf === null || typeof leaf !== "object")
+    return null;
+  const l = leaf;
+  const tabGroup = (_a = l.tabGroup) != null ? _a : l.parent;
+  if (tabGroup === null || typeof tabGroup !== "object")
+    return null;
+  return tabGroup;
+}
+function asExtendedWorkspace(workspace) {
+  return workspace;
+}
 
 // src/utils/perf-timer.ts
 var PerfTimer = class {
@@ -248,19 +373,75 @@ PerfTimer.start = 0;
 PerfTimer.lastMark = 0;
 PerfTimer.currentOperation = "";
 
+// src/utils/logger.ts
+var config = {
+  level: 1 /* ERROR */,
+  prefix: "[Perspecta]"
+};
+function setLogLevel(level) {
+  config.level = level;
+}
+function getLogLevel() {
+  return config.level;
+}
+function enableDebugMode() {
+  config.level = 4 /* DEBUG */;
+}
+function disableDebugMode() {
+  config.level = 1 /* ERROR */;
+}
+function isDebugEnabled() {
+  return config.level >= 4 /* DEBUG */;
+}
+function logError(message, ...args) {
+  if (config.level >= 1 /* ERROR */) {
+    console.error(`${config.prefix} ${message}`, ...args);
+  }
+}
+function logWarn(message, ...args) {
+  if (config.level >= 2 /* WARN */) {
+    console.warn(`${config.prefix} ${message}`, ...args);
+  }
+}
+function logInfo(message, ...args) {
+  if (config.level >= 3 /* INFO */) {
+    console.log(`${config.prefix} ${message}`, ...args);
+  }
+}
+function logDebug(message, ...args) {
+  if (config.level >= 4 /* DEBUG */) {
+    console.log(`${config.prefix} [DEBUG] ${message}`, ...args);
+  }
+}
+var Logger = {
+  error: logError,
+  warn: logWarn,
+  info: logInfo,
+  debug: logDebug,
+  setLevel: setLogLevel,
+  getLevel: getLogLevel,
+  enableDebug: enableDebugMode,
+  disableDebug: disableDebugMode,
+  isDebugEnabled
+};
+
 // src/utils/coordinates.ts
 var VIRTUAL_SCREEN = {
   width: 1728,
   height: 1117
 };
 var coordinateDebug = false;
+function setCoordinateDebug(enabled) {
+  coordinateDebug = enabled;
+}
 function getPhysicalScreen() {
   var _a, _b;
+  const screen = window.screen;
   return {
-    width: window.screen.availWidth,
-    height: window.screen.availHeight,
-    x: (_a = window.screen.availLeft) != null ? _a : 0,
-    y: (_b = window.screen.availTop) != null ? _b : 0
+    width: screen.availWidth,
+    height: screen.availHeight,
+    x: (_a = screen.availLeft) != null ? _a : 0,
+    y: (_b = screen.availTop) != null ? _b : 0
   };
 }
 function physicalToVirtual(physical) {
@@ -378,160 +559,227 @@ function calculateTiledLayout(windowCount, mainWindowState) {
 var import_obsidian = require("obsidian");
 var import_child_process = require("child_process");
 var import_util = require("util");
-var execAsync = (0, import_util.promisify)(import_child_process.exec);
-async function getWallpaper() {
-  if (import_obsidian.Platform.isMacOS) {
-    return getWallpaperMacOS();
-  } else if (import_obsidian.Platform.isWin) {
-    return getWallpaperWindows();
-  } else if (import_obsidian.Platform.isLinux) {
-    return getWallpaperLinux();
+var import_promises = require("fs/promises");
+var import_fs = require("fs");
+var import_path = require("path");
+var import_crypto = require("crypto");
+var execFileAsync = (0, import_util.promisify)(import_child_process.execFile);
+var VALID_IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".bmp",
+  ".tiff",
+  ".tif",
+  ".webp",
+  ".heic",
+  ".heif",
+  ".avif"
+]);
+var MAX_PATH_LENGTH = 4096;
+var SHELL_METACHARACTERS = /[`$\\!"';&|<>(){}[\]*?~#]/;
+var DANGEROUS_PATH_PATTERNS = [
+  /\0/,
+  // Null byte injection
+  /\.\.[/\\]/,
+  // Directory traversal (../ or ..\)
+  /[\x00-\x1F]/
+  // Control characters (except in file path segments)
+];
+function validatePath(path) {
+  if (!path || typeof path !== "string" || path.trim().length === 0) {
+    return { isValid: false, error: "Path is empty or invalid" };
   }
-  return { success: false, error: "Unsupported platform" };
+  if (path.length > MAX_PATH_LENGTH) {
+    return { isValid: false, error: `Path exceeds maximum length of ${MAX_PATH_LENGTH} characters` };
+  }
+  for (const pattern of DANGEROUS_PATH_PATTERNS) {
+    if (pattern.test(path)) {
+      return { isValid: false, error: "Path contains invalid characters or patterns" };
+    }
+  }
+  if (SHELL_METACHARACTERS.test(path)) {
+    return { isValid: false, error: "Path contains characters not allowed in wallpaper paths" };
+  }
+  return { isValid: true };
 }
-async function setWallpaper(path) {
-  if (!path) {
-    return { success: false, error: "No path provided" };
+function validateImageExtension(path) {
+  const dotIndex = path.lastIndexOf(".");
+  if (dotIndex === -1) {
+    return { isValid: false, error: "Path has no file extension" };
   }
-  if (import_obsidian.Platform.isMacOS) {
-    return setWallpaperMacOS(path);
-  } else if (import_obsidian.Platform.isWin) {
-    return setWallpaperWindows(path);
-  } else if (import_obsidian.Platform.isLinux) {
-    return setWallpaperLinux(path);
+  const ext = path.toLowerCase().substring(dotIndex);
+  if (!VALID_IMAGE_EXTENSIONS.has(ext)) {
+    return {
+      isValid: false,
+      error: `Invalid image extension '${ext}'. Supported: ${Array.from(VALID_IMAGE_EXTENSIONS).join(", ")}`
+    };
   }
-  return { success: false, error: "Unsupported platform" };
+  return { isValid: true };
+}
+function escapeAppleScript(path) {
+  return path.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 async function getWallpaperMacOS() {
   try {
-    const script = `
-			tell application "System Events"
-				tell current desktop
-					get picture
-				end tell
-			end tell
-		`;
-    const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, `'"'"'`)}'`);
+    const script = 'tell application "System Events" to get picture of desktop 1';
+    const { stdout } = await execFileAsync("osascript", ["-e", script]);
     const path = stdout.trim();
-    if (path && path !== "missing value") {
-      return { success: true, path };
-    }
-    return { success: false, error: "Could not get wallpaper path" };
+    return path || null;
   } catch (e) {
-    try {
-      const { stdout } = await execAsync(
-        `osascript -e 'tell application "System Events" to get picture of desktop 1'`
-      );
-      const path = stdout.trim();
-      if (path && path !== "missing value") {
-        return { success: true, path };
-      }
-    } catch (e2) {
-    }
-    return { success: false, error: e.message };
+    return null;
   }
 }
 async function setWallpaperMacOS(path) {
-  try {
-    const escapedPath = path.replace(/"/g, '\\"');
-    const script = `
-			tell application "System Events"
-				tell current desktop
-					set picture to "${escapedPath}"
-				end tell
-			end tell
-		`;
-    await execAsync(`osascript -e '${script.replace(/'/g, `'"'"'`)}'`);
-    return { success: true, path };
-  } catch (e) {
-    try {
-      const escapedPath = path.replace(/"/g, '\\"');
-      await execAsync(
-        `osascript -e 'tell application "System Events" to set picture of desktop 1 to "${escapedPath}"'`
-      );
-      return { success: true, path };
-    } catch (e2) {
-    }
-    return { success: false, error: e.message };
-  }
+  const escapedPath = escapeAppleScript(path);
+  const script = `tell application "System Events" to set picture of desktop 1 to "${escapedPath}"`;
+  await execFileAsync("osascript", ["-e", script]);
 }
 async function getWallpaperWindows() {
   try {
-    const { stdout } = await execAsync(
-      `powershell -command "(Get-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name Wallpaper).Wallpaper"`
-    );
+    const psCommand = "(Get-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name Wallpaper).Wallpaper";
+    const { stdout } = await execFileAsync("powershell", ["-Command", psCommand]);
     const path = stdout.trim();
-    if (path) {
-      return { success: true, path };
-    }
-    return { success: false, error: "Could not get wallpaper path" };
+    return path || null;
   } catch (e) {
-    return { success: false, error: e.message };
+    return null;
   }
 }
 async function setWallpaperWindows(path) {
-  try {
-    const escapedPath = path.replace(/'/g, "''");
-    const script = `
-			Add-Type -TypeDefinition @"
-			using System;
-			using System.Runtime.InteropServices;
-			public class Wallpaper {
-				[DllImport("user32.dll", CharSet = CharSet.Auto)]
-				public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-			}
+  const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Wallpaper {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+}
 "@
-			[Wallpaper]::SystemParametersInfo(0x0014, 0, '${escapedPath}', 0x0001 -bor 0x0002)
-		`;
-    await execAsync(`powershell -command "${script.replace(/"/g, '\\"')}"`);
-    return { success: true, path };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
+[Wallpaper]::SystemParametersInfo(0x0014, 0, '${path.replace(/'/g, "''")}', 0x0001 -bor 0x0002)
+`;
+  await execFileAsync("powershell", ["-Command", psScript]);
 }
 async function getWallpaperLinux() {
   try {
-    const { stdout } = await execAsync(
-      `gsettings get org.gnome.desktop.background picture-uri`
-    );
-    let path = stdout.trim().replace(/^'|'$/g, "");
+    const { stdout } = await execFileAsync("gsettings", ["get", "org.gnome.desktop.background", "picture-uri"]);
+    let path = stdout.trim();
+    path = path.replace(/^'|'$/g, "");
     if (path.startsWith("file://")) {
       path = decodeURIComponent(path.substring(7));
     }
-    if (path) {
-      return { success: true, path };
-    }
-    return { success: false, error: "Could not get wallpaper path" };
+    return path || null;
   } catch (e) {
-    return { success: false, error: e.message + " (only GNOME is currently supported)" };
+    return null;
   }
 }
 async function setWallpaperLinux(path) {
+  const fileUri = `file://${encodeURIComponent(path).replace(/%2F/g, "/")}`;
+  await execFileAsync("gsettings", ["set", "org.gnome.desktop.background", "picture-uri", fileUri]);
   try {
-    const fileUri = path.startsWith("file://") ? path : `file://${path}`;
-    await execAsync(
-      `gsettings set org.gnome.desktop.background picture-uri '${fileUri}'`
-    );
-    try {
-      await execAsync(
-        `gsettings set org.gnome.desktop.background picture-uri-dark '${fileUri}'`
-      );
-    } catch (e) {
+    await execFileAsync("gsettings", ["set", "org.gnome.desktop.background", "picture-uri-dark", fileUri]);
+  } catch (e) {
+  }
+}
+async function getWallpaper() {
+  if (import_obsidian.Platform.isMobile) {
+    return { success: false, error: "Wallpaper operations not supported on mobile" };
+  }
+  try {
+    let path = null;
+    if (import_obsidian.Platform.isMacOS) {
+      path = await getWallpaperMacOS();
+    } else if (import_obsidian.Platform.isWin) {
+      path = await getWallpaperWindows();
+    } else if (import_obsidian.Platform.isLinux) {
+      path = await getWallpaperLinux();
+    } else {
+      return { success: false, error: "Platform not supported" };
+    }
+    if (!path) {
+      return { success: false, error: "Could not retrieve wallpaper path" };
     }
     return { success: true, path };
   } catch (e) {
-    return { success: false, error: e.message + " (only GNOME is currently supported)" };
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    return { success: false, error: errorMessage };
+  }
+}
+async function setWallpaper(path) {
+  if (import_obsidian.Platform.isMobile) {
+    return { success: false, error: "Wallpaper operations not supported on mobile" };
+  }
+  const pathValidation = validatePath(path);
+  if (!pathValidation.isValid) {
+    return { success: false, error: pathValidation.error };
+  }
+  const extValidation = validateImageExtension(path);
+  if (!extValidation.isValid) {
+    return { success: false, error: extValidation.error };
+  }
+  try {
+    if (import_obsidian.Platform.isMacOS) {
+      await setWallpaperMacOS(path);
+    } else if (import_obsidian.Platform.isWin) {
+      await setWallpaperWindows(path);
+    } else if (import_obsidian.Platform.isLinux) {
+      await setWallpaperLinux(path);
+    } else {
+      return { success: false, error: "Platform not supported" };
+    }
+    return { success: true, path };
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    return { success: false, error: errorMessage };
   }
 }
 function getWallpaperPlatformNotes() {
   if (import_obsidian.Platform.isMacOS) {
-    return "macOS: Full support via AppleScript";
+    return "macOS: Changes apply to active desktop space only.";
   } else if (import_obsidian.Platform.isWin) {
-    return "Windows: Support via PowerShell (may require permissions)";
+    return "Windows: Full support via SystemParametersInfo API.";
   } else if (import_obsidian.Platform.isLinux) {
-    return "Linux: GNOME desktop only (gsettings)";
+    return "Linux: GNOME desktop environments only (uses gsettings).";
   }
-  return "Platform not supported";
+  return "Platform not supported for wallpaper operations.";
+}
+function hashPath(path) {
+  return (0, import_crypto.createHash)("sha256").update(path).digest("hex").substring(0, 8);
+}
+async function copyWallpaperToLocal(sourcePath, destDir) {
+  const pathValidation = validatePath(sourcePath);
+  if (!pathValidation.isValid) {
+    return { success: false, error: `Invalid source path: ${pathValidation.error}` };
+  }
+  const extValidation = validateImageExtension(sourcePath);
+  if (!extValidation.isValid) {
+    return { success: false, error: extValidation.error };
+  }
+  try {
+    const sourceStats = await (0, import_promises.stat)(sourcePath);
+    if (!sourceStats.isFile()) {
+      return { success: false, error: "Source path is not a file" };
+    }
+    if (!(0, import_fs.existsSync)(destDir)) {
+      await (0, import_promises.mkdir)(destDir, { recursive: true });
+    }
+    const originalName = (0, import_path.basename)(sourcePath, (0, import_path.extname)(sourcePath));
+    const ext = (0, import_path.extname)(sourcePath);
+    const pathHash = hashPath(sourcePath);
+    const destFilename = `${originalName}_${pathHash}${ext}`;
+    const destPath = (0, import_path.join)(destDir, destFilename);
+    if ((0, import_fs.existsSync)(destPath)) {
+      return { success: true, path: destPath };
+    }
+    await (0, import_promises.copyFile)(sourcePath, destPath);
+    return { success: true, path: destPath };
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    return { success: false, error: `Failed to copy wallpaper: ${errorMessage}` };
+  }
+}
+function getWallpapersDir(vaultPath, perspectaFolder = "perspecta") {
+  return (0, import_path.join)(vaultPath, perspectaFolder, "wallpapers");
 }
 
 // src/utils/uid.ts
@@ -603,6 +851,100 @@ ${newFm}
   return false;
 }
 
+// src/utils/file-resolver.ts
+var import_obsidian2 = require("obsidian");
+var uidCache = /* @__PURE__ */ new Map();
+var UID_CACHE_TTL = 6e4;
+var SUPPORTED_EXTENSIONS = /* @__PURE__ */ new Set(["md", "canvas", "base"]);
+function isValidPath(path) {
+  if (!path || typeof path !== "string") {
+    return false;
+  }
+  if (path.trim().length === 0) {
+    return false;
+  }
+  if (path.includes("..")) {
+    return false;
+  }
+  if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) {
+    return false;
+  }
+  return true;
+}
+function getUidFromCache2(app, file) {
+  var _a;
+  const cache = app.metadataCache.getFileCache(file);
+  const uid = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[UID_FRONTMATTER_KEY];
+  return typeof uid === "string" ? uid : void 0;
+}
+function refreshUidCache(app) {
+  const now = Date.now();
+  for (const [uid, entry] of uidCache.entries()) {
+    if (now - entry.timestamp > UID_CACHE_TTL) {
+      uidCache.delete(uid);
+    }
+  }
+  const files = app.vault.getMarkdownFiles();
+  for (const file of files) {
+    const uid = getUidFromCache2(app, file);
+    if (uid) {
+      uidCache.set(uid, { file, timestamp: now });
+    }
+  }
+}
+function resolveByUid(app, uid) {
+  var _a;
+  const cached = uidCache.get(uid);
+  if (cached && Date.now() - cached.timestamp < UID_CACHE_TTL) {
+    const exists = app.vault.getAbstractFileByPath(cached.file.path);
+    if (exists instanceof import_obsidian2.TFile) {
+      return cached.file;
+    }
+    uidCache.delete(uid);
+  }
+  refreshUidCache(app);
+  const entry = uidCache.get(uid);
+  return (_a = entry == null ? void 0 : entry.file) != null ? _a : null;
+}
+function resolveByName(app, name, extension) {
+  if (!name) {
+    return null;
+  }
+  const allFiles = app.vault.getFiles();
+  const matches = allFiles.filter(
+    (f) => f.basename === name && f.extension === extension
+  );
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  return null;
+}
+function resolveFile(app, tab) {
+  if (!isValidPath(tab.path)) {
+    return { file: null, method: "not_found", error: "Invalid path" };
+  }
+  const fileByPath = app.vault.getAbstractFileByPath(tab.path);
+  if (fileByPath instanceof import_obsidian2.TFile) {
+    return { file: fileByPath, method: "path" };
+  }
+  if (tab.uid) {
+    const fileByUid = resolveByUid(app, tab.uid);
+    if (fileByUid) {
+      return { file: fileByUid, method: "uid" };
+    }
+  }
+  if (tab.name) {
+    const ext = tab.path.split(".").pop() || "md";
+    if (SUPPORTED_EXTENSIONS.has(ext)) {
+      const fileByName = resolveByName(app, tab.name, ext);
+      if (fileByName) {
+        return { file: fileByName, method: "name" };
+      }
+    }
+  }
+  return { file: null, method: "not_found", error: `File not found: ${tab.path}` };
+}
+
 // src/storage/markdown.ts
 function markdownHasContext(app, file) {
   var _a;
@@ -667,14 +1009,14 @@ async function canvasHasContext(app, file) {
 }
 
 // src/storage/base.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 async function getUidFromBase(app, file) {
   var _a;
   if (file.extension !== "base")
     return void 0;
   try {
     const content = await app.vault.read(file);
-    const data = (0, import_obsidian2.parseYaml)(content);
+    const data = (0, import_obsidian3.parseYaml)(content);
     return (_a = data == null ? void 0 : data.perspecta) == null ? void 0 : _a.uid;
   } catch (e) {
     return void 0;
@@ -686,7 +1028,7 @@ async function getContextFromBase(app, file) {
     return null;
   try {
     const content = await app.vault.read(file);
-    const data = (0, import_obsidian2.parseYaml)(content);
+    const data = (0, import_obsidian3.parseYaml)(content);
     const encoded = (_a = data == null ? void 0 : data.perspecta) == null ? void 0 : _a.context;
     if (!encoded)
       return null;
@@ -701,14 +1043,14 @@ async function saveContextToBase(app, file, context) {
     return;
   try {
     const content = await app.vault.read(file);
-    const data = content.trim() ? (0, import_obsidian2.parseYaml)(content) : {};
+    const data = content.trim() ? (0, import_obsidian3.parseYaml)(content) : {};
     if (!data.perspecta) {
       data.perspecta = {};
     }
     const json = JSON.stringify(context);
     const base64 = btoa(unescape(encodeURIComponent(json)));
     data.perspecta.context = base64;
-    await app.vault.modify(file, (0, import_obsidian2.stringifyYaml)(data));
+    await app.vault.modify(file, (0, import_obsidian3.stringifyYaml)(data));
   } catch (e) {
     console.error("[Perspecta] Failed to save context to base file:", e);
     throw e;
@@ -720,7 +1062,7 @@ async function baseHasContext(app, file) {
     return false;
   try {
     const content = await app.vault.read(file);
-    const data = (0, import_obsidian2.parseYaml)(content);
+    const data = (0, import_obsidian3.parseYaml)(content);
     return !!((_a = data == null ? void 0 : data.perspecta) == null ? void 0 : _a.context);
   } catch (e) {
     return false;
@@ -733,13 +1075,13 @@ function isArrangementCollection(data) {
   return typeof data === "object" && data !== null && "arrangements" in data && Array.isArray(data.arrangements);
 }
 var ExternalContextStore = class {
-  constructor(config) {
+  constructor(config2) {
     this.cache = /* @__PURE__ */ new Map();
     this.dirty = /* @__PURE__ */ new Set();
     this.saveTimeout = null;
     this.initialized = false;
-    this.app = config.app;
-    this.manifest = config.manifest;
+    this.app = config2.app;
+    this.manifest = config2.manifest;
   }
   get adapter() {
     return this.app.vault.adapter;
@@ -912,6 +1254,7 @@ var ExternalContextStore = class {
 };
 
 // src/ui/modals.ts
+var import_obsidian4 = require("obsidian");
 var SVG_NS = "http://www.w3.org/2000/svg";
 function generateArrangementPreview(arrangement, width, height) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i;
@@ -1339,11 +1682,7 @@ function showArrangementSelector(arrangements, fileName, onDelete, targetWindow 
         const summary = info.createDiv({ cls: "perspecta-arrangement-summary" });
         summary.setText(getArrangementSummary(arr));
         const deleteBtn = item.createDiv({ cls: "perspecta-arrangement-delete" });
-        deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-					<circle cx="12" cy="12" r="10"/>
-					<line x1="15" y1="9" x2="9" y2="15"/>
-					<line x1="9" y1="9" x2="15" y2="15"/>
-				</svg>`;
+        (0, import_obsidian4.setIcon)(deleteBtn, "x-circle");
         deleteBtn.setAttribute("aria-label", "Delete arrangement");
         deleteBtn.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -1439,20 +1778,9 @@ function showConfirmOverwrite(existingArrangement, fileName, targetWindow = wind
 }
 
 // src/ui/proxy-view.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var PROXY_VIEW_TYPE = "perspecta-proxy-view";
-function getElectronRemote() {
-  try {
-    return require("@electron/remote");
-  } catch (e) {
-    try {
-      return require("electron").remote;
-    } catch (e2) {
-      return null;
-    }
-  }
-}
-var ProxyNoteView = class extends import_obsidian3.ItemView {
+var ProxyNoteView = class extends import_obsidian5.ItemView {
   constructor(leaf) {
     super(leaf);
     this.state = { filePath: "" };
@@ -1474,16 +1802,20 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
     container.empty();
     container.addClass("perspecta-proxy-container");
     this.applyProxyWindowClass();
-    this.renderContent(container);
-    this.configureElectronWindow();
-    setTimeout(() => this.configureElectronWindow(), 50);
-    setTimeout(() => this.configureElectronWindow(), 150);
-    setTimeout(() => this.configureElectronWindow(), 300);
+    await this.renderContent(container);
+    this.configureWindowChrome();
+    setTimeout(() => this.configureWindowChrome(), 50);
+    setTimeout(() => this.configureWindowChrome(), 150);
+    setTimeout(() => this.configureWindowChrome(), 300);
   }
+  /**
+   * Applies CSS classes to the popout window for styling.
+   * This enables CSS-only window chrome hiding.
+   */
   applyProxyWindowClass() {
-    var _a, _b, _c;
-    const win = this.containerEl.win || ((_b = (_a = this.leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win);
-    if (win && win !== window && ((_c = win.document) == null ? void 0 : _c.body)) {
+    var _a;
+    const win = this.getPopoutWindow();
+    if ((_a = win == null ? void 0 : win.document) == null ? void 0 : _a.body) {
       win.document.body.classList.add("perspecta-proxy-window");
     }
     const workspaceEl = this.containerEl.closest(".workspace");
@@ -1491,10 +1823,25 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
       workspaceEl.classList.add("perspecta-proxy-workspace");
     }
   }
-  configureElectronWindow() {
+  /**
+   * Gets the popout window for this view, if any.
+   * Returns null if this is the main window.
+   */
+  getPopoutWindow() {
     var _a, _b;
     const win = this.containerEl.win || ((_b = (_a = this.leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win);
-    if (!win || win === window)
+    if (win && win !== window) {
+      return win;
+    }
+    return null;
+  }
+  /**
+   * Configures window chrome (tabs, titlebar, etc.) via CSS and DOM.
+   * Does NOT use Electron remote module - uses CSS-only approach.
+   */
+  configureWindowChrome() {
+    const win = this.getPopoutWindow();
+    if (!win)
       return;
     const doc = win.document;
     if (!doc)
@@ -1505,60 +1852,15 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
     }
     const titlebarEl = doc.querySelector(".titlebar");
     if (titlebarEl) {
-      titlebarEl.innerHTML = "";
+      while (titlebarEl.firstChild) {
+        titlebarEl.removeChild(titlebarEl.firstChild);
+      }
       titlebarEl.style.height = "0";
       titlebarEl.style.minHeight = "0";
     }
     const viewHeader = doc.querySelector(".view-header");
     if (viewHeader) {
       viewHeader.style.display = "none";
-    }
-    this.configureElectronBrowserWindow();
-  }
-  configureElectronBrowserWindow() {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
-    const remote = getElectronRemote();
-    if (!remote)
-      return;
-    const win = this.containerEl.win || ((_b = (_a = this.leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win);
-    if (!win || win === window)
-      return;
-    try {
-      const allWindows = remote.BrowserWindow.getAllWindows();
-      for (const bw of allWindows) {
-        const webContents = bw.webContents;
-        if (webContents) {
-          try {
-            const bwDoc = (_d = (_c = webContents.mainFrame) == null ? void 0 : _c.window) == null ? void 0 : _d.document;
-            if (bwDoc === win.document) {
-              this.applyBrowserWindowConfig(bw);
-              return;
-            }
-          } catch (e) {
-          }
-        }
-        const title = ((_e = bw.getTitle) == null ? void 0 : _e.call(bw)) || "";
-        if (((_f = this.file) == null ? void 0 : _f.basename) && title.includes(this.file.basename)) {
-          this.applyBrowserWindowConfig(bw);
-          return;
-        }
-      }
-      for (const bw of allWindows) {
-        if (!((_g = bw.isMainWindow) == null ? void 0 : _g.call(bw)) && ((_i = (_h = bw.getMinimumSize) == null ? void 0 : _h.call(bw)) == null ? void 0 : _i[0]) !== 150) {
-          const title = ((_j = bw.getTitle) == null ? void 0 : _j.call(bw)) || "";
-          if (title.includes("Proxy") || ((_k = this.file) == null ? void 0 : _k.basename) && title.includes(this.file.basename)) {
-            this.applyBrowserWindowConfig(bw);
-          }
-        }
-      }
-    } catch (e) {
-      console.log("[Perspecta] Could not configure window:", e);
-    }
-  }
-  applyBrowserWindowConfig(bw) {
-    bw.setMinimumSize(150, 40);
-    if (import_obsidian3.Platform.isMacOS && typeof bw.setWindowButtonVisibility === "function") {
-      bw.setWindowButtonVisibility(false);
     }
   }
   async renderContent(container) {
@@ -1571,7 +1873,7 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
     });
     const expandBtn = headerRow.createDiv({ cls: "perspecta-proxy-expand" });
     expandBtn.style.cssText += "-webkit-app-region: no-drag; cursor: pointer;";
-    (0, import_obsidian3.setIcon)(expandBtn, "maximize-2");
+    (0, import_obsidian5.setIcon)(expandBtn, "maximize-2");
     expandBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.expandToFullWindow();
@@ -1581,7 +1883,7 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
     const ext = ((_b = this.file) == null ? void 0 : _b.extension.toLowerCase()) || "";
     const needsScaling = !this.isImageFile(ext) && !this.isPdfFile(ext) && !this.isNonRenderableFile(ext);
     if (needsScaling) {
-      const plugin = this.app.plugins.plugins["perspecta-obsidian"];
+      const plugin = this.getPlugin();
       const scale = (_d = (_c = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _c.proxyPreviewScale) != null ? _d : 0.35;
       const inverseScale = 100 / (scale * 100);
       previewContent.style.width = `${inverseScale * 100}%`;
@@ -1665,9 +1967,9 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
       if (this.renderComponent) {
         this.renderComponent.unload();
       }
-      this.renderComponent = new import_obsidian3.Component();
+      this.renderComponent = new import_obsidian5.Component();
       this.renderComponent.load();
-      await import_obsidian3.MarkdownRenderer.render(
+      await import_obsidian5.MarkdownRenderer.render(
         this.app,
         content,
         container,
@@ -1739,7 +2041,7 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
   renderFileTypeIcon(container, iconName, fileType) {
     const iconContainer = container.createDiv({ cls: "perspecta-proxy-file-icon" });
     const iconEl = iconContainer.createDiv({ cls: "perspecta-proxy-file-icon-svg" });
-    (0, import_obsidian3.setIcon)(iconEl, iconName);
+    (0, import_obsidian5.setIcon)(iconEl, iconName);
     iconContainer.createDiv({
       cls: "perspecta-proxy-file-type-label",
       text: fileType
@@ -1766,25 +2068,37 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
     }
   }
   async setState(state, result) {
-    this.state = state;
-    if (state.filePath) {
-      this.file = this.app.vault.getAbstractFileByPath(state.filePath);
-    }
-    const container = this.containerEl.children[1];
-    if (container) {
-      container.empty();
-      this.renderContent(container);
+    const proxyState = state;
+    if (proxyState && typeof proxyState === "object" && "filePath" in proxyState) {
+      this.state = proxyState;
+      if (proxyState.filePath) {
+        this.file = this.app.vault.getAbstractFileByPath(proxyState.filePath);
+      }
+      const container = this.containerEl.children[1];
+      if (container) {
+        container.empty();
+        await this.renderContent(container);
+      }
     }
     return super.setState(state, result);
   }
   getState() {
     return this.state;
   }
+  /**
+   * Gets the Perspecta plugin instance.
+   * Uses typed accessor instead of (this.app as any).
+   */
+  getPlugin() {
+    var _a, _b, _c;
+    const app = this.app;
+    return (_c = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["perspecta-obsidian"]) != null ? _c : null;
+  }
   async restoreArrangement(forceLatest = true) {
     if (!this.state.arrangementUid || !this.file)
       return;
     const file = this.file;
-    const plugin = this.app.plugins.plugins["perspecta-obsidian"];
+    const plugin = this.getPlugin();
     this.leaf.detach();
     if (plugin && typeof plugin.restoreContext === "function") {
       await plugin.restoreContext(file, forceLatest);
@@ -1793,7 +2107,7 @@ var ProxyNoteView = class extends import_obsidian3.ItemView {
   async expandToFullWindow() {
     if (!this.file)
       return;
-    const win = this.leaf.view.containerEl.win;
+    const win = this.getPopoutWindow();
     const x = (win == null ? void 0 : win.screenX) || 100;
     const y = (win == null ? void 0 : win.screenY) || 100;
     this.leaf.detach();
@@ -1821,31 +2135,12 @@ async function getUidFromFile(app, file) {
   }
   return getUidFromCache(app, file);
 }
-function resolveFile(app, tab) {
-  const fileByPath = app.vault.getAbstractFileByPath(tab.path);
-  if (fileByPath instanceof import_obsidian4.TFile) {
-    return { file: fileByPath, method: "path" };
-  }
-  if (tab.uid) {
-    const files = app.vault.getMarkdownFiles();
-    for (const file of files) {
-      const fileUid = getUidFromCache(app, file);
-      if (fileUid === tab.uid) {
-        return { file, method: "uid" };
-      }
-    }
-  }
-  if (tab.name) {
-    const files = app.vault.getMarkdownFiles();
-    const matches = files.filter((f) => f.basename === tab.name);
-    if (matches.length === 1) {
-      return { file: matches[0], method: "name" };
-    }
-  }
-  return { file: null, method: "not_found" };
+function resolveFile2(app, tab) {
+  const result = resolveFile(app, tab);
+  return { file: result.file, method: result.method };
 }
 var COORDINATE_DEBUG = false;
-var PerspectaPlugin = class extends import_obsidian4.Plugin {
+var PerspectaPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.focusedWindowIndex = -1;
@@ -1853,6 +2148,10 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     this.filesWithContext = /* @__PURE__ */ new Set();
     this.refreshIndicatorsTimeout = null;
     this.isClosingWindow = false;
+    // Guard against operations during window close
+    this.isUnloading = false;
+    // Guard against operations during plugin unload
+    this.pendingTimeouts = /* @__PURE__ */ new Set();
     // ============================================================================
     // Context Restore (Optimized)
     // ============================================================================
@@ -1860,11 +2159,13 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     this.pathCorrections = /* @__PURE__ */ new Map();
     this.isRestoring = false;
     // Queue of pending tab activations to process after restore
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.pendingTabActivations = [];
   }
   // External context storage
   async onload() {
     await this.loadSettings();
+    this.checkVersionCompatibility();
     this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
     if (this.settings.storageMode === "external") {
       await this.externalStore.initialize();
@@ -1892,7 +2193,6 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
       id: "convert-to-proxy",
       name: "Convert to proxy window",
       checkCallback: (checking) => {
-        var _a;
         if (!this.settings.enableProxyWindows)
           return false;
         const activeLeaf = this.app.workspace.activeLeaf;
@@ -1901,7 +2201,9 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
         const win = activeLeaf.view.containerEl.win;
         if (!win || win === window)
           return false;
-        const file = (_a = activeLeaf.view) == null ? void 0 : _a.file;
+        if (!hasFile(activeLeaf.view))
+          return false;
+        const file = this.app.vault.getAbstractFileByPath(activeLeaf.view.file.path);
         if (!file)
           return false;
         if (!checking) {
@@ -1915,7 +2217,7 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     this.setupFileExplorerIndicators();
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian4.TFile && file.extension === "md") {
+        if (file instanceof import_obsidian6.TFile && file.extension === "md") {
           menu.addItem((item) => {
             item.setTitle("Remember note context").setIcon("target").onClick(() => this.saveContext(file));
           });
@@ -1930,7 +2232,7 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
           const href = link.getAttribute("data-href");
           if (href) {
             const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian4.TFile)
+            if (file instanceof import_obsidian6.TFile)
               this.openInNewWindow(file);
           }
         }
@@ -1945,7 +2247,7 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
           const href = link.getAttribute("data-href");
           if (href) {
             const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian4.TFile)
+            if (file instanceof import_obsidian6.TFile)
               this.openInNewWindow(file);
           }
         }
@@ -1954,11 +2256,33 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     this.addSettingTab(new PerspectaSettingTab(this.app, this));
   }
   async onunload() {
+    this.isUnloading = true;
+    if (this.refreshIndicatorsTimeout) {
+      clearTimeout(this.refreshIndicatorsTimeout);
+      this.refreshIndicatorsTimeout = null;
+    }
+    this.pendingTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.pendingTimeouts.clear();
     await this.externalStore.cleanup();
     this.windowFocusListeners.forEach((listener, win) => {
       win.removeEventListener("focus", listener);
     });
     this.windowFocusListeners.clear();
+    this.filesWithContext.clear();
+  }
+  /**
+   * Creates a tracked timeout that will be automatically cleared on unload.
+   * Use this instead of raw setTimeout for operations that might outlive the plugin.
+   */
+  safeTimeout(callback, delay) {
+    const timeout = setTimeout(() => {
+      this.pendingTimeouts.delete(timeout);
+      if (!this.isUnloading) {
+        callback();
+      }
+    }, delay);
+    this.pendingTimeouts.add(timeout);
+    return timeout;
   }
   // ============================================================================
   // Focus Tracking
@@ -2051,9 +2375,11 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
       height: win.outerHeight
     };
     const virtual = physicalToVirtual(physical);
-    console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+    if (COORDINATE_DEBUG) {
+      console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+    }
     return {
-      root: this.captureSplitOrTabs(rootSplit),
+      root: rootSplit ? this.captureSplitOrTabs(rootSplit) : { type: "tabs", tabs: [] },
       x: virtual.x,
       y: virtual.y,
       width: virtual.width,
@@ -2061,14 +2387,13 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     };
   }
   capturePopoutStates() {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d;
     const states = [];
     const workspace = this.app.workspace;
-    const floatingSplit = workspace.floatingSplit;
-    if (!(floatingSplit == null ? void 0 : floatingSplit.children))
+    if (!hasFloatingSplit(workspace))
       return states;
     const seenWindows = /* @__PURE__ */ new Set();
-    for (const container of floatingSplit.children) {
+    for (const container of workspace.floatingSplit.children) {
       const win = container == null ? void 0 : container.win;
       if (!win || win === window)
         continue;
@@ -2078,15 +2403,16 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
       }
       seenWindows.add(win);
       if (COORDINATE_DEBUG) {
+        const firstChild = (_a = container == null ? void 0 : container.children) == null ? void 0 : _a[0];
         console.log(`[Perspecta] capturePopoutStates container:`, {
-          containerType: (_a = container == null ? void 0 : container.constructor) == null ? void 0 : _a.name,
+          containerType: (_b = container == null ? void 0 : container.constructor) == null ? void 0 : _b.name,
           containerDirection: container == null ? void 0 : container.direction,
-          containerChildren: (_b = container == null ? void 0 : container.children) == null ? void 0 : _b.length,
-          firstChildType: (_e = (_d = (_c = container == null ? void 0 : container.children) == null ? void 0 : _c[0]) == null ? void 0 : _d.constructor) == null ? void 0 : _e.name,
-          firstChildDirection: (_g = (_f = container == null ? void 0 : container.children) == null ? void 0 : _f[0]) == null ? void 0 : _g.direction
+          containerChildren: (_c = container == null ? void 0 : container.children) == null ? void 0 : _c.length,
+          firstChildType: (_d = firstChild == null ? void 0 : firstChild.constructor) == null ? void 0 : _d.name,
+          firstChildDirection: isSplit(firstChild) ? firstChild.direction : void 0
         });
       }
-      if (((_h = container == null ? void 0 : container.children) == null ? void 0 : _h.length) > 0) {
+      if ((container == null ? void 0 : container.children) && container.children.length > 0) {
         const virtual = physicalToVirtual({
           x: win.screenX,
           y: win.screenY,
@@ -2127,19 +2453,24 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     }
     return false;
   }
+  /**
+   * Captures split or tab group state recursively.
+   * Uses isSplit type guard for safe type narrowing.
+   */
   captureSplitOrTabs(node) {
-    var _a, _b, _c;
+    var _a, _b;
     if (!node)
       return { type: "tabs", tabs: [] };
-    if (node.direction && Array.isArray(node.children)) {
+    if (isSplit(node)) {
       const children = [];
       const sizes = [];
       for (const child of node.children) {
         const childState = this.captureSplitOrTabs(child);
         if (childState.type === "split" || childState.tabs.length > 0) {
           children.push(childState);
-          const size = (_c = (_b = (_a = child.dimension) != null ? _a : child.size) != null ? _b : child.width) != null ? _c : child.height;
-          sizes.push(size != null ? size : 50);
+          const tabContainer = child;
+          const size = (_b = (_a = tabContainer.dimension) != null ? _a : tabContainer.size) != null ? _b : 50;
+          sizes.push(size);
         }
       }
       if (children.length === 1)
@@ -2148,39 +2479,38 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
         return { type: "tabs", tabs: [] };
       if (COORDINATE_DEBUG) {
         console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
-        if (node.children[0]) {
-          const props = Object.keys(node.children[0]).filter(
-            (k) => typeof node.children[0][k] === "number" || typeof node.children[0][k] === "string" && !k.startsWith("_")
-          );
-          console.log(`[Perspecta] Child properties:`, props.map((p) => `${p}=${node.children[0][p]}`));
-        }
       }
       return { type: "split", direction: node.direction, children, sizes };
     }
     return this.captureTabGroup(node);
   }
+  /**
+   * Captures the state of a tab group.
+   * Uses type-safe accessors for internal API access.
+   */
   captureTabGroup(tabContainer) {
-    var _a, _b, _c, _d, _e, _f;
     const tabs = [];
     const children = (tabContainer == null ? void 0 : tabContainer.children) || [];
-    const currentTabIndex = (_a = tabContainer == null ? void 0 : tabContainer.currentTab) != null ? _a : 0;
+    const currentTabIndex = getCurrentTabIndex(tabContainer);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${tabContainer == null ? void 0 : tabContainer.currentTab}, using index=${currentTabIndex}`);
+      console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
     }
     for (let i = 0; i < children.length; i++) {
       const leaf = children[i];
-      const file = (_b = leaf == null ? void 0 : leaf.view) == null ? void 0 : _b.file;
-      if (file) {
-        const uid = getUidFromCache(this.app, file);
+      const view = leaf == null ? void 0 : leaf.view;
+      if (hasFile(view)) {
+        const file = view.file;
+        const tFile = this.app.vault.getAbstractFileByPath(file.path);
+        const uid = tFile instanceof import_obsidian6.TFile ? getUidFromCache(this.app, tFile) : void 0;
         const name = file.basename;
-        const scroll = (_e = (_d = (_c = leaf == null ? void 0 : leaf.view) == null ? void 0 : _c.currentMode) == null ? void 0 : _d.getScroll) == null ? void 0 : _e.call(_d);
+        const scroll = getScrollPosition(view);
         let canvasViewport;
-        const canvas = (_f = leaf == null ? void 0 : leaf.view) == null ? void 0 : _f.canvas;
-        if (canvas && typeof canvas.tx === "number") {
+        const viewport = getCanvasViewport(view);
+        if (viewport) {
           canvasViewport = {
-            tx: canvas.tx,
-            ty: canvas.ty,
-            zoom: canvas.tZoom
+            tx: viewport.tx,
+            ty: viewport.ty,
+            zoom: viewport.tZoom
           };
         }
         const isActive = i === currentTabIndex;
@@ -2199,37 +2529,44 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     }
     return { type: "tabs", tabs };
   }
+  /**
+   * Captures sidebar state including collapse state and active tab.
+   * Uses multiple fallback methods for compatibility across Obsidian versions.
+   *
+   * @internal Uses internal Obsidian APIs: leftSplit, rightSplit, activeTabGroup
+   */
   captureSidebarState(side) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const workspace = this.app.workspace;
     const sidebar = side === "left" ? workspace.leftSplit : workspace.rightSplit;
     if (!sidebar)
       return { collapsed: true };
     let activeTab;
     try {
-      const activeTabGroup = sidebar.activeTabGroup;
-      if (activeTabGroup == null ? void 0 : activeTabGroup.currentTab) {
-        activeTab = (_c = (_b = (_a = activeTabGroup.currentTab) == null ? void 0 : _a.view) == null ? void 0 : _b.getViewType) == null ? void 0 : _c.call(_b);
+      const sidebarWithGroup = sidebar;
+      if ((_a = sidebarWithGroup.activeTabGroup) == null ? void 0 : _a.currentTab) {
+        activeTab = (_d = (_c = (_b = sidebarWithGroup.activeTabGroup.currentTab) == null ? void 0 : _b.view) == null ? void 0 : _c.getViewType) == null ? void 0 : _d.call(_c);
       }
       if (!activeTab && sidebar.children) {
         for (const child of sidebar.children) {
-          if ((_e = (_d = child.currentTab) == null ? void 0 : _d.view) == null ? void 0 : _e.getViewType) {
-            activeTab = child.currentTab.view.getViewType();
-            break;
-          }
-          if ((_h = (_g = (_f = child.activeTabGroup) == null ? void 0 : _f.currentTab) == null ? void 0 : _g.view) == null ? void 0 : _h.getViewType) {
-            activeTab = child.activeTabGroup.currentTab.view.getViewType();
-            break;
+          const container = child;
+          if (container.children) {
+            const currentIdx = getCurrentTabIndex(container);
+            const currentLeaf = container.children[currentIdx];
+            if (((_e = currentLeaf == null ? void 0 : currentLeaf.view) == null ? void 0 : _e.getViewType) && typeof currentLeaf.view.getViewType === "function") {
+              activeTab = currentLeaf.view.getViewType();
+              break;
+            }
           }
         }
       }
       if (!activeTab) {
         const leaf = side === "left" ? workspace.leftLeaf : workspace.rightLeaf;
-        activeTab = (_j = (_i = leaf == null ? void 0 : leaf.view) == null ? void 0 : _i.getViewType) == null ? void 0 : _j.call(_i);
+        activeTab = (_g = (_f = leaf == null ? void 0 : leaf.view) == null ? void 0 : _f.getViewType) == null ? void 0 : _g.call(_f);
       }
     } catch (e) {
     }
-    return { collapsed: (_k = sidebar.collapsed) != null ? _k : false, activeTab };
+    return { collapsed: (_h = sidebar.collapsed) != null ? _h : false, activeTab };
   }
   getPopoutWindowObjects() {
     const start = performance.now();
@@ -2257,14 +2594,14 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
-      new import_obsidian4.Notice("No active file to save context to", 4e3);
+      new import_obsidian6.Notice("No active file to save context to", 4e3);
       return;
     }
     const isMarkdown = targetFile.extension === "md";
     const isCanvas = targetFile.extension === "canvas";
     const isBase = targetFile.extension === "base";
     if (!isMarkdown && !isCanvas && !isBase) {
-      new import_obsidian4.Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`, 4e3);
+      new import_obsidian6.Notice(`Cannot save context to ${targetFile.extension} files. Please use a markdown, canvas, or base file.`, 4e3);
       PerfTimer.end("saveContext");
       return;
     }
@@ -2274,7 +2611,20 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
       try {
         const wallpaperResult = await getWallpaper();
         if (wallpaperResult.success && wallpaperResult.path) {
-          context.wallpaper = wallpaperResult.path;
+          let wallpaperPath = wallpaperResult.path;
+          if (this.settings.storeWallpapersLocally) {
+            const adapter = this.app.vault.adapter;
+            if (adapter instanceof import_obsidian6.FileSystemAdapter) {
+              const vaultPath = adapter.getBasePath();
+              const wallpapersDir = getWallpapersDir(vaultPath, this.settings.perspectaFolderPath);
+              const copyResult = await copyWallpaperToLocal(wallpaperPath, wallpapersDir);
+              if (copyResult.success && copyResult.path) {
+                wallpaperPath = copyResult.path;
+                PerfTimer.mark("copyWallpaperToLocal");
+              }
+            }
+          }
+          context.wallpaper = wallpaperPath;
           PerfTimer.mark("captureWallpaper");
         }
       } catch (e) {
@@ -2308,7 +2658,7 @@ var PerspectaPlugin = class extends import_obsidian4.Plugin {
         this.showContextDebugModal(context, targetFile.name);
         PerfTimer.mark("showContextDebugModal");
       } else {
-        new import_obsidian4.Notice(`Context saved to ${targetFile.name}`, 4e3);
+        new import_obsidian6.Notice(`Context saved to ${targetFile.name}`, 4e3);
       }
     }
     PerfTimer.end("saveContext");
@@ -2369,9 +2719,9 @@ ${newFm}
   // They remain visible in source mode for transparency
   hideInternalProperties() {
     try {
-      const metadataTypeManager = this.app.metadataTypeManager;
-      if (!metadataTypeManager)
+      if (!hasMetadataTypeManager(this.app))
         return;
+      const metadataTypeManager = this.app.metadataTypeManager;
       if (metadataTypeManager.properties) {
         const props = metadataTypeManager.properties;
         if (props[UID_FRONTMATTER_KEY]) {
@@ -2553,7 +2903,7 @@ ${newFm}
         }
         restored++;
       } catch (e) {
-        console.error(`[Perspecta] Failed to restore arrangements for UID ${uid}:`, e);
+        Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
         errors++;
       }
     }
@@ -2593,7 +2943,7 @@ ${newFm}
       for (const tab of node.tabs) {
         if (!tab.uid) {
           const file = this.app.vault.getAbstractFileByPath(tab.path);
-          if (file instanceof import_obsidian4.TFile && file.extension === "md") {
+          if (file instanceof import_obsidian6.TFile && file.extension === "md") {
             const existingUid = getUidFromCache(this.app, file);
             if (!existingUid) {
               result.push({ file, uid: generateUid() });
@@ -2793,7 +3143,7 @@ ${content}`;
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
-      new import_obsidian4.Notice("No active file", 4e3);
+      new import_obsidian6.Notice("No active file", 4e3);
       this.isRestoring = false;
       return;
     }
@@ -2806,7 +3156,7 @@ ${content}`;
       }
       const context = contextResult.context;
       if (!context) {
-        new import_obsidian4.Notice("No context found in this note", 4e3);
+        new import_obsidian6.Notice("No context found in this note", 4e3);
         return;
       }
       const focusedWin = await this.applyArrangement(context, targetFile.path);
@@ -2945,7 +3295,7 @@ ${content}`;
             tiledPositions
           });
         }
-        new import_obsidian4.Notice(`Screen shape changed - tiling ${windowCount} windows`, 4e3);
+        new import_obsidian6.Notice(`Screen shape changed - tiling ${windowCount} windows`, 4e3);
       }
       PerfTimer.mark("checkTilingNeeded");
       const popoutWindows = this.getPopoutWindowObjects();
@@ -2965,7 +3315,7 @@ ${content}`;
         this.restoreWindowGeometry(window, v2.main, v2.sourceScreen);
       }
       PerfTimer.mark("restoreWindowGeometry");
-      const workspace = this.app.workspace;
+      const workspace = asExtendedWorkspace(this.app.workspace);
       await this.restoreWorkspaceNode(workspace.rootSplit, v2.main.root, mainLeaves[0]);
       PerfTimer.mark("restoreMainWorkspace");
       const restoredPaths = /* @__PURE__ */ new Set();
@@ -3028,7 +3378,7 @@ ${content}`;
       PerfTimer.mark("activateFocusedWindow");
       return focusedWin;
     } catch (e) {
-      new import_obsidian4.Notice("Error restoring context: " + e.message, 4e3);
+      new import_obsidian6.Notice("Error restoring context: " + e.message, 4e3);
       return null;
     }
   }
@@ -3057,15 +3407,19 @@ ${content}`;
       rightSidebar: v1.rightSidebar
     };
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreWorkspaceNode(parent, state, existingLeaf) {
     if (!(state == null ? void 0 : state.type)) {
-      if ("tabs" in state)
-        return this.restoreTabGroup(parent, { type: "tabs", tabs: state.tabs }, existingLeaf);
+      const legacyState = state;
+      if (Array.isArray(legacyState.tabs)) {
+        return this.restoreTabGroup(parent, { type: "tabs", tabs: legacyState.tabs }, existingLeaf);
+      }
       return existingLeaf;
     }
     return state.type === "tabs" ? this.restoreTabGroup(parent, state, existingLeaf) : this.restoreSplit(parent, state, existingLeaf);
   }
-  async restoreTabGroup(parent, state, existingLeaf) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async restoreTabGroup(_parent, state, existingLeaf) {
     var _a, _b, _c;
     if (!((_a = state.tabs) == null ? void 0 : _a.length))
       return existingLeaf;
@@ -3093,7 +3447,7 @@ ${content}`;
     for (let i = 0; i < reorderedTabs.length; i++) {
       const { tab, originalIndex } = reorderedTabs[i];
       const tabStart = performance.now();
-      const { file, method } = resolveFile(this.app, tab);
+      const { file, method } = resolveFile2(this.app, tab);
       if (!file) {
         if (PerfTimer.isEnabled()) {
           console.log(`[Perspecta]   \u2717 File not found: ${tab.path} (tried path, uid: ${tab.uid || "none"}, name: ${tab.name || "none"})`);
@@ -3117,7 +3471,7 @@ ${content}`;
         firstLeaf = leaf;
         isFirstTabOpened = true;
       } else if (!isFirstTabOpened) {
-        leaf = this.app.workspace.createLeafInParent(parent, 0);
+        leaf = this.app.workspace.createLeafInParent(_parent, 0);
         await leaf.openFile(file);
         container = leaf.parent;
         firstLeaf = leaf;
@@ -3180,7 +3534,7 @@ ${content}`;
     if (firstChild.type === "tabs") {
       const firstTab = firstChild.tabs[0];
       if (firstTab && existingLeaf) {
-        const { file: f, method } = resolveFile(this.app, firstTab);
+        const { file: f, method } = resolveFile2(this.app, firstTab);
         if (f) {
           if (method !== "path") {
             this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3203,7 +3557,7 @@ ${content}`;
       if (child.type === "tabs") {
         const firstTab = child.tabs[0];
         if (firstTab) {
-          const { file: f, method } = resolveFile(this.app, firstTab);
+          const { file: f, method } = resolveFile2(this.app, firstTab);
           if (f) {
             if (method !== "path") {
               this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3217,7 +3571,7 @@ ${content}`;
       } else {
         const firstTab = this.getFirstTabFromNode(child);
         if (firstTab) {
-          const { file: f, method } = resolveFile(this.app, firstTab);
+          const { file: f, method } = resolveFile2(this.app, firstTab);
           if (f) {
             if (method !== "path") {
               this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3241,69 +3595,47 @@ ${content}`;
    * Gets the parent container from any leaf and sets dimension on its children.
    */
   async applySplitSizes(anyLeaf, sizes) {
-    var _a;
+    var _a, _b;
     await new Promise((resolve) => setTimeout(resolve, 200));
-    let parent = anyLeaf.parent;
+    const extLeaf = asExtendedLeaf(anyLeaf);
+    let parent = hasParent(extLeaf) && isSplit(extLeaf.parent) ? extLeaf.parent : null;
     let attempts = 0;
     const maxAttempts = 5;
     while (parent && attempts < maxAttempts) {
       if (((_a = parent.children) == null ? void 0 : _a.length) === sizes.length && parent.direction) {
         break;
       }
-      parent = parent.parent;
+      parent = (_b = parent.parent) != null ? _b : null;
       attempts++;
     }
     if (!(parent == null ? void 0 : parent.children) || parent.children.length !== sizes.length) {
-      console.log(`[Perspecta] applySplitSizes: could not find matching parent - expected ${sizes.length} children`);
+      Logger.debug(`applySplitSizes: could not find matching parent - expected ${sizes.length} children`);
       return;
     }
     const total = sizes.reduce((a, b) => a + b, 0);
     const normalizedSizes = sizes.map((s) => s / total * 100);
-    console.log(`[Perspecta] applySplitSizes: found parent with ${parent.children.length} children, direction=${parent.direction}, applying sizes:`, normalizedSizes);
+    Logger.debug(`applySplitSizes: found parent with ${parent.children.length} children, direction=${parent.direction}, applying sizes:`, normalizedSizes);
     for (let i = 0; i < normalizedSizes.length; i++) {
       const child = parent.children[i];
       if (child && normalizedSizes[i] !== void 0) {
-        if (typeof child.setDimension === "function") {
-          child.setDimension(normalizedSizes[i]);
-          console.log(`[Perspecta] applySplitSizes: called child[${i}].setDimension(${normalizedSizes[i]})`);
-        } else {
-          child.dimension = normalizedSizes[i];
-          console.log(`[Perspecta] applySplitSizes: set child[${i}].dimension = ${normalizedSizes[i]}`);
-        }
+        setContainerDimension(child, normalizedSizes[i]);
+        Logger.debug(`applySplitSizes: set child[${i}].dimension = ${normalizedSizes[i]}`);
       }
     }
-    if (typeof parent.onResize === "function") {
-      parent.onResize();
-      console.log(`[Perspecta] applySplitSizes: called parent.onResize()`);
-    }
-    const workspace = this.app.workspace;
-    if (typeof workspace.requestResize === "function") {
-      workspace.requestResize();
-      console.log(`[Perspecta] applySplitSizes: called workspace.requestResize()`);
-    }
-    const rootSplit = workspace.rootSplit;
-    if (rootSplit && typeof rootSplit.onResize === "function") {
-      rootSplit.onResize();
-      console.log(`[Perspecta] applySplitSizes: called rootSplit.onResize()`);
-    }
-    window.dispatchEvent(new Event("resize"));
-    console.log(`[Perspecta] applySplitSizes: dispatched window resize event`);
+    const workspace = asExtendedWorkspace(this.app.workspace);
+    triggerWorkspaceResize(workspace, workspace.rootSplit);
+    Logger.debug(`applySplitSizes: triggered workspace resize`);
   }
   /**
    * Apply scroll position to a leaf's view.
    * Must be called after the file is fully loaded.
    */
-  applyScrollPosition(leaf, scroll) {
+  applyScrollToLeaf(leaf, scroll) {
     if (scroll === void 0 || scroll === 0)
       return;
     setTimeout(() => {
-      var _a;
-      const view = leaf.view;
-      if ((_a = view == null ? void 0 : view.currentMode) == null ? void 0 : _a.applyScroll) {
-        view.currentMode.applyScroll(scroll);
-        if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta] applyScrollPosition: scrolled to ${scroll}`);
-        }
+      if (applyScrollPosition(leaf.view, scroll)) {
+        Logger.debug(`applyScrollToLeaf: scrolled to ${scroll}`);
       }
     }, 100);
   }
@@ -3316,24 +3648,17 @@ ${content}`;
     this.collectViewPositions(state, scrollMap, canvasViewportMap);
     if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
-    if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
-    }
+    Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
     setTimeout(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
-        var _a, _b;
-        const file = (_a = leaf.view) == null ? void 0 : _a.file;
-        if (!file)
+        if (!hasFile(leaf.view))
           return;
+        const file = leaf.view.file;
         if (scrollMap.has(file.path)) {
           const scroll = scrollMap.get(file.path);
           if (scroll !== void 0 && scroll > 0) {
-            const view = leaf.view;
-            if ((_b = view == null ? void 0 : view.currentMode) == null ? void 0 : _b.applyScroll) {
-              view.currentMode.applyScroll(scroll);
-              if (PerfTimer.isEnabled()) {
-                console.log(`[Perspecta] scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-              }
+            if (applyScrollPosition(leaf.view, scroll)) {
+              Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
             }
           }
         }
@@ -3366,10 +3691,9 @@ ${content}`;
    * Restore canvas viewport (pan and zoom)
    */
   restoreCanvasViewport(leaf, viewport) {
-    var _a, _b;
-    const canvas = (_a = leaf.view) == null ? void 0 : _a.canvas;
-    if (!canvas)
+    if (!isCanvasView(leaf.view))
       return;
+    const canvas = leaf.view.canvas;
     try {
       const currentZoom = canvas.tZoom || 1;
       const zoomDelta = viewport.zoom / currentZoom;
@@ -3385,12 +3709,9 @@ ${content}`;
       if (typeof canvas.requestFrame === "function") {
         canvas.requestFrame();
       }
-      if (PerfTimer.isEnabled()) {
-        const file = (_b = leaf.view) == null ? void 0 : _b.file;
-        console.log(`[Perspecta] restoreCanvasViewport: ${file == null ? void 0 : file.basename} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
-      }
+      Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : "unknown"} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
     } catch (e) {
-      console.log("[Perspecta] Could not restore canvas viewport:", e);
+      Logger.debug("Could not restore canvas viewport:", e);
     }
   }
   /**
@@ -3409,7 +3730,7 @@ ${content}`;
     if (firstChild.type === "tabs") {
       const firstTab = firstChild.tabs[0];
       if (firstTab) {
-        const { file: f, method } = resolveFile(this.app, firstTab);
+        const { file: f, method } = resolveFile2(this.app, firstTab);
         if (f) {
           if (method !== "path") {
             this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3434,7 +3755,7 @@ ${content}`;
       if (child.type === "tabs") {
         const firstTab = child.tabs[0];
         if (firstTab) {
-          const { file: f, method } = resolveFile(this.app, firstTab);
+          const { file: f, method } = resolveFile2(this.app, firstTab);
           if (f) {
             if (method !== "path") {
               this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3448,7 +3769,7 @@ ${content}`;
       } else {
         const firstTab = this.getFirstTabFromNode(child);
         if (firstTab) {
-          const { file: f, method } = resolveFile(this.app, firstTab);
+          const { file: f, method } = resolveFile2(this.app, firstTab);
           if (f) {
             if (method !== "path") {
               this.pathCorrections.set(firstTab.path, { newPath: f.path, newName: f.basename });
@@ -3474,7 +3795,7 @@ ${content}`;
     const firstTab = this.getFirstTab(state.root);
     if (!firstTab)
       return;
-    const { file, method } = resolveFile(this.app, firstTab);
+    const { file, method } = resolveFile2(this.app, firstTab);
     if (!file)
       return;
     if (method !== "path") {
@@ -3515,7 +3836,7 @@ ${content}`;
     const firstTab = this.getFirstTab(state.root);
     if (!firstTab)
       return;
-    const { file } = resolveFile(this.app, firstTab);
+    const { file } = resolveFile2(this.app, firstTab);
     if (!file)
       return;
     let arrangementUid;
@@ -3579,7 +3900,7 @@ ${content}`;
       const newLeaf = this.app.workspace.getLeaf("split", state.direction);
       const childFirstTab = this.getFirstTabFromNode(state.children[i]);
       if (childFirstTab) {
-        const { file: f, method } = resolveFile(this.app, childFirstTab);
+        const { file: f, method } = resolveFile2(this.app, childFirstTab);
         if (f) {
           if (method !== "path") {
             this.pathCorrections.set(childFirstTab.path, {
@@ -3595,7 +3916,7 @@ ${content}`;
     }
     const firstTab = this.getFirstTabFromNode(state.children[0]);
     if (firstTab) {
-      const { file: f, method } = resolveFile(this.app, firstTab);
+      const { file: f, method } = resolveFile2(this.app, firstTab);
       if (f) {
         if (method !== "path") {
           this.pathCorrections.set(firstTab.path, {
@@ -3607,11 +3928,10 @@ ${content}`;
       }
     }
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
+      Logger.debug(`restoreSplitOuterFirst: created ${leafSlots.length} leaf slots`);
       leafSlots.forEach((leaf, idx) => {
-        var _a2, _b;
-        const path = ((_b = (_a2 = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a2.file) == null ? void 0 : _b.path) || "unknown";
-        console.log(`  slot[${idx}]: ${path}`);
+        const path = leaf && hasFile(leaf.view) ? leaf.view.file.path : "unknown";
+        Logger.debug(`  slot[${idx}]: ${path}`);
       });
     }
     for (let i = 0; i < state.children.length; i++) {
@@ -3655,7 +3975,7 @@ ${content}`;
       lastLeaf = newLeaf;
       const childFirstTab = this.getFirstTabFromNode(child);
       if (childFirstTab) {
-        const { file: f, method } = resolveFile(this.app, childFirstTab);
+        const { file: f, method } = resolveFile2(this.app, childFirstTab);
         if (f) {
           if (method !== "path") {
             this.pathCorrections.set(childFirstTab.path, {
@@ -3703,18 +4023,14 @@ ${content}`;
     const container = existingLeaf.parent;
     if (!container)
       return;
-    if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] restorePopoutTabs: ${tabs.length} tabs, active at index ${activeTabIndex}`);
-    }
+    Logger.debug(`restorePopoutTabs: ${tabs.length} tabs, active at index ${activeTabIndex}`);
     const openedLeaves = [];
     openedLeaves.push(existingLeaf);
     for (let i = 1; i < tabs.length; i++) {
       const tab = tabs[i];
-      const { file, method } = resolveFile(this.app, tab);
+      const { file, method } = resolveFile2(this.app, tab);
       if (!file) {
-        if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   \u2717 File not found: ${tab.path}`);
-        }
+        Logger.debug(`  \u2717 File not found: ${tab.path}`);
         continue;
       }
       if (method !== "path") {
@@ -3726,9 +4042,7 @@ ${content}`;
       const leaf = this.app.workspace.createLeafInParent(container, (_b = (_a = container.children) == null ? void 0 : _a.length) != null ? _b : 0);
       await leaf.openFile(file);
       openedLeaves.push(leaf);
-      if (PerfTimer.isEnabled()) {
-        console.log(`[Perspecta]   \u2713 Opened[${i}]: ${file.basename}`);
-      }
+      Logger.debug(`  \u2713 Opened[${i}]: ${file.basename}`);
     }
     const activeLeaf = openedLeaves[activeTabIndex];
     if (!activeLeaf)
@@ -3738,9 +4052,7 @@ ${content}`;
       activeTabIndex,
       activeLeaf
     });
-    if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]   Queued tab activation for index ${activeTabIndex}`);
-    }
+    Logger.debug(`  Queued tab activation for index ${activeTabIndex}`);
   }
   /**
    * Process all pending tab activations after windows are fully initialized
@@ -3776,9 +4088,7 @@ ${content}`;
   }
   async restoreRemainingTabs(existingLeaf, tabs, startIndex) {
     var _a, _b;
-    if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] restoreRemainingTabs: ${tabs.length} total tabs, starting from index ${startIndex}`);
-    }
+    Logger.debug(`restoreRemainingTabs: ${tabs.length} total tabs, starting from index ${startIndex}`);
     let activeTabIndex = 0;
     for (let i = 0; i < tabs.length; i++) {
       if (tabs[i].active) {
@@ -3802,11 +4112,9 @@ ${content}`;
     });
     const activeIsFirstTab = activeTabIndex === 0;
     for (const { tab, index } of tabsToOpen) {
-      const { file, method } = resolveFile(this.app, tab);
+      const { file, method } = resolveFile2(this.app, tab);
       if (!file) {
-        if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   tab[${index}]: file not found for ${tab.path}`);
-        }
+        Logger.debug(`  tab[${index}]: file not found for ${tab.path}`);
         continue;
       }
       if (method !== "path") {
@@ -3817,16 +4125,12 @@ ${content}`;
       }
       const leaf = this.app.workspace.createLeafInParent(parent, (_b = (_a = parent.children) == null ? void 0 : _a.length) != null ? _b : 0);
       await leaf.openFile(file);
-      if (PerfTimer.isEnabled()) {
-        console.log(`[Perspecta]   tab[${index}]: opened ${file.basename}, active=${tab.active}`);
-      }
+      Logger.debug(`  tab[${index}]: opened ${file.basename}, active=${tab.active}`);
     }
     if (activeIsFirstTab) {
       setTimeout(() => {
         this.app.workspace.setActiveLeaf(existingLeaf, { focus: false });
-        if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   Activated first tab (existingLeaf)`);
-        }
+        Logger.debug(`  Activated first tab (existingLeaf)`);
       }, 100);
     }
   }
@@ -3862,9 +4166,9 @@ ${content}`;
   findWindowContainingFile(filePath) {
     let foundWin = null;
     this.app.workspace.iterateAllLeaves((leaf) => {
-      var _a, _b, _c, _d, _e;
-      if (!foundWin && ((_b = (_a = leaf.view) == null ? void 0 : _a.file) == null ? void 0 : _b.path) === filePath) {
-        const win = (_e = (_d = (_c = leaf.view) == null ? void 0 : _c.containerEl) == null ? void 0 : _d.win) != null ? _e : window;
+      var _a, _b, _c;
+      if (!foundWin && hasFile(leaf.view) && leaf.view.file.path === filePath) {
+        const win = (_c = (_b = (_a = leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win) != null ? _c : window;
         if (win !== window && win.document.body.classList.contains("perspecta-proxy-window")) {
           return;
         }
@@ -3875,8 +4179,8 @@ ${content}`;
   }
   activateLeafByPath(win, filePath) {
     this.app.workspace.iterateAllLeaves((leaf) => {
-      var _a, _b, _c, _d;
-      if (((_b = (_a = leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win) === win && ((_d = (_c = leaf.view) == null ? void 0 : _c.file) == null ? void 0 : _d.path) === filePath) {
+      var _a, _b;
+      if (((_b = (_a = leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win) === win && hasFile(leaf.view) && leaf.view.file.path === filePath) {
         this.app.workspace.setActiveLeaf(leaf, { focus: false });
       }
     });
@@ -3892,8 +4196,8 @@ ${content}`;
       return;
     let targetLeaf = null;
     this.app.workspace.iterateAllLeaves((leaf) => {
-      var _a2, _b, _c, _d;
-      if (!targetLeaf && ((_b = (_a2 = leaf.view) == null ? void 0 : _a2.containerEl) == null ? void 0 : _b.win) === win && ((_d = (_c = leaf.view) == null ? void 0 : _c.file) == null ? void 0 : _d.path) === activePath) {
+      var _a2, _b;
+      if (!targetLeaf && ((_b = (_a2 = leaf.view) == null ? void 0 : _a2.containerEl) == null ? void 0 : _b.win) === win && hasFile(leaf.view) && leaf.view.file.path === activePath) {
         targetLeaf = leaf;
       }
     });
@@ -3902,7 +4206,7 @@ ${content}`;
     }
     const elapsed = performance.now() - start;
     if (elapsed > 50) {
-      console.warn(`[Perspecta] \u26A0 SLOW activateWindowLeaf: ${elapsed.toFixed(1)}ms`);
+      Logger.warn(`\u26A0 SLOW activateWindowLeaf: ${elapsed.toFixed(1)}ms`);
     }
   }
   findActiveTabPath(node) {
@@ -3972,7 +4276,7 @@ ${content}`;
   restoreSidebarState(side, state) {
     var _a, _b, _c;
     try {
-      const workspace = this.app.workspace;
+      const workspace = asExtendedWorkspace(this.app.workspace);
       const sidebar = side === "left" ? workspace.leftSplit : workspace.rightSplit;
       if (!sidebar)
         return;
@@ -3991,12 +4295,12 @@ ${content}`;
         if (leaf) {
           this.app.workspace.revealLeaf(leaf);
           try {
-            const tabGroup = leaf.tabGroup || leaf.parent;
+            const tabGroup = getLeafTabGroup(leaf);
             if (tabGroup == null ? void 0 : tabGroup.setActiveLeaf) {
               tabGroup.setActiveLeaf(leaf);
             } else if ((tabGroup == null ? void 0 : tabGroup.selectTab) && typeof tabGroup.selectTab === "function") {
               const tabIndex = (_c = tabGroup.children) == null ? void 0 : _c.indexOf(leaf);
-              if (tabIndex >= 0)
+              if (typeof tabIndex === "number" && tabIndex >= 0)
                 tabGroup.selectTab(tabIndex);
             }
           } catch (e) {
@@ -4023,7 +4327,7 @@ ${content}`;
   showNoticeInWindow(win, message, timeout = 4e3) {
     if (win && win !== window) {
       if (win.document.body.classList.contains("perspecta-proxy-window")) {
-        new import_obsidian4.Notice(message, timeout);
+        new import_obsidian6.Notice(message, timeout);
         return;
       }
       const el = win.document.createElement("div");
@@ -4038,7 +4342,7 @@ ${content}`;
       container.appendChild(el);
       setTimeout(() => el.remove(), timeout);
     } else {
-      new import_obsidian4.Notice(message, timeout);
+      new import_obsidian6.Notice(message, timeout);
     }
   }
   // ============================================================================
@@ -4048,12 +4352,12 @@ ${content}`;
     var _a, _b, _c;
     const file = this.app.workspace.getActiveFile();
     if (!file) {
-      new import_obsidian4.Notice("No active file", 4e3);
+      new import_obsidian6.Notice("No active file", 4e3);
       return;
     }
     const context = await this.getContextForFile(file);
     if (!context) {
-      new import_obsidian4.Notice("No context found in this note", 4e3);
+      new import_obsidian6.Notice("No context found in this note", 4e3);
       return;
     }
     const activeLeaf = this.app.workspace.activeLeaf;
@@ -4258,10 +4562,8 @@ ${content}`;
    */
   getAllWindowDocuments() {
     const docs = [document];
-    const workspace = this.app.workspace;
-    const floatingSplit = workspace.floatingSplit;
-    if (floatingSplit == null ? void 0 : floatingSplit.children) {
-      for (const container of floatingSplit.children) {
+    if (hasFloatingSplit(this.app.workspace)) {
+      for (const container of this.app.workspace.floatingSplit.children) {
         const win = container == null ? void 0 : container.win;
         if (win && win !== window && win.document) {
           docs.push(win.document);
@@ -4273,7 +4575,7 @@ ${content}`;
   createTargetIcon(doc = document) {
     const el = doc.createElement("span");
     el.className = "perspecta-context-indicator";
-    (0, import_obsidian4.setIcon)(el, "target");
+    (0, import_obsidian6.setIcon)(el, "target");
     return el;
   }
   // ============================================================================
@@ -4416,18 +4718,87 @@ ${content}`;
       }
     }
   }
+  /**
+   * Checks if the current Obsidian version is compatible with the plugin.
+   * Warns users about potential issues with older versions.
+   *
+   * Minimum recommended version: 1.4.0 (for metadataTypeManager API)
+   */
+  checkVersionCompatibility() {
+    const MIN_RECOMMENDED_VERSION = "1.4.0";
+    try {
+      const currentVersion = this.app.version;
+      if (!currentVersion)
+        return;
+      const parseVersion = (v) => {
+        return v.split(".").map((n) => parseInt(n, 10) || 0);
+      };
+      const current = parseVersion(currentVersion);
+      const minimum = parseVersion(MIN_RECOMMENDED_VERSION);
+      let isOlder = false;
+      for (let i = 0; i < minimum.length; i++) {
+        if ((current[i] || 0) < minimum[i]) {
+          isOlder = true;
+          break;
+        } else if ((current[i] || 0) > minimum[i]) {
+          break;
+        }
+      }
+      if (isOlder) {
+        console.warn(
+          `[Perspecta] Obsidian version ${currentVersion} detected. Some features may not work correctly. Recommended version: ${MIN_RECOMMENDED_VERSION} or later.`
+        );
+      }
+    } catch (e) {
+    }
+  }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    PerfTimer.setEnabled(this.settings.enableDebugLogging);
-    COORDINATE_DEBUG = this.settings.enableDebugLogging;
+    this.validateSettings();
+    this.configureLogging();
   }
   async saveSettings() {
+    this.validateSettings();
     await this.saveData(this.settings);
-    PerfTimer.setEnabled(this.settings.enableDebugLogging);
-    COORDINATE_DEBUG = this.settings.enableDebugLogging;
+    this.configureLogging();
+  }
+  /**
+   * Configures logging based on settings.
+   * Per plugin guidelines: minimize console logging in production.
+   */
+  configureLogging() {
+    const debugEnabled = this.settings.enableDebugLogging;
+    PerfTimer.setEnabled(debugEnabled);
+    COORDINATE_DEBUG = debugEnabled;
+    setCoordinateDebug(debugEnabled);
+    Logger.setLevel(debugEnabled ? 4 /* DEBUG */ : 1 /* ERROR */);
+  }
+  /**
+   * Validates settings values are within acceptable ranges.
+   * Clamps or resets invalid values to defaults.
+   */
+  validateSettings() {
+    if (typeof this.settings.proxyPreviewScale !== "number" || isNaN(this.settings.proxyPreviewScale)) {
+      this.settings.proxyPreviewScale = DEFAULT_SETTINGS.proxyPreviewScale;
+    } else {
+      this.settings.proxyPreviewScale = Math.max(0.1, Math.min(1, this.settings.proxyPreviewScale));
+    }
+    if (typeof this.settings.focusTintDuration !== "number" || isNaN(this.settings.focusTintDuration)) {
+      this.settings.focusTintDuration = DEFAULT_SETTINGS.focusTintDuration;
+    } else {
+      this.settings.focusTintDuration = Math.max(0, Math.min(60, this.settings.focusTintDuration));
+    }
+    if (typeof this.settings.maxArrangementsPerNote !== "number" || isNaN(this.settings.maxArrangementsPerNote)) {
+      this.settings.maxArrangementsPerNote = DEFAULT_SETTINGS.maxArrangementsPerNote;
+    } else {
+      this.settings.maxArrangementsPerNote = Math.max(1, Math.min(50, Math.floor(this.settings.maxArrangementsPerNote)));
+    }
+    if (this.settings.storageMode !== "frontmatter" && this.settings.storageMode !== "external") {
+      this.settings.storageMode = DEFAULT_SETTINGS.storageMode;
+    }
   }
 };
-var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
+var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.currentTab = "changelog";
@@ -4483,25 +4854,25 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
   displayContextSettings(containerEl) {
     const saveHotkey = this.getHotkeyDisplay("perspecta-obsidian:save-context");
     const restoreHotkey = this.getHotkeyDisplay("perspecta-obsidian:restore-context");
-    new import_obsidian4.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
-    new import_obsidian4.Setting(containerEl).setName("Seconds for focus note highlight").setDesc("0 = disabled").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Hotkeys").setDesc("Customize in Settings \u2192 Hotkeys").addButton((btn) => btn.setButtonText(`Save: ${saveHotkey}`).setDisabled(true)).addButton((btn) => btn.setButtonText(`Restore: ${restoreHotkey}`).setDisabled(true));
+    new import_obsidian6.Setting(containerEl).setName("Seconds for focus note highlight").setDesc("0 = disabled").addText((t) => t.setValue(String(this.plugin.settings.focusTintDuration)).onChange(async (v) => {
       const n = parseFloat(v);
       if (!isNaN(n) && n >= 0) {
         this.plugin.settings.focusTintDuration = n;
         await this.plugin.saveSettings();
       }
     }));
-    new import_obsidian4.Setting(containerEl).setName("Auto-generate file UIDs").setDesc("Automatically add unique IDs to files in saved contexts. This allows files to be found even after moving or renaming.").addToggle((t) => t.setValue(this.plugin.settings.autoGenerateUids).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Auto-generate file UIDs").setDesc("Automatically add unique IDs to files in saved contexts. This allows files to be found even after moving or renaming.").addToggle((t) => t.setValue(this.plugin.settings.autoGenerateUids).onChange(async (v) => {
       this.plugin.settings.autoGenerateUids = v;
       await this.plugin.saveSettings();
     }));
   }
   displayStorageSettings(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("Perspecta folder").setDesc("Folder in your vault for Perspecta data (backups, scripts). Created if it doesn't exist.").addText((t) => t.setPlaceholder("perspecta").setValue(this.plugin.settings.perspectaFolderPath).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Perspecta folder").setDesc("Folder in your vault for Perspecta data (backups, scripts). Created if it doesn't exist.").addText((t) => t.setPlaceholder("perspecta").setValue(this.plugin.settings.perspectaFolderPath).onChange(async (v) => {
       this.plugin.settings.perspectaFolderPath = v.trim() || "perspecta";
       await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
       this.plugin.settings.storageMode = v ? "frontmatter" : "external";
       await this.plugin.saveSettings();
       if (!v) {
@@ -4510,7 +4881,7 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
       this.display();
     }));
     if (this.plugin.settings.storageMode === "external") {
-      new import_obsidian4.Setting(containerEl).setName("Maximum arrangements per note").setDesc("How many window arrangements to store per note. Older arrangements are automatically removed when the limit is reached.").addDropdown((d) => d.addOptions({
+      new import_obsidian6.Setting(containerEl).setName("Maximum arrangements per note").setDesc("How many window arrangements to store per note. Older arrangements are automatically removed when the limit is reached.").addDropdown((d) => d.addOptions({
         "1": "1",
         "2": "2",
         "3": "3",
@@ -4522,69 +4893,69 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
         this.display();
       }));
       if (this.plugin.settings.maxArrangementsPerNote === 1) {
-        new import_obsidian4.Setting(containerEl).setName("Auto-confirm overwrite").setDesc("Skip confirmation when overwriting an existing arrangement. Only applies when storing a single arrangement per note.").addToggle((t) => t.setValue(this.plugin.settings.autoConfirmOverwrite).onChange(async (v) => {
+        new import_obsidian6.Setting(containerEl).setName("Auto-confirm overwrite").setDesc("Skip confirmation when overwriting an existing arrangement. Only applies when storing a single arrangement per note.").addToggle((t) => t.setValue(this.plugin.settings.autoConfirmOverwrite).onChange(async (v) => {
           this.plugin.settings.autoConfirmOverwrite = v;
           await this.plugin.saveSettings();
         }));
       }
     }
     if (this.plugin.settings.storageMode === "frontmatter") {
-      new import_obsidian4.Setting(containerEl).setName("Migrate to external storage").setDesc("Move all context data from note frontmatter to the plugin folder. This cleans up your notes by removing perspecta-arrangement properties.").addButton((btn) => btn.setButtonText("Migrate to external").setCta().onClick(async () => {
+      new import_obsidian6.Setting(containerEl).setName("Migrate to external storage").setDesc("Move all context data from note frontmatter to the plugin folder. This cleans up your notes by removing perspecta-arrangement properties.").addButton((btn) => btn.setButtonText("Migrate to external").setCta().onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText("Migrating...");
         try {
           const result = await this.plugin.migrateToExternalStorage();
-          new import_obsidian4.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
+          new import_obsidian6.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
           this.display();
         } catch (e) {
-          new import_obsidian4.Notice("Migration failed: " + e.message, 4e3);
+          new import_obsidian6.Notice("Migration failed: " + e.message, 4e3);
           btn.setDisabled(false);
           btn.setButtonText("Migrate to external");
         }
       }));
     } else {
-      new import_obsidian4.Setting(containerEl).setName("Migrate to frontmatter").setDesc("Move all context data from the plugin folder into note frontmatter. This makes contexts portable with your notes.").addButton((btn) => btn.setButtonText("Migrate to frontmatter").setCta().onClick(async () => {
+      new import_obsidian6.Setting(containerEl).setName("Migrate to frontmatter").setDesc("Move all context data from the plugin folder into note frontmatter. This makes contexts portable with your notes.").addButton((btn) => btn.setButtonText("Migrate to frontmatter").setCta().onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText("Migrating...");
         try {
           const result = await this.plugin.migrateToFrontmatter();
-          new import_obsidian4.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
+          new import_obsidian6.Notice(`Migration complete: ${result.migrated} contexts moved${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
           this.display();
         } catch (e) {
-          new import_obsidian4.Notice("Migration failed: " + e.message, 4e3);
+          new import_obsidian6.Notice("Migration failed: " + e.message, 4e3);
           btn.setDisabled(false);
           btn.setButtonText("Migrate to frontmatter");
         }
       }));
     }
-    new import_obsidian4.Setting(containerEl).setName("Clean up old uid properties").setDesc('Remove obsolete "uid" properties from notes that already have "perspecta-uid". This cleans up leftover data from earlier versions.').addButton((btn) => btn.setButtonText("Clean up").onClick(async () => {
+    new import_obsidian6.Setting(containerEl).setName("Clean up old uid properties").setDesc('Remove obsolete "uid" properties from notes that already have "perspecta-uid". This cleans up leftover data from earlier versions.').addButton((btn) => btn.setButtonText("Clean up").onClick(async () => {
       btn.setDisabled(true);
       btn.setButtonText("Cleaning...");
       try {
         const count = await this.plugin.cleanupOldUidProperties();
-        new import_obsidian4.Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? "s" : ""}` : "No old uid properties found", 4e3);
+        new import_obsidian6.Notice(count > 0 ? `Cleaned up ${count} file${count > 1 ? "s" : ""}` : "No old uid properties found", 4e3);
       } catch (e) {
-        new import_obsidian4.Notice("Cleanup failed: " + e.message, 4e3);
+        new import_obsidian6.Notice("Cleanup failed: " + e.message, 4e3);
       }
       btn.setDisabled(false);
       btn.setButtonText("Clean up");
     }));
   }
   displayBackupSettings(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("Backup arrangements").setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`).addButton((btn) => btn.setButtonText("Create backup").onClick(async () => {
+    new import_obsidian6.Setting(containerEl).setName("Backup arrangements").setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`).addButton((btn) => btn.setButtonText("Create backup").onClick(async () => {
       btn.setDisabled(true);
       btn.setButtonText("Backing up...");
       try {
         const result = await this.plugin.backupArrangements();
-        new import_obsidian4.Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`, 4e3);
+        new import_obsidian6.Notice(`Backup created: ${result.count} arrangements saved to ${result.path}`, 4e3);
         this.display();
       } catch (e) {
-        new import_obsidian4.Notice("Backup failed: " + e.message, 4e3);
+        new import_obsidian6.Notice("Backup failed: " + e.message, 4e3);
       }
       btn.setDisabled(false);
       btn.setButtonText("Create backup");
     }));
-    new import_obsidian4.Setting(containerEl).setName("Restore from backup").setDesc("Restore arrangements from a previous backup. This will overwrite existing arrangements with the same UIDs.");
+    new import_obsidian6.Setting(containerEl).setName("Restore from backup").setDesc("Restore arrangements from a previous backup. This will overwrite existing arrangements with the same UIDs.");
     const backupListContainer = containerEl.createDiv({ cls: "perspecta-backup-list-container" });
     this.plugin.listBackups().then((backups) => {
       if (backups.length === 0) {
@@ -4610,9 +4981,9 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
             restoreBtn.textContent = "Restoring...";
             try {
               const result = await this.plugin.restoreFromBackup(backup.path);
-              new import_obsidian4.Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
+              new import_obsidian6.Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
             } catch (e) {
-              new import_obsidian4.Notice("Restore failed: " + e.message, 4e3);
+              new import_obsidian6.Notice("Restore failed: " + e.message, 4e3);
             }
             restoreBtn.disabled = false;
             restoreBtn.textContent = "Restore";
@@ -4625,59 +4996,67 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
     const warning = containerEl.createDiv({ cls: "perspecta-experimental-warning" });
     warning.createSpan({ cls: "perspecta-experimental-warning-icon", text: "\u26A0\uFE0F" });
     warning.createSpan({ text: "These features are experimental and may change or break in future updates." });
-    new import_obsidian4.Setting(containerEl).setName("Enable proxy windows").setDesc('Allows converting popout windows to minimalist "proxy" windows that show only the note title. Click the title to restore its arrangement.').addToggle((t) => t.setValue(this.plugin.settings.enableProxyWindows).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable proxy windows").setDesc('Allows converting popout windows to minimalist "proxy" windows that show only the note title. Click the title to restore its arrangement.').addToggle((t) => t.setValue(this.plugin.settings.enableProxyWindows).onChange(async (v) => {
       this.plugin.settings.enableProxyWindows = v;
       await this.plugin.saveSettings();
       this.display();
     }));
     if (this.plugin.settings.enableProxyWindows) {
-      new import_obsidian4.Setting(containerEl).setName("Preview scale").setDesc("Scale factor for the note preview in proxy windows (10% to 100%)").addSlider((slider) => slider.setLimits(10, 100, 5).setValue(this.plugin.settings.proxyPreviewScale * 100).setDynamicTooltip().onChange(async (value) => {
+      new import_obsidian6.Setting(containerEl).setName("Preview scale").setDesc("Scale factor for the note preview in proxy windows (10% to 100%)").addSlider((slider) => slider.setLimits(10, 100, 5).setValue(this.plugin.settings.proxyPreviewScale * 100).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.proxyPreviewScale = value / 100;
         await this.plugin.saveSettings();
       }));
       const infoDiv = containerEl.createDiv({ cls: "setting-item-description" });
       infoDiv.style.marginTop = "12px";
       infoDiv.style.marginBottom = "12px";
-      infoDiv.innerHTML = `
-				<strong>How to use:</strong><br>
-				\u2022 Use command "Convert to proxy window" on any popout window<br>
-				\u2022 The proxy shows a scaled preview of the note content<br>
-				\u2022 Click the expand icon (\u2197) to restore the full window<br>
-				\u2022 If the note has a saved arrangement, click anywhere to restore it
-			`;
+      const strongEl = infoDiv.createEl("strong");
+      strongEl.textContent = "How to use:";
+      infoDiv.createEl("br");
+      infoDiv.appendText('\u2022 Use command "Convert to proxy window" on any popout window');
+      infoDiv.createEl("br");
+      infoDiv.appendText("\u2022 The proxy shows a scaled preview of the note content");
+      infoDiv.createEl("br");
+      infoDiv.appendText("\u2022 Click the expand icon (\u2197) to restore the full window");
+      infoDiv.createEl("br");
+      infoDiv.appendText("\u2022 If the note has a saved arrangement, click anywhere to restore it");
     }
-    containerEl.createEl("h4", { text: "Desktop Wallpaper" });
-    new import_obsidian4.Setting(containerEl).setName("Save wallpaper with context").setDesc("Capture the current desktop wallpaper when saving a context.").addToggle((t) => t.setValue(this.plugin.settings.enableWallpaperCapture).onChange(async (v) => {
+    containerEl.createEl("h4", { text: "Desktop wallpaper" });
+    new import_obsidian6.Setting(containerEl).setName("Save wallpaper with context").setDesc("Capture the current desktop wallpaper when saving a context. The wallpaper can be restored when switching between projects.").addToggle((t) => t.setValue(this.plugin.settings.enableWallpaperCapture).onChange(async (v) => {
       this.plugin.settings.enableWallpaperCapture = v;
       await this.plugin.saveSettings();
       this.display();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Restore wallpaper with context").setDesc("Change the desktop wallpaper to match the saved context when restoring.").addToggle((t) => t.setValue(this.plugin.settings.enableWallpaperRestore).onChange(async (v) => {
-      this.plugin.settings.enableWallpaperRestore = v;
-      await this.plugin.saveSettings();
-    }));
+    if (this.plugin.settings.enableWallpaperCapture) {
+      new import_obsidian6.Setting(containerEl).setName("Restore wallpaper with context").setDesc("Automatically change the desktop wallpaper to match the saved context when restoring.").addToggle((t) => t.setValue(this.plugin.settings.enableWallpaperRestore).onChange(async (v) => {
+        this.plugin.settings.enableWallpaperRestore = v;
+        await this.plugin.saveSettings();
+      }));
+      new import_obsidian6.Setting(containerEl).setName("Store wallpapers in vault").setDesc(`Copy wallpapers to ${this.plugin.settings.perspectaFolderPath}/wallpapers/ for portability. When disabled, the original system path is stored.`).addToggle((t) => t.setValue(this.plugin.settings.storeWallpapersLocally).onChange(async (v) => {
+        this.plugin.settings.storeWallpapersLocally = v;
+        await this.plugin.saveSettings();
+      }));
+    }
     const wallpaperInfoDiv = containerEl.createDiv({ cls: "setting-item-description" });
     wallpaperInfoDiv.style.marginTop = "12px";
     wallpaperInfoDiv.style.marginBottom = "12px";
-    wallpaperInfoDiv.innerHTML = `
-			<strong>Platform support:</strong> ${getWallpaperPlatformNotes()}<br><br>
-			<strong>Note:</strong> This feature reads and modifies your desktop wallpaper setting.
-			The wallpaper path is stored with your context and can be restored when switching between projects.
-		`;
+    const platformStrong = wallpaperInfoDiv.createEl("strong");
+    platformStrong.textContent = "Platform support:";
+    wallpaperInfoDiv.appendText(" " + getWallpaperPlatformNotes());
   }
   displayDebugSettings(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
       this.plugin.settings.showDebugModal = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Enable debug logging").setDesc("Log performance timing to the developer console (Cmd+Shift+I)").addToggle((t) => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable debug logging").setDesc("Log performance timing to the developer console (Cmd+Shift+I)").addToggle((t) => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async (v) => {
       this.plugin.settings.enableDebugLogging = v;
       await this.plugin.saveSettings();
     }));
   }
   getHotkeyDisplay(commandId) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    const hotkeyManager = this.app.hotkeyManager;
+    const extApp = this.app;
+    const hotkeyManager = extApp.hotkeyManager;
     if (!hotkeyManager)
       return "Not set";
     const customHotkeys = (_a = hotkeyManager.customKeys) == null ? void 0 : _a[commandId];
@@ -4687,7 +5066,7 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
       return "Not set";
     const hotkey = hotkeys[0];
     const parts = [];
-    const isMac = import_obsidian4.Platform.isMacOS;
+    const isMac = import_obsidian6.Platform.isMacOS;
     if ((_c = hotkey.modifiers) == null ? void 0 : _c.includes("Mod")) {
       parts.push(isMac ? "\u2318" : "Ctrl");
     }
@@ -4707,3 +5086,54 @@ var PerspectaSettingTab = class extends import_obsidian4.PluginSettingTab {
     return parts.join(isMac ? "" : "+");
   }
 };
+/**
+ * Perspecta Plugin - Main Entry Point
+ *
+ * A context-switching plugin for Obsidian that saves and restores window arrangements,
+ * allowing users to quickly switch between different workspace configurations.
+ *
+ * @module main
+ *
+ * ## Architecture
+ *
+ * The plugin is organized into several modules:
+ *
+ * - **main.ts** (this file): Plugin entry point, commands, settings
+ * - **types/**: Type definitions including internal Obsidian API types
+ * - **utils/**: Utility functions (coordinates, wallpaper, file resolution, UID management)
+ * - **storage/**: Context storage backends (markdown, canvas, base, external)
+ * - **services/**: Window capture and restore services
+ * - **ui/**: UI components (modals, proxy view)
+ *
+ * ## Obsidian API Usage
+ *
+ * ### Public APIs
+ * - `Plugin` base class for plugin lifecycle
+ * - `App.workspace` for workspace manipulation
+ * - `App.vault` for file operations
+ * - `App.metadataCache` for frontmatter access
+ *
+ * ### Internal APIs (undocumented)
+ * These are used for advanced window management features.
+ * All usage includes fallbacks for API changes.
+ *
+ * - `workspace.rootSplit` - Main window workspace root
+ * - `workspace.floatingSplit` - Popout windows container
+ * - `workspace.leftSplit` / `rightSplit` - Sidebars
+ * - `WorkspaceLeaf.parent` - Parent container access
+ * - `WorkspaceTabContainer.currentTab` - Active tab index
+ * - `WorkspaceTabContainer.dimension` - Split size
+ *
+ * @see types/obsidian-internal.ts for type definitions
+ * @see https://docs.obsidian.md/Plugins for official API docs
+ *
+ * ## Security Considerations
+ *
+ * - Path validation in file resolution prevents directory traversal
+ * - Wallpaper operations use whitelisted commands only
+ * - No arbitrary shell command execution
+ * - Input validation on all user-provided data
+ *
+ * @author Perspecta Contributors
+ * @license MIT
+ */

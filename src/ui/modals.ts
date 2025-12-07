@@ -2,6 +2,7 @@
 // Modal Components for Perspecta
 // ============================================================================
 
+import { setIcon } from 'obsidian';
 import { TimestampedArrangement, WindowStateV2, WorkspaceNodeState } from '../types';
 
 // SVG namespace
@@ -583,13 +584,9 @@ export function showArrangementSelector(
 				const summary = info.createDiv({ cls: 'perspecta-arrangement-summary' });
 				summary.setText(getArrangementSummary(arr));
 
-				// Delete button
+				// Delete button - use setIcon for safe SVG rendering
 				const deleteBtn = item.createDiv({ cls: 'perspecta-arrangement-delete' });
-				deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-					<circle cx="12" cy="12" r="10"/>
-					<line x1="15" y1="9" x2="9" y2="15"/>
-					<line x1="9" y1="9" x2="15" y2="15"/>
-				</svg>`;
+				setIcon(deleteBtn, 'x-circle');
 				deleteBtn.setAttribute('aria-label', 'Delete arrangement');
 
 				deleteBtn.addEventListener('click', (e) => {

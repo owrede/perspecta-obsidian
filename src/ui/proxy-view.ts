@@ -1,4 +1,23 @@
-import { ItemView, WorkspaceLeaf, TFile, setIcon, Platform, MarkdownRenderer, Component } from 'obsidian';
+/**
+ * Proxy View - Minimalist Window for Note Representation
+ *
+ * Shows a scaled-down preview of note content in a compact window.
+ * Designed for quick context switching without full window overhead.
+ *
+ * @module ui/proxy-view
+ *
+ * ## Security Notes
+ * - Does NOT use Electron remote module (deprecated, security risk)
+ * - Uses CSS-only solutions for window styling
+ * - Uses safe DOM manipulation methods (no innerHTML with user data)
+ *
+ * ## Obsidian API Usage
+ * - ItemView for custom view implementation
+ * - MarkdownRenderer for safe content rendering
+ * - Platform for OS detection
+ */
+
+import { ItemView, WorkspaceLeaf, TFile, setIcon, Platform, MarkdownRenderer, Component, ViewStateResult } from 'obsidian';
 
 export const PROXY_VIEW_TYPE = 'perspecta-proxy-view';
 
@@ -7,27 +26,15 @@ export interface ProxyViewState extends Record<string, unknown> {
 	arrangementUid?: string;
 }
 
-// Try to get Electron's remote module for window manipulation
-function getElectronRemote(): any {
-	try {
-		// Try @electron/remote first (newer Electron versions)
-		return require('@electron/remote');
-	} catch {
-		try {
-			// Fall back to electron.remote (older versions)
-			return require('electron').remote;
-		} catch {
-			return null;
-		}
-	}
-}
-
 /**
  * ProxyNoteView - A minimalist window that represents a note
  *
  * Shows a scaled-down preview of the note content with:
  * - Clickable area to restore arrangement (if one exists)
  * - Expand button to open as normal window
+ *
+ * Note: Window chrome hiding is achieved via CSS classes applied to the
+ * popout window body. This avoids the deprecated Electron remote module.
  */
 export class ProxyNoteView extends ItemView {
 	private state: ProxyViewState = { filePath: '' };
@@ -59,20 +66,24 @@ export class ProxyNoteView extends ItemView {
 		this.applyProxyWindowClass();
 
 		// Render content first
-		this.renderContent(container);
+		await this.renderContent(container);
 
-		// Configure Electron window for minimal titlebar
+		// Configure window chrome via CSS (no Electron remote needed)
 		// Use multiple delays to catch the chrome at different stages of creation
-		this.configureElectronWindow();
-		setTimeout(() => this.configureElectronWindow(), 50);
-		setTimeout(() => this.configureElectronWindow(), 150);
-		setTimeout(() => this.configureElectronWindow(), 300);
+		this.configureWindowChrome();
+		setTimeout(() => this.configureWindowChrome(), 50);
+		setTimeout(() => this.configureWindowChrome(), 150);
+		setTimeout(() => this.configureWindowChrome(), 300);
 	}
 
+	/**
+	 * Applies CSS classes to the popout window for styling.
+	 * This enables CSS-only window chrome hiding.
+	 */
 	private applyProxyWindowClass(): void {
 		// Try multiple ways to get the window and add the class
-		const win = this.containerEl.win || (this.leaf.view?.containerEl as any)?.win;
-		if (win && win !== window && win.document?.body) {
+		const win = this.getPopoutWindow();
+		if (win?.document?.body) {
 			win.document.body.classList.add('perspecta-proxy-window');
 		}
 
@@ -83,10 +94,25 @@ export class ProxyNoteView extends ItemView {
 		}
 	}
 
-	private configureElectronWindow(): void {
-		// Get the window document for this popout
-		const win = this.containerEl.win || (this.leaf.view?.containerEl as any)?.win;
-		if (!win || win === window) return;
+	/**
+	 * Gets the popout window for this view, if any.
+	 * Returns null if this is the main window.
+	 */
+	private getPopoutWindow(): Window | null {
+		const win = this.containerEl.win || (this.leaf.view?.containerEl as { win?: Window })?.win;
+		if (win && win !== window) {
+			return win;
+		}
+		return null;
+	}
+
+	/**
+	 * Configures window chrome (tabs, titlebar, etc.) via CSS and DOM.
+	 * Does NOT use Electron remote module - uses CSS-only approach.
+	 */
+	private configureWindowChrome(): void {
+		const win = this.getPopoutWindow();
+		if (!win) return;
 
 		const doc = win.document;
 		if (!doc) return;
@@ -97,84 +123,26 @@ export class ProxyNoteView extends ItemView {
 			headerEl.remove();
 		}
 
-		// Remove/empty the titlebar (contains title and navigation)
-		const titlebarEl = doc.querySelector('.titlebar');
+		// Hide the titlebar via CSS (safe - no innerHTML)
+		const titlebarEl = doc.querySelector('.titlebar') as HTMLElement | null;
 		if (titlebarEl) {
-			// Empty it instead of removing to preserve window dragging on some systems
-			titlebarEl.innerHTML = '';
-			(titlebarEl as HTMLElement).style.height = '0';
-			(titlebarEl as HTMLElement).style.minHeight = '0';
+			// Remove children safely instead of innerHTML
+			while (titlebarEl.firstChild) {
+				titlebarEl.removeChild(titlebarEl.firstChild);
+			}
+			titlebarEl.style.height = '0';
+			titlebarEl.style.minHeight = '0';
 		}
 
 		// Also hide the view header within our leaf
-		const viewHeader = doc.querySelector('.view-header');
+		const viewHeader = doc.querySelector('.view-header') as HTMLElement | null;
 		if (viewHeader) {
-			(viewHeader as HTMLElement).style.display = 'none';
+			viewHeader.style.display = 'none';
 		}
 
-		// Configure Electron window (minimum size, hide traffic lights on macOS)
-		this.configureElectronBrowserWindow();
-	}
-
-	private configureElectronBrowserWindow(): void {
-		const remote = getElectronRemote();
-		if (!remote) return;
-
-		// Get our window reference
-		const win = this.containerEl.win || (this.leaf.view?.containerEl as any)?.win;
-		if (!win || win === window) return;
-
-		try {
-			const allWindows = remote.BrowserWindow.getAllWindows();
-			// Find our window by matching the native window handle
-			for (const bw of allWindows) {
-				// Try to match by comparing the web contents' window reference
-				const webContents = bw.webContents;
-				if (webContents) {
-					try {
-						// Check if this BrowserWindow's document matches our document
-						const bwDoc = webContents.mainFrame?.window?.document;
-						if (bwDoc === win.document) {
-							this.applyBrowserWindowConfig(bw);
-							return;
-						}
-					} catch {
-						// Ignore errors from accessing window properties
-					}
-				}
-
-				// Fallback: match by title containing the file basename
-				const title = bw.getTitle?.() || '';
-				if (this.file?.basename && title.includes(this.file.basename)) {
-					this.applyBrowserWindowConfig(bw);
-					return;
-				}
-			}
-
-			// Last resort: configure all non-main windows that haven't been configured
-			// This helps catch windows that might have timing issues
-			for (const bw of allWindows) {
-				if (!bw.isMainWindow?.() && bw.getMinimumSize?.()?.[0] !== 150) {
-					const title = bw.getTitle?.() || '';
-					// Only configure if it looks like a proxy (small title or contains file name)
-					if (title.includes('Proxy') || (this.file?.basename && title.includes(this.file.basename))) {
-						this.applyBrowserWindowConfig(bw);
-					}
-				}
-			}
-		} catch (e) {
-			console.log('[Perspecta] Could not configure window:', e);
-		}
-	}
-
-	private applyBrowserWindowConfig(bw: any): void {
-		// Set minimum size constraint (don't override current size)
-		bw.setMinimumSize(150, 40);
-
-		// On macOS, hide the traffic light buttons
-		if (Platform.isMacOS && typeof bw.setWindowButtonVisibility === 'function') {
-			bw.setWindowButtonVisibility(false);
-		}
+		// Note: Window minimum size and traffic light hiding previously used
+		// Electron's remote module. This has been removed for security.
+		// CSS handles most styling, and users can resize windows as needed.
 	}
 
 	private async renderContent(container: HTMLElement): Promise<void> {
@@ -209,7 +177,7 @@ export class ProxyNoteView extends ItemView {
 
 		if (needsScaling) {
 			// Apply scale from settings for markdown/text content
-			const plugin = (this.app as any).plugins.plugins['perspecta-obsidian'];
+			const plugin = this.getPlugin();
 			const scale = plugin?.settings?.proxyPreviewScale ?? 0.35;
 			const inverseScale = 100 / (scale * 100);
 			previewContent.style.width = `${inverseScale * 100}%`;
@@ -325,7 +293,7 @@ export class ProxyNoteView extends ItemView {
 			this.renderComponent = new Component();
 			this.renderComponent.load();
 
-			// Render markdown into the container
+			// Render markdown into the container (safe - uses Obsidian's renderer)
 			await MarkdownRenderer.render(
 				this.app,
 				content,
@@ -388,11 +356,11 @@ export class ProxyNoteView extends ItemView {
 	private renderFileTypeIcon(container: HTMLElement, iconName: string, fileType: string): void {
 		const iconContainer = container.createDiv({ cls: 'perspecta-proxy-file-icon' });
 
-		// Create icon
+		// Create icon (safe - uses Obsidian's setIcon)
 		const iconEl = iconContainer.createDiv({ cls: 'perspecta-proxy-file-icon-svg' });
 		setIcon(iconEl, iconName);
 
-		// Create file type label
+		// Create file type label (safe - uses createDiv with text property)
 		iconContainer.createDiv({
 			cls: 'perspecta-proxy-file-type-label',
 			text: fileType
@@ -412,8 +380,8 @@ export class ProxyNoteView extends ItemView {
 		iconEl.style.height = '48px';
 		const svg = iconEl.querySelector('svg');
 		if (svg) {
-			svg.style.width = '100%';
-			svg.style.height = '100%';
+			(svg as SVGElement).style.width = '100%';
+			(svg as SVGElement).style.height = '100%';
 		}
 	}
 
@@ -425,18 +393,22 @@ export class ProxyNoteView extends ItemView {
 		}
 	}
 
-	async setState(state: ProxyViewState, result: any): Promise<void> {
-		this.state = state;
+	async setState(state: unknown, result: ViewStateResult): Promise<void> {
+		// Type guard for our state format
+		const proxyState = state as ProxyViewState;
+		if (proxyState && typeof proxyState === 'object' && 'filePath' in proxyState) {
+			this.state = proxyState;
 
-		if (state.filePath) {
-			this.file = this.app.vault.getAbstractFileByPath(state.filePath) as TFile;
-		}
+			if (proxyState.filePath) {
+				this.file = this.app.vault.getAbstractFileByPath(proxyState.filePath) as TFile;
+			}
 
-		// Re-render if already open
-		const container = this.containerEl.children[1] as HTMLElement;
-		if (container) {
-			container.empty();
-			this.renderContent(container);
+			// Re-render if already open
+			const container = this.containerEl.children[1] as HTMLElement;
+			if (container) {
+				container.empty();
+				await this.renderContent(container);
+			}
 		}
 
 		return super.setState(state, result);
@@ -446,12 +418,21 @@ export class ProxyNoteView extends ItemView {
 		return this.state;
 	}
 
+	/**
+	 * Gets the Perspecta plugin instance.
+	 * Uses typed accessor instead of (this.app as any).
+	 */
+	private getPlugin(): { settings?: { proxyPreviewScale?: number } } | null {
+		const app = this.app as { plugins?: { plugins?: Record<string, unknown> } };
+		return app.plugins?.plugins?.['perspecta-obsidian'] as { settings?: { proxyPreviewScale?: number } } ?? null;
+	}
+
 	private async restoreArrangement(forceLatest: boolean = true): Promise<void> {
 		if (!this.state.arrangementUid || !this.file) return;
 
 		// Store references before closing
 		const file = this.file;
-		const plugin = (this.app as any).plugins.plugins['perspecta-obsidian'];
+		const plugin = this.getPlugin() as { restoreContext?: (file: TFile, forceLatest: boolean) => Promise<void> } | null;
 
 		// Close this proxy window FIRST to prevent duplicates
 		// The restoreContext will create new windows as needed
@@ -468,7 +449,7 @@ export class ProxyNoteView extends ItemView {
 		if (!this.file) return;
 
 		// Get the current window position/size
-		const win = this.leaf.view.containerEl.win;
+		const win = this.getPopoutWindow();
 		const x = win?.screenX || 100;
 		const y = win?.screenY || 100;
 
@@ -487,7 +468,7 @@ export class ProxyNoteView extends ItemView {
 		if (newWin && newWin !== window) {
 			try {
 				newWin.moveTo(x, y);
-			} catch (e) {
+			} catch {
 				// Silently fail - window positioning may not be allowed
 			}
 		}
