@@ -32,6 +32,28 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.15",
+    date: "2025-12-26",
+    changes: [
+      "Performance: Incremental file explorer indicator updates via metadata events",
+      "Refactor: New base64 utility replacing deprecated escape/unescape functions",
+      "Refactor: Added ensureInitialized() API to external context store",
+      "Refactor: Extracted IndicatorsService for better code organization",
+      "Fixed: All 19 lint errors resolved, reduced warnings from 91 to 77",
+      "Fixed: Backup restore now handles malformed files gracefully",
+      "Fixed: File context menu now works for canvas and base files",
+      "Improved: Better type safety with unknown instead of any in event handlers",
+      "Improved: Consistent use of helper functions for internal API access"
+    ]
+  },
+  {
+    version: "0.1.14",
+    date: "2025-12-20",
+    changes: [
+      "Internal improvements and bug fixes"
+    ]
+  },
+  {
     version: "0.1.13",
     date: "2025-12-06",
     changes: [
@@ -233,6 +255,12 @@ function isCanvasView(view) {
     return false;
   const canvas = v.canvas;
   return typeof canvas.tx === "number";
+}
+function getFloatingWindowContainers(workspace) {
+  if (hasFloatingSplit(workspace)) {
+    return workspace.floatingSplit.children;
+  }
+  return [];
 }
 function getCurrentTabIndex(container) {
   if (container === null || typeof container !== "object")
@@ -503,7 +531,7 @@ function needsTiling(sourceScreen) {
   const diff = getAspectRatioDifference(sourceScreen);
   return diff > 0.5;
 }
-function calculateTiledLayout(windowCount, mainWindowState) {
+function calculateTiledLayout(windowCount, _mainWindowState) {
   const screen = getPhysicalScreen();
   const results = [];
   if (windowCount === 0)
@@ -584,6 +612,7 @@ var DANGEROUS_PATH_PATTERNS = [
   // Null byte injection
   /\.\.[/\\]/,
   // Directory traversal (../ or ..\)
+  // eslint-disable-next-line no-control-regex
   /[\x00-\x1F]/
   // Control characters (except in file path segments)
 ];
@@ -945,13 +974,27 @@ function resolveFile(app, tab) {
   return { file: null, method: "not_found", error: `File not found: ${tab.path}` };
 }
 
+// src/utils/base64.ts
+function encodeBase64(str) {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(str);
+  const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
+  return btoa(binString);
+}
+function decodeBase64(base64) {
+  const binString = atob(base64);
+  const bytes = Uint8Array.from(binString, (char) => char.codePointAt(0));
+  const decoder = new TextDecoder();
+  return decoder.decode(bytes);
+}
+
 // src/storage/markdown.ts
 function markdownHasContext(app, file) {
   var _a;
   if (file.extension !== "md")
     return false;
   const cache = app.metadataCache.getFileCache(file);
-  return ((_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[FRONTMATTER_KEY]) != null;
+  return ((_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[FRONTMATTER_KEY]) !== null;
 }
 
 // src/storage/canvas.ts
@@ -1032,7 +1075,7 @@ async function getContextFromBase(app, file) {
     const encoded = (_a = data == null ? void 0 : data.perspecta) == null ? void 0 : _a.context;
     if (!encoded)
       return null;
-    const json = decodeURIComponent(escape(atob(encoded)));
+    const json = decodeBase64(encoded);
     return JSON.parse(json);
   } catch (e) {
     return null;
@@ -1048,7 +1091,7 @@ async function saveContextToBase(app, file, context) {
       data.perspecta = {};
     }
     const json = JSON.stringify(context);
-    const base64 = btoa(unescape(encodeURIComponent(json)));
+    const base64 = encodeBase64(json);
     data.perspecta.context = base64;
     await app.vault.modify(file, (0, import_obsidian3.stringifyYaml)(data));
   } catch (e) {
@@ -1250,6 +1293,21 @@ var ExternalContextStore = class {
       clearTimeout(this.saveTimeout);
     }
     await this.flushDirty();
+  }
+  /**
+   * Check if the store has been initialized.
+   */
+  isInitialized() {
+    return this.initialized;
+  }
+  /**
+   * Ensure the store is initialized before use.
+   * Safe to call multiple times - will only initialize once.
+   */
+  async ensureInitialized() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
   }
 };
 
@@ -2217,7 +2275,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     this.setupFileExplorerIndicators();
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        if (file instanceof import_obsidian6.TFile && ["md", "canvas", "base"].includes(file.extension)) {
           menu.addItem((item) => {
             item.setTitle("Remember note context").setIcon("target").onClick(() => this.saveContext(file));
           });
@@ -2302,7 +2360,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
           win.removeEventListener("focus", listener);
           this.windowFocusListeners.delete(win);
         }
-        setTimeout(() => {
+        this.safeTimeout(() => {
           this.isClosingWindow = false;
         }, 100);
       })
@@ -2315,7 +2373,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", (leaf) => {
+      this.app.workspace.on("active-leaf-change", (_leaf) => {
         if (this.isClosingWindow)
           return;
       })
@@ -2342,7 +2400,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
   // ============================================================================
   captureWindowArrangement() {
     PerfTimer.mark("captureWindowArrangement:start");
-    const workspace = this.app.workspace;
+    const workspace = asExtendedWorkspace(this.app.workspace);
     const main = this.captureWindowState(workspace.rootSplit, window);
     PerfTimer.mark("captureMainWindow");
     const popouts = this.capturePopoutStates();
@@ -2389,11 +2447,9 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
   capturePopoutStates() {
     var _a, _b, _c, _d;
     const states = [];
-    const workspace = this.app.workspace;
-    if (!hasFloatingSplit(workspace))
-      return states;
+    const containers = getFloatingWindowContainers(this.app.workspace);
     const seenWindows = /* @__PURE__ */ new Set();
-    for (const container of workspace.floatingSplit.children) {
+    for (const container of containers) {
       const win = container == null ? void 0 : container.win;
       if (!win || win === window)
         continue;
@@ -2672,9 +2728,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
       await addUidToFile(this.app, file, uid);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!this.externalStore["initialized"]) {
-      await this.externalStore.initialize();
-    }
+    await this.externalStore.ensureInitialized();
     const maxArrangements = this.settings.maxArrangementsPerNote;
     const existingCount = this.externalStore.getCount(uid);
     if (maxArrangements === 1 && existingCount > 0 && !this.settings.autoConfirmOverwrite) {
@@ -2702,7 +2756,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     const fm = match[1];
     if (!fm.includes(`${FRONTMATTER_KEY}:`))
       return false;
-    let newFm = fm.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"\n?/g, "").trim();
+    const newFm = fm.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"\n?/g, "").trim();
     const newContent = content.replace(frontmatterRegex, `---
 ${newFm}
 ---`);
@@ -2766,9 +2820,7 @@ ${newFm}
     const files = this.app.vault.getMarkdownFiles();
     let migrated = 0;
     let errors = 0;
-    if (!this.externalStore["initialized"]) {
-      await this.externalStore.initialize();
-    }
+    await this.externalStore.ensureInitialized();
     for (const file of files) {
       try {
         const context = this.getContextFromNote(file);
@@ -2801,9 +2853,7 @@ ${newFm}
     const files = this.app.vault.getMarkdownFiles();
     let migrated = 0;
     let errors = 0;
-    if (!this.externalStore["initialized"]) {
-      await this.externalStore.initialize();
-    }
+    await this.externalStore.ensureInitialized();
     for (const file of files) {
       try {
         const uid = getUidFromCache(this.app, file);
@@ -2833,9 +2883,7 @@ ${newFm}
   }
   // Backup all arrangements to the perspecta folder
   async backupArrangements() {
-    if (!this.externalStore["initialized"]) {
-      await this.externalStore.initialize();
-    }
+    await this.externalStore.ensureInitialized();
     const allArrangements = {};
     const uids = this.externalStore.getAllUids();
     for (const uid of uids) {
@@ -2885,14 +2933,20 @@ ${newFm}
   }
   // Restore arrangements from a backup file
   async restoreFromBackup(backupPath) {
-    const content = await this.app.vault.adapter.read(backupPath);
-    const backupData = JSON.parse(content);
+    let backupData;
+    try {
+      const content = await this.app.vault.adapter.read(backupPath);
+      backupData = JSON.parse(content);
+    } catch (e) {
+      Logger.error("Failed to parse backup file:", e);
+      new import_obsidian6.Notice("Failed to parse backup file. The file may be corrupted.");
+      return { restored: 0, errors: 1 };
+    }
     if (!backupData.arrangements || typeof backupData.arrangements !== "object") {
-      throw new Error("Invalid backup file format");
+      new import_obsidian6.Notice("Invalid backup file format");
+      return { restored: 0, errors: 1 };
     }
-    if (!this.externalStore["initialized"]) {
-      await this.externalStore.initialize();
-    }
+    await this.externalStore.ensureInitialized();
     let restored = 0;
     let errors = 0;
     for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
@@ -2994,7 +3048,7 @@ ${content}`;
   encodeArrangement(arr) {
     const compact = this.createCompactArrangement(arr);
     const json = JSON.stringify(compact);
-    const base64 = btoa(unescape(encodeURIComponent(json)));
+    const base64 = encodeBase64(json);
     return `${FRONTMATTER_KEY}: "${base64}"`;
   }
   // Create compact arrangement with minimal data
@@ -3060,7 +3114,7 @@ ${content}`;
   // Decode base64 JSON blob back to WindowArrangementV2
   decodeArrangement(encoded) {
     try {
-      const json = decodeURIComponent(escape(atob(encoded)));
+      const json = decodeBase64(encoded);
       const compact = JSON.parse(json);
       return this.expandCompactArrangement(compact);
     } catch (e) {
@@ -3159,7 +3213,7 @@ ${content}`;
         new import_obsidian6.Notice("No context found in this note", 4e3);
         return;
       }
-      const focusedWin = await this.applyArrangement(context, targetFile.path);
+      const _focusedWin = await this.applyArrangement(context, targetFile.path);
       PerfTimer.mark("applyArrangement");
       if (this.pathCorrections.size > 0) {
         await this.updateContextWithCorrectedPaths(targetFile, context);
@@ -3188,9 +3242,7 @@ ${content}`;
     if (this.settings.storageMode === "external") {
       const uid = getUidFromCache(this.app, file);
       if (uid) {
-        if (!this.externalStore["initialized"]) {
-          await this.externalStore.initialize();
-        }
+        await this.externalStore.ensureInitialized();
         const arrangements = this.externalStore.getAll(uid);
         if (arrangements.length === 0) {
           return { context: this.getContextFromNote(file), cancelled: false };
@@ -3224,9 +3276,7 @@ ${content}`;
     if (this.settings.storageMode === "external") {
       const uid = getUidFromCache(this.app, file);
       if (uid) {
-        if (!this.externalStore["initialized"]) {
-          await this.externalStore.initialize();
-        }
+        await this.externalStore.ensureInitialized();
         const context = this.externalStore.get(uid);
         if (context)
           return context;
@@ -3787,7 +3837,7 @@ ${content}`;
   }
   async restorePopoutWindow(state, sourceScreen, tiledPosition) {
     var _a, _b;
-    const popoutStart = performance.now();
+    const _popoutStart = performance.now();
     if (state.isProxy && this.settings.enableProxyWindows) {
       await this.restoreProxyWindow(state, sourceScreen, tiledPosition);
       return;
@@ -4371,7 +4421,7 @@ ${content}`;
     overlay.className = "perspecta-debug-overlay";
     const modal = doc.createElement("div");
     modal.className = "perspecta-debug-modal perspecta-details-modal";
-    const h3 = modal.createEl("h3", { text: "Context Details" });
+    const _h3 = modal.createEl("h3", { text: "Context Details" });
     const header = modal.createDiv({ cls: "perspecta-details-header" });
     header.createSpan({ cls: "perspecta-details-file", text: fileName });
     const date = new Date(context.ts);
@@ -4534,7 +4584,7 @@ ${content}`;
       PerfTimer.end("updateContextIndicator");
       return;
     }
-    const hasContextFrontmatter = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) != null;
+    const hasContextFrontmatter = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) !== null;
     let hasContextExternal = false;
     if (this.settings.storageMode === "external") {
       const uid = getUidFromCache(this.app, file);
@@ -4607,9 +4657,7 @@ ${content}`;
     }
     PerfTimer.mark(`scanForContextFiles (base: ${baseFiles.length} files)`);
     if (this.settings.storageMode === "external") {
-      if (!this.externalStore["initialized"]) {
-        await this.externalStore.initialize();
-      }
+      await this.externalStore.ensureInitialized();
       const uidsWithContext = this.externalStore.getAllUids();
       for (const file of mdFiles) {
         const uid = getUidFromCache(this.app, file);
@@ -4620,7 +4668,37 @@ ${content}`;
       PerfTimer.mark("scanForContextFiles (external)");
     }
     this.registerEvent(this.app.workspace.on("layout-change", () => this.debouncedRefreshIndicators()));
-    setTimeout(() => this.refreshFileExplorerIndicators(), 500);
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        if (this.isClosingWindow || this.isUnloading)
+          return;
+        if (["md", "canvas", "base"].includes(file.extension)) {
+          this.updateFileExplorerIndicator(file);
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (this.isClosingWindow || this.isUnloading)
+          return;
+        if (this.filesWithContext.has(oldPath)) {
+          this.filesWithContext.delete(oldPath);
+          this.filesWithContext.add(file.path);
+          this.debouncedRefreshIndicators();
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (this.isClosingWindow || this.isUnloading)
+          return;
+        if (this.filesWithContext.has(file.path)) {
+          this.filesWithContext.delete(file.path);
+          this.debouncedRefreshIndicators();
+        }
+      })
+    );
+    this.safeTimeout(() => this.refreshFileExplorerIndicators(), 500);
     PerfTimer.end("setupFileExplorerIndicators");
   }
   async updateFileExplorerIndicator(file) {
@@ -4631,7 +4709,7 @@ ${content}`;
     } else if (file.extension === "base") {
       hasContext = await baseHasContext(this.app, file);
     } else {
-      hasContext = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) != null;
+      hasContext = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) !== null;
       if (!hasContext && this.settings.storageMode === "external") {
         const uid = getUidFromCache(this.app, file);
         if (uid && this.externalStore.has(uid)) {

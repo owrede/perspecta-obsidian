@@ -81,6 +81,7 @@ import {
 	WorkspaceSplit,
 	WorkspaceTabContainer,
 	hasFloatingSplit,
+	getFloatingWindowContainers,
 	isSplit,
 	getCurrentTabIndex,
 	getScrollPosition,
@@ -111,12 +112,11 @@ import {
 import { getWallpaper, setWallpaper, getWallpaperPlatformNotes, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
+import { encodeBase64, decodeBase64 } from './utils/base64';
 
 // Import storage
 import {
-	getContextFromFrontmatter,
-	markdownHasContext,
-	saveContextToMarkdown
+	markdownHasContext
 } from './storage/markdown';
 import {
 	getUidFromCanvas,
@@ -154,7 +154,7 @@ async function getUidFromFile(app: App, file: TFile): Promise<string | undefined
 }
 
 // Add UID to file (works for markdown, canvas, and base)
-async function addUidToAnyFile(app: App, file: TFile, uid: string): Promise<void> {
+async function _addUidToAnyFile(app: App, file: TFile, uid: string): Promise<void> {
 	if (file.extension === 'canvas') {
 		await addUidToCanvas(app, file, uid);
 	} else if (file.extension === 'base') {
@@ -184,7 +184,7 @@ let COORDINATE_DEBUG = false;  // Local reference for quick access
 
 export default class PerspectaPlugin extends Plugin {
 	settings: PerspectaSettings;
-	private focusedWindowIndex: number = -1;
+	private focusedWindowIndex = -1;
 	private windowFocusListeners: Map<Window, () => void> = new Map();
 	private filesWithContext = new Set<string>();
 	private refreshIndicatorsTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -211,7 +211,7 @@ export default class PerspectaPlugin extends Plugin {
 		// Register proxy view (experimental)
 		this.registerView(PROXY_VIEW_TYPE, (leaf) => new ProxyNoteView(leaf));
 
-		this.addRibbonIcon('layout-grid', 'Perspecta', () => {});
+		this.addRibbonIcon('layout-grid', 'Perspecta', () => { /* Placeholder for future menu */ });
 
 		this.addCommand({
 			id: 'save-context',
@@ -263,7 +263,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu: Menu, file: TAbstractFile) => {
-				if (file instanceof TFile && file.extension === 'md') {
+				if (file instanceof TFile && ['md', 'canvas', 'base'].includes(file.extension)) {
 					menu.addItem((item: MenuItem) => {
 						item.setTitle('Remember note context').setIcon('target')
 							.onClick(() => this.saveContext(file));
@@ -351,12 +351,12 @@ export default class PerspectaPlugin extends Plugin {
 	private setupFocusTracking() {
 		this.registerDomEvent(window, 'focus', () => this.focusedWindowIndex = -1);
 		this.registerEvent(
-			this.app.workspace.on('window-open', (_: any, win: Window) => {
+			this.app.workspace.on('window-open', (_: unknown, win: Window) => {
 				this.trackPopoutWindowFocus(win);
 			})
 		);
 		this.registerEvent(
-			this.app.workspace.on('window-close', (_: any, win: Window) => {
+			this.app.workspace.on('window-close', (_: unknown, win: Window) => {
 				// Debug timing (uncomment to debug window close performance)
 				// const start = performance.now();
 				// console.log(`[Perspecta] Window close event START`);
@@ -376,7 +376,7 @@ export default class PerspectaPlugin extends Plugin {
 				// console.log(`[Perspecta] Window close event END (${elapsed.toFixed(1)}ms)`);
 
 				// Reset guard after a short delay to allow Obsidian to finish cleanup
-				setTimeout(() => {
+				this.safeTimeout(() => {
 					this.isClosingWindow = false;
 				}, 100);
 
@@ -400,10 +400,10 @@ export default class PerspectaPlugin extends Plugin {
 			})
 		);
 		this.registerEvent(
-			this.app.workspace.on('active-leaf-change', (leaf) => {
+			this.app.workspace.on('active-leaf-change', (_leaf) => {
 				if (this.isClosingWindow) return;
 				// Debug: uncomment to log leaf changes
-				// const path = (leaf?.view as any)?.file?.path || 'unknown';
+				// const path = (_leaf?.view as any)?.file?.path || 'unknown';
 				// console.log(`[Perspecta] active-leaf-change: ${path}`);
 			})
 		);
@@ -433,7 +433,7 @@ export default class PerspectaPlugin extends Plugin {
 
 	private captureWindowArrangement(): WindowArrangementV2 {
 		PerfTimer.mark('captureWindowArrangement:start');
-		const workspace = this.app.workspace as unknown as ExtendedWorkspace;
+		const workspace = asExtendedWorkspace(this.app.workspace);
 
 		const main = this.captureWindowState(workspace.rootSplit, window);
 		PerfTimer.mark('captureMainWindow');
@@ -491,15 +491,12 @@ export default class PerspectaPlugin extends Plugin {
 
 	private capturePopoutStates(): WindowStateV2[] {
 		const states: WindowStateV2[] = [];
-		const workspace = this.app.workspace as unknown;
-
-		// Use type guard for safe access to floatingSplit
-		if (!hasFloatingSplit(workspace)) return states;
+		const containers = getFloatingWindowContainers(this.app.workspace);
 
 		// Track seen windows to prevent duplicates
 		const seenWindows = new Set<Window>();
 
-		for (const container of workspace.floatingSplit.children) {
+		for (const container of containers) {
 			const win = container?.win;
 			if (!win || win === window) continue;
 
@@ -844,9 +841,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Initialize external store if not already
-		if (!this.externalStore['initialized']) {
-			await this.externalStore.initialize();
-		}
+		await this.externalStore.ensureInitialized();
 
 		const maxArrangements = this.settings.maxArrangementsPerNote;
 		const existingCount = this.externalStore.getCount(uid);
@@ -885,7 +880,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (!fm.includes(`${FRONTMATTER_KEY}:`)) return false;
 
 		// Remove arrangement (both old multi-line YAML and new single-line format)
-		let newFm = fm
+		const newFm = fm
 			.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')  // Old multi-line
 			.replace(/perspecta-arrangement: ".*"\n?/g, '')  // New single-line
 			.trim();
@@ -972,9 +967,7 @@ export default class PerspectaPlugin extends Plugin {
 		let errors = 0;
 
 		// Initialize external store
-		if (!this.externalStore['initialized']) {
-			await this.externalStore.initialize();
-		}
+		await this.externalStore.ensureInitialized();
 
 		for (const file of files) {
 			try {
@@ -1025,9 +1018,7 @@ export default class PerspectaPlugin extends Plugin {
 		let errors = 0;
 
 		// Initialize external store to load all contexts
-		if (!this.externalStore['initialized']) {
-			await this.externalStore.initialize();
-		}
+		await this.externalStore.ensureInitialized();
 
 		for (const file of files) {
 			try {
@@ -1071,9 +1062,7 @@ export default class PerspectaPlugin extends Plugin {
 	// Backup all arrangements to the perspecta folder
 	async backupArrangements(): Promise<{ count: number; path: string }> {
 		// Initialize external store if needed
-		if (!this.externalStore['initialized']) {
-			await this.externalStore.initialize();
-		}
+		await this.externalStore.ensureInitialized();
 
 		// Collect all arrangements from external store
 		const allArrangements: Record<string, unknown> = {};
@@ -1143,18 +1132,24 @@ export default class PerspectaPlugin extends Plugin {
 
 	// Restore arrangements from a backup file
 	async restoreFromBackup(backupPath: string): Promise<{ restored: number; errors: number }> {
-		// Read backup file
-		const content = await this.app.vault.adapter.read(backupPath);
-		const backupData = JSON.parse(content);
+		// Read and parse backup file with error handling
+		let backupData: { arrangements?: Record<string, unknown> };
+		try {
+			const content = await this.app.vault.adapter.read(backupPath);
+			backupData = JSON.parse(content);
+		} catch (e) {
+			Logger.error('Failed to parse backup file:', e);
+			new Notice('Failed to parse backup file. The file may be corrupted.');
+			return { restored: 0, errors: 1 };
+		}
 
 		if (!backupData.arrangements || typeof backupData.arrangements !== 'object') {
-			throw new Error('Invalid backup file format');
+			new Notice('Invalid backup file format');
+			return { restored: 0, errors: 1 };
 		}
 
 		// Initialize external store if needed
-		if (!this.externalStore['initialized']) {
-			await this.externalStore.initialize();
-		}
+		await this.externalStore.ensureInitialized();
 
 		let restored = 0;
 		let errors = 0;
@@ -1284,7 +1279,7 @@ export default class PerspectaPlugin extends Plugin {
 		// Create minimal JSON structure - omit defaults and use short keys
 		const compact = this.createCompactArrangement(arr);
 		const json = JSON.stringify(compact);
-		const base64 = btoa(unescape(encodeURIComponent(json)));
+		const base64 = encodeBase64(json);
 		return `${FRONTMATTER_KEY}: "${base64}"`;
 	}
 
@@ -1359,7 +1354,7 @@ export default class PerspectaPlugin extends Plugin {
 	// Decode base64 JSON blob back to WindowArrangementV2
 	private decodeArrangement(encoded: string): WindowArrangementV2 | null {
 		try {
-			const json = decodeURIComponent(escape(atob(encoded)));
+			const json = decodeBase64(encoded);
 			const compact = JSON.parse(json);
 			return this.expandCompactArrangement(compact);
 		} catch (e) {
@@ -1449,7 +1444,7 @@ export default class PerspectaPlugin extends Plugin {
 	private pathCorrections: Map<string, { newPath: string; newName: string }> = new Map();
 	private isRestoring = false;  // Guard against concurrent restores
 
-	async restoreContext(file?: TFile, forceLatest: boolean = false) {
+	async restoreContext(file?: TFile, forceLatest = false) {
 		// Prevent concurrent restores which can cause duplicate windows
 		if (this.isRestoring) {
 			console.log('[Perspecta] Skipping restoreContext - already restoring');
@@ -1485,7 +1480,7 @@ export default class PerspectaPlugin extends Plugin {
 			const context = contextResult.context;
 			if (!context) { new Notice('No context found in this note', 4000); return; }
 
-			const focusedWin = await this.applyArrangement(context, targetFile.path);
+			const _focusedWin = await this.applyArrangement(context, targetFile.path);
 			PerfTimer.mark('applyArrangement');
 
 			// If any files were resolved via fallback, update the saved context with corrected paths
@@ -1509,7 +1504,7 @@ export default class PerspectaPlugin extends Plugin {
 
 	// Get context with potential user selection for multiple arrangements
 	// If forceLatest is true, always use the most recent arrangement without showing selector
-	private async getContextForFileWithSelection(file: TFile, forceLatest: boolean = false): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
+	private async getContextForFileWithSelection(file: TFile, forceLatest = false): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
 		// Canvas files store context directly in their JSON (single arrangement)
 		if (file.extension === 'canvas') {
 			return { context: await getContextFromCanvas(this.app, file), cancelled: false };
@@ -1525,9 +1520,7 @@ export default class PerspectaPlugin extends Plugin {
 			const uid = getUidFromCache(this.app, file);
 			if (uid) {
 				// Initialize store if needed
-				if (!this.externalStore['initialized']) {
-					await this.externalStore.initialize();
-				}
+				await this.externalStore.ensureInitialized();
 
 				const arrangements = this.externalStore.getAll(uid);
 
@@ -1579,9 +1572,7 @@ export default class PerspectaPlugin extends Plugin {
 			const uid = getUidFromCache(this.app, file);
 			if (uid) {
 				// Initialize store if needed
-				if (!this.externalStore['initialized']) {
-					await this.externalStore.initialize();
-				}
+				await this.externalStore.ensureInitialized();
 				const context = this.externalStore.get(uid);
 				if (context) return context;
 			}
@@ -2289,7 +2280,7 @@ export default class PerspectaPlugin extends Plugin {
 		sourceScreen?: ScreenInfo,
 		tiledPosition?: { x: number; y: number; width: number; height: number }
 	) {
-		const popoutStart = performance.now();
+		const _popoutStart = performance.now();
 
 		// Handle proxy windows specially
 		if (state.isProxy && this.settings.enableProxyWindows) {
@@ -2968,7 +2959,7 @@ export default class PerspectaPlugin extends Plugin {
 		setTimeout(() => overlay.parentNode && overlay.remove(), duration * 1000 + 500);
 	}
 
-	private showNoticeInWindow(win: Window | null, message: string, timeout: number = 4000) {
+	private showNoticeInWindow(win: Window | null, message: string, timeout = 4000) {
 		if (win && win !== window) {
 			// Don't show notices in proxy windows
 			if (win.document.body.classList.contains('perspecta-proxy-window')) {
@@ -3026,7 +3017,7 @@ export default class PerspectaPlugin extends Plugin {
 		modal.className = 'perspecta-debug-modal perspecta-details-modal';
 
 		// Header
-		const h3 = modal.createEl('h3', { text: 'Context Details' });
+		const _h3 = modal.createEl('h3', { text: 'Context Details' });
 
 		const header = modal.createDiv({ cls: 'perspecta-details-header' });
 		header.createSpan({ cls: 'perspecta-details-file', text: fileName });
@@ -3213,7 +3204,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Check frontmatter
-		const hasContextFrontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] != null;
+		const hasContextFrontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] !== null;
 
 		// Check external storage
 		let hasContextExternal = false;
@@ -3302,9 +3293,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// If using external storage, also check for files whose UIDs have saved contexts
 		if (this.settings.storageMode === 'external') {
-			if (!this.externalStore['initialized']) {
-				await this.externalStore.initialize();
-			}
+			await this.externalStore.ensureInitialized();
 			const uidsWithContext = this.externalStore.getAllUids();
 			for (const file of mdFiles) {
 				const uid = getUidFromCache(this.app, file);
@@ -3316,7 +3305,42 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		this.registerEvent(this.app.workspace.on('layout-change', () => this.debouncedRefreshIndicators()));
-		setTimeout(() => this.refreshFileExplorerIndicators(), 500);
+		
+		// Incremental updates: listen for metadata changes instead of full rescans
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				if (this.isClosingWindow || this.isUnloading) return;
+				// Only update if it's a file type we track
+				if (['md', 'canvas', 'base'].includes(file.extension)) {
+					this.updateFileExplorerIndicator(file);
+				}
+			})
+		);
+
+		// Handle file renames - update the path in our tracking set
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				if (this.isClosingWindow || this.isUnloading) return;
+				if (this.filesWithContext.has(oldPath)) {
+					this.filesWithContext.delete(oldPath);
+					this.filesWithContext.add(file.path);
+					this.debouncedRefreshIndicators();
+				}
+			})
+		);
+
+		// Handle file deletions - remove from tracking set
+		this.registerEvent(
+			this.app.vault.on('delete', (file) => {
+				if (this.isClosingWindow || this.isUnloading) return;
+				if (this.filesWithContext.has(file.path)) {
+					this.filesWithContext.delete(file.path);
+					this.debouncedRefreshIndicators();
+				}
+			})
+		);
+
+		this.safeTimeout(() => this.refreshFileExplorerIndicators(), 500);
 		PerfTimer.end('setupFileExplorerIndicators');
 	}
 
@@ -3331,7 +3355,7 @@ export default class PerspectaPlugin extends Plugin {
 			hasContext = await baseHasContext(this.app, file);
 		} else {
 			// Markdown files: check frontmatter
-			hasContext = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] != null;
+			hasContext = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] !== null;
 
 			// Also check external storage if enabled
 			if (!hasContext && this.settings.storageMode === 'external') {

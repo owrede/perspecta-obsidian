@@ -5,6 +5,7 @@
 
 import { App, TFile } from 'obsidian';
 import { WindowArrangement, FRONTMATTER_KEY } from '../types';
+import { encodeBase64, decodeBase64 } from '../utils/base64';
 
 // Get context from markdown frontmatter
 export function getContextFromFrontmatter(app: App, file: TFile): WindowArrangement | null {
@@ -17,7 +18,7 @@ export function getContextFromFrontmatter(app: App, file: TFile): WindowArrangem
 
 	try {
 		// Decode from base64
-		const json = decodeURIComponent(escape(atob(rawValue)));
+		const json = decodeBase64(rawValue);
 		return JSON.parse(json) as WindowArrangement;
 	} catch {
 		return null;
@@ -28,13 +29,13 @@ export function getContextFromFrontmatter(app: App, file: TFile): WindowArrangem
 export function markdownHasContext(app: App, file: TFile): boolean {
 	if (file.extension !== 'md') return false;
 	const cache = app.metadataCache.getFileCache(file);
-	return cache?.frontmatter?.[FRONTMATTER_KEY] != null;
+	return cache?.frontmatter?.[FRONTMATTER_KEY] !== null;
 }
 
 // Encode arrangement as base64 frontmatter value
 export function encodeArrangement(arrangement: WindowArrangement): string {
 	const json = JSON.stringify(arrangement);
-	const base64 = btoa(unescape(encodeURIComponent(json)));
+	const base64 = encodeBase64(json);
 	return `${FRONTMATTER_KEY}: "${base64}"`;
 }
 
@@ -48,7 +49,7 @@ export async function saveContextToMarkdown(app: App, file: TFile, context: Wind
 
 	// Encode context as base64
 	const json = JSON.stringify(context);
-	const base64 = btoa(unescape(encodeURIComponent(json)));
+	const base64 = encodeBase64(json);
 	const contextLine = `${FRONTMATTER_KEY}: "${base64}"`;
 
 	let newContent: string;

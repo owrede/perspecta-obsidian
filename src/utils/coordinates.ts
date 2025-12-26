@@ -131,7 +131,7 @@ export function needsTiling(sourceScreen?: ScreenInfo): boolean {
 // Calculate tiled window positions for when aspect ratios differ significantly
 export function calculateTiledLayout(
 	windowCount: number,
-	mainWindowState: WindowStateV2
+	_mainWindowState: WindowStateV2
 ): { x: number; y: number; width: number; height: number }[] {
 	const screen = getPhysicalScreen();
 	const results: { x: number; y: number; width: number; height: number }[] = [];

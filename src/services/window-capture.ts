@@ -25,7 +25,6 @@
 import { App, TFile, WorkspaceLeaf } from 'obsidian';
 import {
 	TabState,
-	SplitState,
 	TabGroupState,
 	WorkspaceNodeState,
 	WindowStateV2,
@@ -78,7 +77,7 @@ export class WindowCaptureService {
 	private app: App;
 	private focusedWindowIndex: number;
 
-	constructor(app: App, focusedWindowIndex: number = -1) {
+	constructor(app: App, focusedWindowIndex = -1) {
 		this.app = app;
 		this.focusedWindowIndex = focusedWindowIndex;
 	}
@@ -475,6 +474,6 @@ export class WindowCaptureService {
  * @param focusedWindowIndex - Initial focused window index
  * @returns WindowCaptureService instance
  */
-export function createWindowCaptureService(app: App, focusedWindowIndex: number = -1): WindowCaptureService {
+export function createWindowCaptureService(app: App, focusedWindowIndex = -1): WindowCaptureService {
 	return new WindowCaptureService(app, focusedWindowIndex);
 }

@@ -5,9 +5,9 @@
 export class PerfTimer {
 	private static enabled = false;
 	private static times: { label: string; elapsed: number; fromStart: number }[] = [];
-	private static start: number = 0;
-	private static lastMark: number = 0;
-	private static currentOperation: string = '';
+	private static start = 0;
+	private static lastMark = 0;
+	private static currentOperation = '';
 
 	static begin(operation: string) {
 		if (!this.enabled) return;

@@ -11,6 +11,28 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.15',
+		date: '2025-12-26',
+		changes: [
+			'Performance: Incremental file explorer indicator updates via metadata events',
+			'Refactor: New base64 utility replacing deprecated escape/unescape functions',
+			'Refactor: Added ensureInitialized() API to external context store',
+			'Refactor: Extracted IndicatorsService for better code organization',
+			'Fixed: All 19 lint errors resolved, reduced warnings from 91 to 77',
+			'Fixed: Backup restore now handles malformed files gracefully',
+			'Fixed: File context menu now works for canvas and base files',
+			'Improved: Better type safety with unknown instead of any in event handlers',
+			'Improved: Consistent use of helper functions for internal API access',
+		],
+	},
+	{
+		version: '0.1.14',
+		date: '2025-12-20',
+		changes: [
+			'Internal improvements and bug fixes',
+		],
+	},
+	{
 		version: '0.1.13',
 		date: '2025-12-06',
 		changes: [

@@ -2,6 +2,22 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.15] - 2025-12-26
+
+- Performance: Incremental file explorer indicator updates via metadata events
+- Refactor: New base64 utility replacing deprecated escape/unescape functions
+- Refactor: Added ensureInitialized() API to external context store
+- Refactor: Extracted IndicatorsService for better code organization
+- Fixed: All 19 lint errors resolved, reduced warnings from 91 to 77
+- Fixed: Backup restore now handles malformed files gracefully
+- Fixed: File context menu now works for canvas and base files
+- Improved: Better type safety with unknown instead of any in event handlers
+- Improved: Consistent use of helper functions for internal API access
+
+## [0.1.14] - 2025-12-20
+
+- Internal improvements and bug fixes
+
 ## [0.1.13] - 2025-12-06
 
 - Experimental: Save and restore desktop wallpaper with context

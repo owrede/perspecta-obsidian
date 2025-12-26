@@ -5,6 +5,7 @@
 
 import { App, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import { WindowArrangement, BaseData } from '../types';
+import { encodeBase64, decodeBase64 } from '../utils/base64';
 
 // Get UID from a base file's YAML
 export async function getUidFromBase(app: App, file: TFile): Promise<string | undefined> {
@@ -28,7 +29,7 @@ export async function getContextFromBase(app: App, file: TFile): Promise<WindowA
 		if (!encoded) return null;
 
 		// Decode from base64
-		const json = decodeURIComponent(escape(atob(encoded)));
+		const json = decodeBase64(encoded);
 		return JSON.parse(json) as WindowArrangement;
 	} catch {
 		return null;
@@ -66,7 +67,7 @@ export async function saveContextToBase(app: App, file: TFile, context: WindowAr
 
 		// Encode as base64 JSON blob (same format as markdown frontmatter)
 		const json = JSON.stringify(context);
-		const base64 = btoa(unescape(encodeURIComponent(json)));
+		const base64 = encodeBase64(json);
 		data.perspecta.context = base64;
 
 		await app.vault.modify(file, stringifyYaml(data));

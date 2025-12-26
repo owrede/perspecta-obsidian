@@ -118,7 +118,7 @@ export class ExternalContextStore {
 	}
 
 	// Add a new arrangement, respecting the max limit
-	set(uid: string, context: WindowArrangementV2, maxArrangements: number = 1): void {
+	set(uid: string, context: WindowArrangementV2, maxArrangements = 1): void {
 		let collection = this.cache.get(uid);
 
 		if (!collection) {
@@ -233,5 +233,22 @@ export class ExternalContextStore {
 			clearTimeout(this.saveTimeout);
 		}
 		await this.flushDirty();
+	}
+
+	/**
+	 * Check if the store has been initialized.
+	 */
+	isInitialized(): boolean {
+		return this.initialized;
+	}
+
+	/**
+	 * Ensure the store is initialized before use.
+	 * Safe to call multiple times - will only initialize once.
+	 */
+	async ensureInitialized(): Promise<void> {
+		if (!this.initialized) {
+			await this.initialize();
+		}
 	}
 }

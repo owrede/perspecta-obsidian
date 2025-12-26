@@ -52,7 +52,7 @@ import {
 	needsTiling,
 	calculateTiledLayout
 } from '../utils/coordinates';
-import { resolveFile, FileResolutionResult } from '../utils/file-resolver';
+import { resolveFile } from '../utils/file-resolver';
 import { PerfTimer } from '../utils/perf-timer';
 
 /**
@@ -528,7 +528,7 @@ export class WindowRestoreService {
 
 		if (!state.children.length) return existingLeaf;
 
-		let firstLeaf = existingLeaf;
+		const firstLeaf = existingLeaf;
 
 		// Open first file
 		const firstTab = this.getFirstTabFromNode(state);
@@ -598,7 +598,7 @@ export class WindowRestoreService {
 		leaf: WorkspaceLeaf,
 		tabs: TabState[],
 		startIndex: number,
-		options: RestoreOptions = {}
+		_options: RestoreOptions = {}
 	): Promise<void> {
 		const container = (leaf as unknown as { parent: WorkspaceTabContainer }).parent;
 		if (!container) return;
@@ -999,7 +999,7 @@ export class WindowRestoreService {
 	/**
 	 * Activates appropriate leaf in window.
 	 */
-	activateWindowLeaf(win: Window, arrangement: WindowArrangementV2): void {
+	activateWindowLeaf(win: Window, _arrangement: WindowArrangementV2): void {
 		this.app.workspace.iterateAllLeaves(leaf => {
 			if (leaf.view?.containerEl?.win === win) {
 				this.app.workspace.setActiveLeaf(leaf, { focus: true });

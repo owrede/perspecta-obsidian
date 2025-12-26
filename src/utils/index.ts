@@ -16,3 +16,4 @@ export {
 	addUidToFile,
 	cleanupOldUid
 } from './uid';
+export { encodeBase64, decodeBase64 } from './base64';

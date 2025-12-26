@@ -78,6 +78,7 @@ const SHELL_METACHARACTERS = /[`$\\!"';&|<>(){}[\]*?~#]/;
 const DANGEROUS_PATH_PATTERNS = [
 	/\0/,              // Null byte injection
 	/\.\.[/\\]/,       // Directory traversal (../ or ..\)
+	// eslint-disable-next-line no-control-regex
 	/[\x00-\x1F]/,     // Control characters (except in file path segments)
 ];
 

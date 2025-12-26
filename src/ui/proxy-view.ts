@@ -17,7 +17,7 @@
  * - Platform for OS detection
  */
 
-import { ItemView, WorkspaceLeaf, TFile, setIcon, Platform, MarkdownRenderer, Component, ViewStateResult } from 'obsidian';
+import { ItemView, WorkspaceLeaf, TFile, setIcon, MarkdownRenderer, Component, ViewStateResult } from 'obsidian';
 
 export const PROXY_VIEW_TYPE = 'perspecta-proxy-view';
 
@@ -427,7 +427,7 @@ export class ProxyNoteView extends ItemView {
 		return app.plugins?.plugins?.['perspecta-obsidian'] as { settings?: { proxyPreviewScale?: number } } ?? null;
 	}
 
-	private async restoreArrangement(forceLatest: boolean = true): Promise<void> {
+	private async restoreArrangement(forceLatest = true): Promise<void> {
 		if (!this.state.arrangementUid || !this.file) return;
 
 		// Store references before closing
