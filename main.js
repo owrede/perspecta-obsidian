@@ -32,6 +32,18 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.16",
+    date: "2025-12-27",
+    changes: [
+      "Fixed: Add defensive geometry validation to prevent freezes on Windows",
+      "Fixed: Validate all geometry before window.moveTo/resizeTo operations",
+      "Fixed: Guard against NaN, negative, zero, and extremely large coordinate values",
+      "Fixed: Limit maximum popouts to 20 to prevent runaway window creation",
+      "Fixed: Add try/catch around openPopoutLeaf and openFile calls",
+      "Improved: Log warnings for invalid data to aid debugging"
+    ]
+  },
+  {
     version: "0.1.15",
     date: "2025-12-26",
     changes: [
@@ -454,6 +466,27 @@ var Logger = {
 };
 
 // src/utils/coordinates.ts
+var MIN_WINDOW_SIZE = 100;
+var MAX_WINDOW_SIZE = 1e4;
+var MAX_COORDINATE = 2e4;
+var MIN_COORDINATE = -1e4;
+function isValidNumber(n) {
+  return typeof n === "number" && Number.isFinite(n) && !Number.isNaN(n);
+}
+function sanitizeGeometry(geometry, defaults = { x: 100, y: 100, width: 800, height: 600 }) {
+  if (!geometry)
+    return defaults;
+  let { x, y, width, height } = geometry;
+  x = isValidNumber(x) ? x : defaults.x;
+  y = isValidNumber(y) ? y : defaults.y;
+  width = isValidNumber(width) ? width : defaults.width;
+  height = isValidNumber(height) ? height : defaults.height;
+  width = Math.max(MIN_WINDOW_SIZE, Math.min(MAX_WINDOW_SIZE, width));
+  height = Math.max(MIN_WINDOW_SIZE, Math.min(MAX_WINDOW_SIZE, height));
+  x = Math.max(MIN_COORDINATE, Math.min(MAX_COORDINATE, x));
+  y = Math.max(MIN_COORDINATE, Math.min(MAX_COORDINATE, y));
+  return { x, y, width, height };
+}
 var VIRTUAL_SCREEN = {
   width: 1728,
   height: 1117
@@ -494,13 +527,20 @@ function physicalToVirtual(physical) {
   return result;
 }
 function virtualToPhysical(virtual, sourceScreen) {
+  const safeVirtual = sanitizeGeometry(virtual);
   const screen = getPhysicalScreen();
+  if (screen.width <= 0 || screen.height <= 0) {
+    console.warn("[Perspecta] Invalid screen dimensions, using defaults");
+    return { x: 100, y: 100, width: 800, height: 600 };
+  }
   const scaleX = screen.width / VIRTUAL_SCREEN.width;
   const scaleY = screen.height / VIRTUAL_SCREEN.height;
-  let x = Math.round(virtual.x * scaleX) + screen.x;
-  let y = Math.round(virtual.y * scaleY) + screen.y;
-  let width = Math.round(virtual.width * scaleX);
-  let height = Math.round(virtual.height * scaleY);
+  let x = Math.round(safeVirtual.x * scaleX) + screen.x;
+  let y = Math.round(safeVirtual.y * scaleY) + screen.y;
+  let width = Math.round(safeVirtual.width * scaleX);
+  let height = Math.round(safeVirtual.height * scaleY);
+  width = Math.max(MIN_WINDOW_SIZE, width);
+  height = Math.max(MIN_WINDOW_SIZE, height);
   width = Math.min(width, screen.width);
   height = Math.min(height, screen.height);
   x = Math.max(screen.x, Math.min(x, screen.x + screen.width - width));
@@ -508,7 +548,7 @@ function virtualToPhysical(virtual, sourceScreen) {
   const result = { x, y, width, height };
   if (coordinateDebug) {
     console.log(`[Perspecta] virtualToPhysical:`, {
-      virtual,
+      virtual: safeVirtual,
       screen,
       virtualRef: VIRTUAL_SCREEN,
       sourceScreen,
@@ -1652,7 +1692,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2896,7 +2936,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = new Date();
+    const now = /* @__PURE__ */ new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -2923,7 +2963,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }

@@ -11,6 +11,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.16',
+		date: '2025-12-27',
+		changes: [
+			'Fixed: Add defensive geometry validation to prevent freezes on Windows',
+			'Fixed: Validate all geometry before window.moveTo/resizeTo operations',
+			'Fixed: Guard against NaN, negative, zero, and extremely large coordinate values',
+			'Fixed: Limit maximum popouts to 20 to prevent runaway window creation',
+			'Fixed: Add try/catch around openPopoutLeaf and openFile calls',
+			'Improved: Log warnings for invalid data to aid debugging',
+		],
+	},
+	{
 		version: '0.1.15',
 		date: '2025-12-26',
 		changes: [

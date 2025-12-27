@@ -2,6 +2,15 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.16] - 2025-12-27
+
+- Fixed: Add defensive geometry validation to prevent freezes on Windows
+- Fixed: Validate all geometry before window.moveTo/resizeTo operations
+- Fixed: Guard against NaN, negative, zero, and extremely large coordinate values
+- Fixed: Limit maximum popouts to 20 to prevent runaway window creation
+- Fixed: Add try/catch around openPopoutLeaf and openFile calls
+- Improved: Log warnings for invalid data to aid debugging
+
 ## [0.1.15] - 2025-12-26
 
 - Performance: Incremental file explorer indicator updates via metadata events

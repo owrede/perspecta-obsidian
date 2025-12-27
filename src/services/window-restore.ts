@@ -50,7 +50,9 @@ import {
 	virtualToPhysical,
 	getPhysicalScreen,
 	needsTiling,
-	calculateTiledLayout
+	calculateTiledLayout,
+	validateGeometry,
+	sanitizeGeometry
 } from '../utils/coordinates';
 import { resolveFile } from '../utils/file-resolver';
 import { PerfTimer } from '../utils/perf-timer';
@@ -175,11 +177,38 @@ export class WindowRestoreService {
 		this.pathCorrections.clear();
 		this.pendingTabActivations = [];
 
+		// Maximum number of popouts to prevent runaway window creation
+		const MAX_POPOUTS = 20;
+
 		try {
 			PerfTimer.mark('applyArrangement:start');
 
 			const v2 = this.normalizeToV2(arrangement);
 			PerfTimer.mark('normalizeToV2');
+
+			// Validate arrangement structure
+			if (!v2 || typeof v2 !== 'object') {
+				console.error('[Perspecta] Invalid arrangement: not an object');
+				new Notice('Cannot restore: invalid arrangement data', 4000);
+				return null;
+			}
+
+			if (!v2.main || typeof v2.main !== 'object') {
+				console.error('[Perspecta] Invalid arrangement: missing main window');
+				new Notice('Cannot restore: missing main window data', 4000);
+				return null;
+			}
+
+			// Validate and limit popouts
+			if (!Array.isArray(v2.popouts)) {
+				console.warn('[Perspecta] Invalid popouts array, using empty');
+				v2.popouts = [];
+			}
+
+			if (v2.popouts.length > MAX_POPOUTS) {
+				console.warn(`[Perspecta] Too many popouts (${v2.popouts.length}), limiting to ${MAX_POPOUTS}`);
+				v2.popouts = v2.popouts.slice(0, MAX_POPOUTS);
+			}
 
 			// Check if we need to tile due to aspect ratio mismatch
 			const useTiling = needsTiling(v2.sourceScreen);
@@ -691,15 +720,33 @@ export class WindowRestoreService {
 	): Promise<void> {
 		const opts = { ...DEFAULT_OPTIONS, ...options };
 
-		// Calculate target geometry
+		// Calculate target geometry with validation
 		let geometry: { x: number; y: number; width: number; height: number };
+		const defaultGeometry = { x: 100, y: 100, width: 800, height: 600 };
 
 		if (tiledPosition) {
-			geometry = tiledPosition;
+			// Validate tiled position
+			const validated = validateGeometry(tiledPosition);
+			geometry = validated ?? defaultGeometry;
 		} else if (state.x !== undefined && state.y !== undefined && state.width !== undefined && state.height !== undefined) {
-			geometry = virtualToPhysical({ x: state.x, y: state.y, width: state.width, height: state.height }, sourceScreen);
+			// Validate virtual coordinates before conversion
+			const virtualGeometry = { x: state.x, y: state.y, width: state.width, height: state.height };
+			const validated = validateGeometry(virtualGeometry);
+			if (!validated) {
+				console.warn('[Perspecta] Skipping popout with invalid geometry:', virtualGeometry);
+				return;
+			}
+			geometry = virtualToPhysical(validated, sourceScreen);
 		} else {
-			geometry = { x: 100, y: 100, width: 800, height: 600 };
+			geometry = defaultGeometry;
+		}
+
+		// Final validation of computed geometry
+		const safeGeometry = sanitizeGeometry(geometry, defaultGeometry);
+		
+		// Log if geometry was corrected
+		if (safeGeometry.width !== geometry.width || safeGeometry.height !== geometry.height) {
+			console.warn('[Perspecta] Geometry was sanitized:', { original: geometry, sanitized: safeGeometry });
 		}
 
 		// Get first file to open
@@ -709,22 +756,34 @@ export class WindowRestoreService {
 		const { file } = resolveFile(this.app, firstTab);
 		if (!file) return;
 
-		// Create popout
-		const popoutLeaf = this.app.workspace.openPopoutLeaf({
-			size: { width: geometry.width, height: geometry.height }
-		});
+		// Create popout with validated size
+		let popoutLeaf;
+		try {
+			popoutLeaf = this.app.workspace.openPopoutLeaf({
+				size: { width: safeGeometry.width, height: safeGeometry.height }
+			});
+		} catch (e) {
+			console.error('[Perspecta] Failed to create popout window:', e);
+			return;
+		}
 
-		await popoutLeaf.openFile(file);
+		try {
+			await popoutLeaf.openFile(file);
+		} catch (e) {
+			console.error('[Perspecta] Failed to open file in popout:', e);
+			return;
+		}
+		
 		await new Promise(resolve => setTimeout(resolve, 100));
 
-		// Position window
+		// Position window with validated coordinates
 		const win = popoutLeaf.view?.containerEl?.win;
 		if (win && win !== window) {
 			try {
-				win.moveTo(geometry.x, geometry.y);
-				win.resizeTo(geometry.width, geometry.height);
-			} catch {
-				// Window positioning may fail
+				win.moveTo(safeGeometry.x, safeGeometry.y);
+				win.resizeTo(safeGeometry.width, safeGeometry.height);
+			} catch (e) {
+				console.warn('[Perspecta] Window positioning failed:', e);
 			}
 		}
 
@@ -749,16 +808,24 @@ export class WindowRestoreService {
 			return;
 		}
 
-		const physical = virtualToPhysical(
-			{ x: state.x, y: state.y, width: state.width, height: state.height },
-			sourceScreen
-		);
+		// Validate virtual coordinates first
+		const virtualGeometry = { x: state.x, y: state.y, width: state.width, height: state.height };
+		const validated = validateGeometry(virtualGeometry);
+		if (!validated) {
+			console.warn('[Perspecta] Skipping main window geometry restore due to invalid values:', virtualGeometry);
+			return;
+		}
+
+		const physical = virtualToPhysical(validated, sourceScreen);
+		
+		// Final validation of physical coordinates
+		const safePhysical = sanitizeGeometry(physical);
 
 		try {
-			win.moveTo(physical.x, physical.y);
-			win.resizeTo(physical.width, physical.height);
-		} catch {
-			// Window operations may fail
+			win.moveTo(safePhysical.x, safePhysical.y);
+			win.resizeTo(safePhysical.width, safePhysical.height);
+		} catch (e) {
+			console.warn('[Perspecta] Main window geometry restore failed:', e);
 		}
 	}
 
@@ -766,11 +833,20 @@ export class WindowRestoreService {
 	 * Restores window to exact physical coordinates.
 	 */
 	restoreWindowGeometryDirect(win: Window, geometry: { x: number; y: number; width: number; height: number }): void {
+		// Validate geometry before applying
+		const validated = validateGeometry(geometry);
+		if (!validated) {
+			console.warn('[Perspecta] Skipping direct geometry restore due to invalid values:', geometry);
+			return;
+		}
+		
+		const safeGeometry = sanitizeGeometry(validated);
+		
 		try {
-			win.moveTo(geometry.x, geometry.y);
-			win.resizeTo(geometry.width, geometry.height);
-		} catch {
-			// Window operations may fail
+			win.moveTo(safeGeometry.x, safeGeometry.y);
+			win.resizeTo(safeGeometry.width, safeGeometry.height);
+		} catch (e) {
+			console.warn('[Perspecta] Direct window geometry restore failed:', e);
 		}
 	}
 

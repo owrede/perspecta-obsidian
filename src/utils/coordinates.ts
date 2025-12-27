@@ -7,6 +7,90 @@
 
 import { ScreenInfo, WindowStateV2 } from '../types';
 
+// ============================================================================
+// Geometry Validation
+// ============================================================================
+
+/** Minimum valid window dimension (width or height) */
+const MIN_WINDOW_SIZE = 100;
+/** Maximum valid window dimension (prevents overflow) */
+const MAX_WINDOW_SIZE = 10000;
+/** Maximum valid coordinate (prevents off-screen placement) */
+const MAX_COORDINATE = 20000;
+/** Minimum valid coordinate (allows for multi-monitor with negative coords) */
+const MIN_COORDINATE = -10000;
+
+/**
+ * Validates that a number is finite and within reasonable bounds.
+ */
+function isValidNumber(n: unknown): n is number {
+	return typeof n === 'number' && Number.isFinite(n) && !Number.isNaN(n);
+}
+
+/**
+ * Validates geometry values and returns sanitized values or null if invalid.
+ * This prevents infinite loops and freezes from corrupted data.
+ */
+export function validateGeometry(
+	geometry: { x?: number; y?: number; width?: number; height?: number } | null | undefined
+): { x: number; y: number; width: number; height: number } | null {
+	if (!geometry) return null;
+	
+	const { x, y, width, height } = geometry;
+	
+	// Check all values are valid numbers
+	if (!isValidNumber(x) || !isValidNumber(y) || !isValidNumber(width) || !isValidNumber(height)) {
+		console.warn('[Perspecta] Invalid geometry: non-finite values detected', geometry);
+		return null;
+	}
+	
+	// Check dimensions are reasonable
+	if (width < MIN_WINDOW_SIZE || height < MIN_WINDOW_SIZE) {
+		console.warn('[Perspecta] Invalid geometry: dimensions too small', geometry);
+		return null;
+	}
+	
+	if (width > MAX_WINDOW_SIZE || height > MAX_WINDOW_SIZE) {
+		console.warn('[Perspecta] Invalid geometry: dimensions too large', geometry);
+		return null;
+	}
+	
+	// Check coordinates are reasonable
+	if (x < MIN_COORDINATE || x > MAX_COORDINATE || y < MIN_COORDINATE || y > MAX_COORDINATE) {
+		console.warn('[Perspecta] Invalid geometry: coordinates out of bounds', geometry);
+		return null;
+	}
+	
+	return { x, y, width, height };
+}
+
+/**
+ * Sanitizes geometry by clamping values to valid ranges.
+ * Use this when you want to proceed with best-effort values rather than failing.
+ */
+export function sanitizeGeometry(
+	geometry: { x?: number; y?: number; width?: number; height?: number } | null | undefined,
+	defaults: { x: number; y: number; width: number; height: number } = { x: 100, y: 100, width: 800, height: 600 }
+): { x: number; y: number; width: number; height: number } {
+	if (!geometry) return defaults;
+	
+	let { x, y, width, height } = geometry;
+	
+	// Replace invalid numbers with defaults
+	x = isValidNumber(x) ? x : defaults.x;
+	y = isValidNumber(y) ? y : defaults.y;
+	width = isValidNumber(width) ? width : defaults.width;
+	height = isValidNumber(height) ? height : defaults.height;
+	
+	// Clamp to valid ranges
+	width = Math.max(MIN_WINDOW_SIZE, Math.min(MAX_WINDOW_SIZE, width));
+	height = Math.max(MIN_WINDOW_SIZE, Math.min(MAX_WINDOW_SIZE, height));
+	x = Math.max(MIN_COORDINATE, Math.min(MAX_COORDINATE, x));
+	y = Math.max(MIN_COORDINATE, Math.min(MAX_COORDINATE, y));
+	
+	return { x, y, width, height };
+}
+
 /**
  * Extended Screen interface with non-standard but widely supported properties.
  * availLeft and availTop are supported in Chrome, Safari, Firefox (with prefix),
@@ -81,15 +165,29 @@ export function virtualToPhysical(
 	virtual: { x: number; y: number; width: number; height: number },
 	sourceScreen?: ScreenInfo
 ): { x: number; y: number; width: number; height: number } {
+	// Validate input - use sanitized defaults if invalid
+	const safeVirtual = sanitizeGeometry(virtual);
+	
 	const screen = getPhysicalScreen();
+	
+	// Guard against invalid screen values (could cause division issues)
+	if (screen.width <= 0 || screen.height <= 0) {
+		console.warn('[Perspecta] Invalid screen dimensions, using defaults');
+		return { x: 100, y: 100, width: 800, height: 600 };
+	}
+	
 	const scaleX = screen.width / VIRTUAL_SCREEN.width;
 	const scaleY = screen.height / VIRTUAL_SCREEN.height;
 
-	let x = Math.round(virtual.x * scaleX) + screen.x;
-	let y = Math.round(virtual.y * scaleY) + screen.y;
-	let width = Math.round(virtual.width * scaleX);
-	let height = Math.round(virtual.height * scaleY);
+	let x = Math.round(safeVirtual.x * scaleX) + screen.x;
+	let y = Math.round(safeVirtual.y * scaleY) + screen.y;
+	let width = Math.round(safeVirtual.width * scaleX);
+	let height = Math.round(safeVirtual.height * scaleY);
 
+	// Ensure minimum window size
+	width = Math.max(MIN_WINDOW_SIZE, width);
+	height = Math.max(MIN_WINDOW_SIZE, height);
+	
 	// Ensure window fits within screen bounds
 	width = Math.min(width, screen.width);
 	height = Math.min(height, screen.height);
@@ -100,7 +198,7 @@ export function virtualToPhysical(
 
 	if (coordinateDebug) {
 		console.log(`[Perspecta] virtualToPhysical:`, {
-			virtual,
+			virtual: safeVirtual,
 			screen,
 			virtualRef: VIRTUAL_SCREEN,
 			sourceScreen,
