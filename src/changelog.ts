@@ -11,6 +11,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.20',
+		date: '2025-12-29',
+		changes: [
+			'Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)',
+		],
+	},
+	{
 		version: '0.1.19',
 		date: '2025-12-28',
 		changes: [

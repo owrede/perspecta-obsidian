@@ -2,6 +2,10 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.20] - 2025-12-29
+
+- Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)
+
 ## [0.1.19] - 2025-12-28
 
 - New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context

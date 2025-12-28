@@ -1,7 +1,7 @@
 {
 	"id": "perspecta-obsidian",
 	"name": "Perspecta",
-	"version": "0.1.19",
+	"version": "0.1.20",
 	"minAppVersion": "1.4.0",
 	"description": "Context-switching plugin that saves and restores window arrangements for knowledge work",
 	"author": "Perspecta Contributors",

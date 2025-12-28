@@ -309,8 +309,9 @@ export default class PerspectaPlugin extends Plugin {
 			
 			if (this.filesWithContext.has(file.path)) {
 				// Small delay to let Obsidian finish its navigation, then restore
+				// Use forceLatest=true to skip the arrangement selector modal
 				setTimeout(() => {
-					this.restoreContext(file);
+					this.restoreContext(file, true);
 				}, 50);
 			}
 			this.shiftCmdHeld = false;

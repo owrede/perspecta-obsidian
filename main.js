@@ -32,6 +32,13 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.20",
+    date: "2025-12-29",
+    changes: [
+      "Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)"
+    ]
+  },
+  {
     version: "0.1.19",
     date: "2025-12-28",
     changes: [
@@ -2539,7 +2546,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
         return;
       if (this.filesWithContext.has(file.path)) {
         setTimeout(() => {
-          this.restoreContext(file);
+          this.restoreContext(file, true);
         }, 50);
       }
       this.shiftCmdHeld = false;
