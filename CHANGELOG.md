@@ -2,6 +2,13 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.17] - 2025-12-27
+
+- New: Backup restore modal with Merge or Overwrite options
+- New: Merge mode combines backup with existing, keeping newest arrangements on conflict
+- New: Info box in Storage settings about Obsidian Sync configuration
+- Improved: Documentation for syncing arrangements across devices
+
 ## [0.1.16] - 2025-12-27
 
 - Fixed: Add defensive geometry validation to prevent freezes on Windows

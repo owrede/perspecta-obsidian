@@ -32,6 +32,16 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.17",
+    date: "2025-12-27",
+    changes: [
+      "New: Backup restore modal with Merge or Overwrite options",
+      "New: Merge mode combines backup with existing, keeping newest arrangements on conflict",
+      "New: Info box in Storage settings about Obsidian Sync configuration",
+      "Improved: Documentation for syncing arrangements across devices"
+    ]
+  },
+  {
     version: "0.1.16",
     date: "2025-12-27",
     changes: [
@@ -1221,7 +1231,15 @@ var ExternalContextStore = class {
     const collection = this.cache.get(uid);
     if (!collection || collection.arrangements.length === 0)
       return null;
-    return collection.arrangements[collection.arrangements.length - 1].arrangement;
+    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+  }
+  // Get the latest arrangement only
+  getLatest(uid) {
+    const collection = this.cache.get(uid);
+    if (!collection || collection.arrangements.length === 0)
+      return null;
+    const sorted = [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+    return sorted[0].arrangement;
   }
   // Get all arrangements for a UID
   getAll(uid) {
@@ -1284,6 +1302,24 @@ var ExternalContextStore = class {
     } catch (e) {
       console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
     }
+  }
+  // Clear all arrangements for a specific UID (without deleting the file yet)
+  clearUid(uid) {
+    const collection = this.cache.get(uid);
+    if (collection) {
+      collection.arrangements = [];
+      this.cache.set(uid, collection);
+      this.dirty.add(uid);
+    }
+  }
+  // Clear all arrangements (for overwrite restore mode)
+  async clearAll() {
+    const uids = Array.from(this.cache.keys());
+    for (const uid of uids) {
+      await this.delete(uid);
+    }
+    this.cache.clear();
+    this.dirty.clear();
   }
   getAllUids() {
     return Array.from(this.cache.keys());
@@ -1813,6 +1849,74 @@ function showArrangementSelector(arrangements, fileName, onDelete, targetWindow 
     });
     doc.body.appendChild(overlay);
     doc.body.appendChild(modal);
+  });
+}
+function showRestoreModeSelector(backupName, targetWindow = window) {
+  return new Promise((resolve) => {
+    const doc = targetWindow.document;
+    const overlay = doc.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = doc.createElement("div");
+    modal.className = "perspecta-restore-modal";
+    const title = modal.createDiv({ cls: "perspecta-modal-title" });
+    title.setText("Restore from Backup");
+    const subtitle = modal.createDiv({ cls: "perspecta-modal-subtitle" });
+    subtitle.setText(`Restoring: ${backupName}`);
+    const options = modal.createDiv({ cls: "perspecta-restore-options" });
+    let selectedMode = "merge";
+    const mergeOption = options.createDiv({ cls: "perspecta-restore-option is-selected" });
+    const mergeRadio = mergeOption.createEl("input", { type: "radio", attr: { name: "restore-mode", checked: true } });
+    const mergeContent = mergeOption.createDiv({ cls: "perspecta-restore-option-content" });
+    mergeContent.createDiv({ cls: "perspecta-restore-option-title", text: "Merge with existing" });
+    mergeContent.createDiv({
+      cls: "perspecta-restore-option-desc",
+      text: "Combine backup data with existing arrangements. When conflicts occur (same note, exceeds max arrangements), only the newest arrangements are kept."
+    });
+    const overwriteOption = options.createDiv({ cls: "perspecta-restore-option" });
+    const overwriteRadio = overwriteOption.createEl("input", { type: "radio", attr: { name: "restore-mode" } });
+    const overwriteContent = overwriteOption.createDiv({ cls: "perspecta-restore-option-content" });
+    overwriteContent.createDiv({ cls: "perspecta-restore-option-title", text: "Overwrite existing" });
+    overwriteContent.createDiv({
+      cls: "perspecta-restore-option-desc",
+      text: "Replace all existing arrangements with backup data. Any arrangements not in the backup will be deleted."
+    });
+    const updateSelection = (mode) => {
+      selectedMode = mode;
+      mergeOption.classList.toggle("is-selected", mode === "merge");
+      overwriteOption.classList.toggle("is-selected", mode === "overwrite");
+      mergeRadio.checked = mode === "merge";
+      overwriteRadio.checked = mode === "overwrite";
+    };
+    mergeOption.addEventListener("click", () => updateSelection("merge"));
+    overwriteOption.addEventListener("click", () => updateSelection("overwrite"));
+    const buttonRow = modal.createDiv({ cls: "perspecta-modal-buttons" });
+    const cancelBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-secondary",
+      text: "Cancel"
+    });
+    const restoreBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-primary",
+      text: "Restore"
+    });
+    const cleanup = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    overlay.onclick = () => {
+      cleanup();
+      resolve({ mode: "merge", cancelled: true });
+    };
+    cancelBtn.addEventListener("click", () => {
+      cleanup();
+      resolve({ mode: "merge", cancelled: true });
+    });
+    restoreBtn.addEventListener("click", () => {
+      cleanup();
+      resolve({ mode: selectedMode, cancelled: false });
+    });
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(modal);
+    restoreBtn.focus();
   });
 }
 function showConfirmOverwrite(existingArrangement, fileName, targetWindow = window) {
@@ -2899,7 +3003,7 @@ ${newFm}
         const uid = getUidFromCache(this.app, file);
         if (!uid)
           continue;
-        const context = this.externalStore.get(uid);
+        const context = this.externalStore.getLatest(uid);
         if (!context)
           continue;
         await this.saveArrangementToNote(file, context);
@@ -2972,7 +3076,15 @@ ${newFm}
     return backups;
   }
   // Restore arrangements from a backup file
-  async restoreFromBackup(backupPath) {
+  async restoreFromBackup(backupPath, mode) {
+    const backupName = backupPath.split("/").pop() || "backup";
+    if (!mode) {
+      const result = await showRestoreModeSelector(backupName);
+      if (result.cancelled) {
+        return { restored: 0, errors: 0, cancelled: true };
+      }
+      mode = result.mode;
+    }
     let backupData;
     try {
       const content = await this.app.vault.adapter.read(backupPath);
@@ -2989,11 +3101,31 @@ ${newFm}
     await this.externalStore.ensureInitialized();
     let restored = 0;
     let errors = 0;
+    if (mode === "overwrite") {
+      await this.externalStore.clearAll();
+    }
     for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
       try {
-        const arrList = arrangements;
-        for (const item of arrList) {
-          this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+        const backupArrangements = arrangements;
+        if (mode === "merge") {
+          const existing = this.externalStore.get(uid) || [];
+          const combined = [...existing];
+          for (const backupItem of backupArrangements) {
+            const alreadyExists = combined.some((e) => e.savedAt === backupItem.savedAt);
+            if (!alreadyExists) {
+              combined.push(backupItem);
+            }
+          }
+          combined.sort((a, b) => b.savedAt - a.savedAt);
+          const trimmed = combined.slice(0, this.settings.maxArrangementsPerNote);
+          this.externalStore.clearUid(uid);
+          for (const item of trimmed) {
+            this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+          }
+        } else {
+          for (const item of backupArrangements) {
+            this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+          }
         }
         restored++;
       } catch (e) {
@@ -3317,7 +3449,7 @@ ${content}`;
       const uid = getUidFromCache(this.app, file);
       if (uid) {
         await this.externalStore.ensureInitialized();
-        const context = this.externalStore.get(uid);
+        const context = this.externalStore.getLatest(uid);
         if (context)
           return context;
       }
@@ -4990,6 +5122,14 @@ var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.perspectaFolderPath = v.trim() || "perspecta";
       await this.plugin.saveSettings();
     }));
+    const syncInfoBox = containerEl.createDiv({ cls: "perspecta-info-box" });
+    const syncInfoIcon = syncInfoBox.createSpan({ cls: "perspecta-info-box-icon" });
+    (0, import_obsidian6.setIcon)(syncInfoIcon, "info");
+    const syncInfoContent = syncInfoBox.createDiv({ cls: "perspecta-info-box-content" });
+    syncInfoContent.createEl("strong", { text: "Obsidian Sync Users" });
+    syncInfoContent.createEl("p", {
+      text: 'To sync window arrangements across devices, enable "Sync all other types" in Settings \u2192 Sync \u2192 Selective sync. This allows JSON context files to sync between your devices.'
+    });
     new import_obsidian6.Setting(containerEl).setName("Store window arrangements in frontmatter").setDesc("When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).").addToggle((t) => t.setValue(this.plugin.settings.storageMode === "frontmatter").onChange(async (v) => {
       this.plugin.settings.storageMode = v ? "frontmatter" : "external";
       await this.plugin.saveSettings();
@@ -5099,7 +5239,10 @@ var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
             restoreBtn.textContent = "Restoring...";
             try {
               const result = await this.plugin.restoreFromBackup(backup.path);
-              new import_obsidian6.Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
+              if (result.cancelled) {
+              } else {
+                new import_obsidian6.Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ""}`, 4e3);
+              }
             } catch (e) {
               new import_obsidian6.Notice("Restore failed: " + e.message, 4e3);
             }

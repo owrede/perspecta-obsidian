@@ -11,6 +11,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.17',
+		date: '2025-12-27',
+		changes: [
+			'New: Backup restore modal with Merge or Overwrite options',
+			'New: Merge mode combines backup with existing, keeping newest arrangements on conflict',
+			'New: Info box in Storage settings about Obsidian Sync configuration',
+			'Improved: Documentation for syncing arrangements across devices',
+		],
+	},
+	{
 		version: '0.1.16',
 		date: '2025-12-27',
 		changes: [

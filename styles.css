@@ -939,3 +939,110 @@ body.perspecta-proxy-window .workspace-leaf {
 .perspecta-experimental-warning-icon {
     margin-right: 8px;
 }
+
+/* ============================================================================
+   Info Box (for Sync notice, etc.)
+   ============================================================================ */
+
+.perspecta-info-box {
+    display: flex;
+    gap: 12px;
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    border-left: 3px solid var(--interactive-accent);
+}
+
+.perspecta-info-box-icon {
+    flex-shrink: 0;
+    color: var(--interactive-accent);
+    margin-top: 2px;
+}
+
+.perspecta-info-box-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+.perspecta-info-box-content {
+    flex: 1;
+    font-size: 0.9em;
+    line-height: 1.5;
+}
+
+.perspecta-info-box-content strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-normal);
+}
+
+.perspecta-info-box-content p {
+    margin: 0;
+    color: var(--text-muted);
+}
+
+/* ============================================================================
+   Backup Restore Modal
+   ============================================================================ */
+
+.perspecta-restore-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 24px;
+    min-width: 400px;
+    max-width: 500px;
+    z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.perspecta-restore-options {
+    margin: 20px 0;
+}
+
+.perspecta-restore-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    margin-bottom: 8px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+}
+
+.perspecta-restore-option:hover {
+    border-color: var(--interactive-accent);
+}
+
+.perspecta-restore-option.is-selected {
+    border-color: var(--interactive-accent);
+    background: var(--background-primary-alt);
+}
+
+.perspecta-restore-option input[type="radio"] {
+    margin-top: 2px;
+}
+
+.perspecta-restore-option-content {
+    flex: 1;
+}
+
+.perspecta-restore-option-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.perspecta-restore-option-desc {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    line-height: 1.4;
+}

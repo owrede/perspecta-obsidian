@@ -97,6 +97,15 @@ All commands are available via the Command Palette (`Cmd+P` / `Ctrl+P`):
 
 ## Important Notes
 
+### Obsidian Sync Configuration
+
+If you use **Obsidian Sync** and want to sync window arrangements across devices:
+
+1. Go to **Settings → Sync → Selective sync**
+2. Enable **"Sync all other types"**
+
+This allows the JSON context files in the `perspecta` folder to sync between your devices. Without this setting, arrangements will only be stored locally.
+
 ### Storage Mode Warning
 
 > **WARNING**: External storage mode stores data in the plugin folder. **All saved contexts will be lost if the plugin is removed or reinstalled.** Use Frontmatter mode if you value data persistence, or create regular backups via Settings → Backup.

@@ -633,6 +633,109 @@ export interface ConfirmOverwriteResult {
 	confirmed: boolean;
 }
 
+export type RestoreMode = 'merge' | 'overwrite';
+
+export interface RestoreModeResult {
+	mode: RestoreMode;
+	cancelled: boolean;
+}
+
+/**
+ * Show a modal to choose restore mode (merge or overwrite)
+ */
+export function showRestoreModeSelector(
+	backupName: string,
+	targetWindow: Window = window
+): Promise<RestoreModeResult> {
+	return new Promise((resolve) => {
+		const doc = targetWindow.document;
+
+		const overlay = doc.createElement('div');
+		overlay.className = 'perspecta-debug-overlay';
+
+		const modal = doc.createElement('div');
+		modal.className = 'perspecta-restore-modal';
+
+		const title = modal.createDiv({ cls: 'perspecta-modal-title' });
+		title.setText('Restore from Backup');
+
+		const subtitle = modal.createDiv({ cls: 'perspecta-modal-subtitle' });
+		subtitle.setText(`Restoring: ${backupName}`);
+
+		const options = modal.createDiv({ cls: 'perspecta-restore-options' });
+
+		let selectedMode: RestoreMode = 'merge';
+
+		// Merge option
+		const mergeOption = options.createDiv({ cls: 'perspecta-restore-option is-selected' });
+		const mergeRadio = mergeOption.createEl('input', { type: 'radio', attr: { name: 'restore-mode', checked: true } });
+		const mergeContent = mergeOption.createDiv({ cls: 'perspecta-restore-option-content' });
+		mergeContent.createDiv({ cls: 'perspecta-restore-option-title', text: 'Merge with existing' });
+		mergeContent.createDiv({ 
+			cls: 'perspecta-restore-option-desc', 
+			text: 'Combine backup data with existing arrangements. When conflicts occur (same note, exceeds max arrangements), only the newest arrangements are kept.' 
+		});
+
+		// Overwrite option
+		const overwriteOption = options.createDiv({ cls: 'perspecta-restore-option' });
+		const overwriteRadio = overwriteOption.createEl('input', { type: 'radio', attr: { name: 'restore-mode' } });
+		const overwriteContent = overwriteOption.createDiv({ cls: 'perspecta-restore-option-content' });
+		overwriteContent.createDiv({ cls: 'perspecta-restore-option-title', text: 'Overwrite existing' });
+		overwriteContent.createDiv({ 
+			cls: 'perspecta-restore-option-desc', 
+			text: 'Replace all existing arrangements with backup data. Any arrangements not in the backup will be deleted.' 
+		});
+
+		const updateSelection = (mode: RestoreMode) => {
+			selectedMode = mode;
+			mergeOption.classList.toggle('is-selected', mode === 'merge');
+			overwriteOption.classList.toggle('is-selected', mode === 'overwrite');
+			mergeRadio.checked = mode === 'merge';
+			overwriteRadio.checked = mode === 'overwrite';
+		};
+
+		mergeOption.addEventListener('click', () => updateSelection('merge'));
+		overwriteOption.addEventListener('click', () => updateSelection('overwrite'));
+
+		const buttonRow = modal.createDiv({ cls: 'perspecta-modal-buttons' });
+
+		const cancelBtn = buttonRow.createEl('button', {
+			cls: 'perspecta-modal-button perspecta-modal-button-secondary',
+			text: 'Cancel'
+		});
+
+		const restoreBtn = buttonRow.createEl('button', {
+			cls: 'perspecta-modal-button perspecta-modal-button-primary',
+			text: 'Restore'
+		});
+
+		const cleanup = () => {
+			modal.remove();
+			overlay.remove();
+		};
+
+		overlay.onclick = () => {
+			cleanup();
+			resolve({ mode: 'merge', cancelled: true });
+		};
+
+		cancelBtn.addEventListener('click', () => {
+			cleanup();
+			resolve({ mode: 'merge', cancelled: true });
+		});
+
+		restoreBtn.addEventListener('click', () => {
+			cleanup();
+			resolve({ mode: selectedMode, cancelled: false });
+		});
+
+		doc.body.appendChild(overlay);
+		doc.body.appendChild(modal);
+
+		restoreBtn.focus();
+	});
+}
+
 /**
  * Show a confirmation modal before overwriting an existing arrangement
  */

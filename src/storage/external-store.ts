@@ -91,11 +91,20 @@ export class ExternalContextStore {
 	}
 
 	// Get the most recent arrangement (for backward compatibility)
-	get(uid: string): WindowArrangementV2 | null {
+	get(uid: string): TimestampedArrangement[] | null {
+		const collection = this.cache.get(uid);
+		if (!collection || collection.arrangements.length === 0) return null;
+		// Return all arrangements sorted by newest first
+		return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+	}
+
+	// Get the latest arrangement only
+	getLatest(uid: string): WindowArrangementV2 | null {
 		const collection = this.cache.get(uid);
 		if (!collection || collection.arrangements.length === 0) return null;
 		// Return the most recent arrangement
-		return collection.arrangements[collection.arrangements.length - 1].arrangement;
+		const sorted = [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+		return sorted[0].arrangement;
 	}
 
 	// Get all arrangements for a UID
@@ -174,6 +183,26 @@ export class ExternalContextStore {
 		} catch (e) {
 			console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
 		}
+	}
+
+	// Clear all arrangements for a specific UID (without deleting the file yet)
+	clearUid(uid: string): void {
+		const collection = this.cache.get(uid);
+		if (collection) {
+			collection.arrangements = [];
+			this.cache.set(uid, collection);
+			this.dirty.add(uid);
+		}
+	}
+
+	// Clear all arrangements (for overwrite restore mode)
+	async clearAll(): Promise<void> {
+		const uids = Array.from(this.cache.keys());
+		for (const uid of uids) {
+			await this.delete(uid);
+		}
+		this.cache.clear();
+		this.dirty.clear();
 	}
 
 	getAllUids(): string[] {

@@ -135,7 +135,7 @@ import {
 import { ExternalContextStore } from './storage/external-store';
 
 // Import UI components
-import { showArrangementSelector, showConfirmOverwrite } from './ui/modals';
+import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
 import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 
 // ============================================================================
@@ -1026,7 +1026,7 @@ export default class PerspectaPlugin extends Plugin {
 				const uid = getUidFromCache(this.app, file);
 				if (!uid) continue;
 
-				const context = this.externalStore.get(uid);
+				const context = this.externalStore.getLatest(uid);
 				if (!context) continue;
 
 				// Save to frontmatter
@@ -1131,7 +1131,19 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// Restore arrangements from a backup file
-	async restoreFromBackup(backupPath: string): Promise<{ restored: number; errors: number }> {
+	async restoreFromBackup(backupPath: string, mode?: RestoreMode): Promise<{ restored: number; errors: number; cancelled?: boolean }> {
+		// Extract backup name from path
+		const backupName = backupPath.split('/').pop() || 'backup';
+
+		// Show mode selector if not provided
+		if (!mode) {
+			const result = await showRestoreModeSelector(backupName);
+			if (result.cancelled) {
+				return { restored: 0, errors: 0, cancelled: true };
+			}
+			mode = result.mode;
+		}
+
 		// Read and parse backup file with error handling
 		let backupData: { arrangements?: Record<string, unknown> };
 		try {
@@ -1154,12 +1166,44 @@ export default class PerspectaPlugin extends Plugin {
 		let restored = 0;
 		let errors = 0;
 
+		if (mode === 'overwrite') {
+			// Clear all existing arrangements first
+			await this.externalStore.clearAll();
+		}
+
 		for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
 			try {
-				// Restore each arrangement
-				const arrList = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
-				for (const item of arrList) {
-					this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+				const backupArrangements = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
+
+				if (mode === 'merge') {
+					// Get existing arrangements for this UID
+					const existing = this.externalStore.get(uid) || [];
+					
+					// Combine existing and backup arrangements
+					const combined = [...existing];
+					
+					for (const backupItem of backupArrangements) {
+						// Check if this exact arrangement already exists (by savedAt timestamp)
+						const alreadyExists = combined.some(e => e.savedAt === backupItem.savedAt);
+						if (!alreadyExists) {
+							combined.push(backupItem);
+						}
+					}
+					
+					// Sort by savedAt (newest first) and keep only max allowed
+					combined.sort((a, b) => b.savedAt - a.savedAt);
+					const trimmed = combined.slice(0, this.settings.maxArrangementsPerNote);
+					
+					// Replace the arrangements for this UID
+					this.externalStore.clearUid(uid);
+					for (const item of trimmed) {
+						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+					}
+				} else {
+					// Overwrite mode - just restore from backup
+					for (const item of backupArrangements) {
+						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
+					}
 				}
 				restored++;
 			} catch (e) {
@@ -1573,7 +1617,7 @@ export default class PerspectaPlugin extends Plugin {
 			if (uid) {
 				// Initialize store if needed
 				await this.externalStore.ensureInitialized();
-				const context = this.externalStore.get(uid);
+				const context = this.externalStore.getLatest(uid);
 				if (context) return context;
 			}
 		}
@@ -3679,6 +3723,16 @@ class PerspectaSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		// Obsidian Sync info box
+		const syncInfoBox = containerEl.createDiv({ cls: 'perspecta-info-box' });
+		const syncInfoIcon = syncInfoBox.createSpan({ cls: 'perspecta-info-box-icon' });
+		setIcon(syncInfoIcon, 'info');
+		const syncInfoContent = syncInfoBox.createDiv({ cls: 'perspecta-info-box-content' });
+		syncInfoContent.createEl('strong', { text: 'Obsidian Sync Users' });
+		syncInfoContent.createEl('p', { 
+			text: 'To sync window arrangements across devices, enable "Sync all other types" in Settings → Sync → Selective sync. This allows JSON context files to sync between your devices.' 
+		});
+
 		new Setting(containerEl).setName('Store window arrangements in frontmatter')
 			.setDesc('When enabled, context data is stored in note frontmatter (syncs with note). When disabled, context is stored externally in the plugin folder (keeps notes cleaner, requires perspecta-uid in frontmatter).')
 			.addToggle(t => t.setValue(this.plugin.settings.storageMode === 'frontmatter').onChange(async v => {
@@ -3841,7 +3895,11 @@ class PerspectaSettingTab extends PluginSettingTab {
 						restoreBtn.textContent = 'Restoring...';
 						try {
 							const result = await this.plugin.restoreFromBackup(backup.path);
-							new Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ''}`, 4000);
+							if (result.cancelled) {
+								// User cancelled, no notice needed
+							} else {
+								new Notice(`Restore complete: ${result.restored} arrangements restored${result.errors > 0 ? `, ${result.errors} errors` : ''}`, 4000);
+							}
 						} catch (e) {
 							new Notice('Restore failed: ' + (e as Error).message, 4000);
 						}
