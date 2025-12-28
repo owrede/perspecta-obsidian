@@ -2,6 +2,13 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.18] - 2025-12-28
+
+- New: Non-linear center-preserving window scaling across different screen aspect ratios
+- Improved: Windows in the center of the screen maintain proportions when switching displays
+- Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)
+- Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays
+
 ## [0.1.17] - 2025-12-27
 
 - New: Backup restore modal with Merge or Overwrite options

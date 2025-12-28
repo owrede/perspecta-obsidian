@@ -32,6 +32,16 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.18",
+    date: "2025-12-28",
+    changes: [
+      "New: Non-linear center-preserving window scaling across different screen aspect ratios",
+      "Improved: Windows in the center of the screen maintain proportions when switching displays",
+      "Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)",
+      "Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays"
+    ]
+  },
+  {
     version: "0.1.17",
     date: "2025-12-27",
     changes: [
@@ -505,6 +515,47 @@ var coordinateDebug = false;
 function setCoordinateDebug(enabled) {
   coordinateDebug = enabled;
 }
+var CENTER_ZONE_MIN = 0.15;
+var CENTER_ZONE_MAX = 0.35;
+var CENTER_SLOPE_MIN = 0.5;
+var CENTER_SLOPE_MAX = 1;
+var AR_RATIO_MAX = 1;
+function calculateTransformParams(arSource, arTarget) {
+  const r = Math.max(arSource, arTarget) / Math.min(arSource, arTarget);
+  const d = r - 1;
+  const s = Math.min(d / AR_RATIO_MAX, 1);
+  const c = CENTER_ZONE_MIN + (CENTER_ZONE_MAX - CENTER_ZONE_MIN) * s;
+  const b = CENTER_SLOPE_MAX - (CENTER_SLOPE_MAX - CENTER_SLOPE_MIN) * s;
+  const a = (0.5 - b * c) / (0.5 - c);
+  return { c, b, a };
+}
+function phiForward(u, params) {
+  const { c, b, a } = params;
+  u = Math.max(0, Math.min(1, u));
+  if (u <= 0.5) {
+    if (u <= 0.5 - c) {
+      return a * u;
+    } else {
+      return b * (u - 0.5) + 0.5;
+    }
+  } else {
+    return 1 - phiForward(1 - u, params);
+  }
+}
+function phiInverse(y, params) {
+  const { c, b, a } = params;
+  y = Math.max(0, Math.min(1, y));
+  const yC = 0.5 - b * c;
+  if (y <= 0.5) {
+    if (y <= yC) {
+      return y / a;
+    } else {
+      return (y - 0.5) / b + 0.5;
+    }
+  } else {
+    return 1 - phiInverse(1 - y, params);
+  }
+}
 function getPhysicalScreen() {
   var _a, _b;
   const screen = window.screen;
@@ -517,20 +568,34 @@ function getPhysicalScreen() {
 }
 function physicalToVirtual(physical) {
   const screen = getPhysicalScreen();
-  const scaleX = VIRTUAL_SCREEN.width / screen.width;
+  const arPhys = screen.width / screen.height;
+  const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+  const params = calculateTransformParams(arPhys, arVirt);
+  const useForward = arVirt >= arPhys;
+  const phi = useForward ? phiForward : phiInverse;
+  const uL = (physical.x - screen.x) / screen.width;
+  const uR = (physical.x + physical.width - screen.x) / screen.width;
+  const vL = phi(uL, params);
+  const vR = phi(uR, params);
+  const virtualX = vL * VIRTUAL_SCREEN.width;
+  const virtualWidth = (vR - vL) * VIRTUAL_SCREEN.width;
   const scaleY = VIRTUAL_SCREEN.height / screen.height;
+  const virtualY = (physical.y - screen.y) * scaleY;
+  const virtualHeight = physical.height * scaleY;
   const result = {
-    x: Math.round((physical.x - screen.x) * scaleX),
-    y: Math.round((physical.y - screen.y) * scaleY),
-    width: Math.round(physical.width * scaleX),
-    height: Math.round(physical.height * scaleY)
+    x: Math.round(virtualX),
+    y: Math.round(virtualY),
+    width: Math.round(virtualWidth),
+    height: Math.round(virtualHeight)
   };
   if (coordinateDebug) {
-    console.log(`[Perspecta] physicalToVirtual:`, {
+    console.log(`[Perspecta] physicalToVirtual (non-linear):`, {
       physical,
       screen,
       virtualRef: VIRTUAL_SCREEN,
-      scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+      aspectRatios: { physical: arPhys.toFixed(3), virtual: arVirt.toFixed(3) },
+      transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+      normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), vL: vL.toFixed(3), vR: vR.toFixed(3) },
       result
     });
   }
@@ -543,11 +608,19 @@ function virtualToPhysical(virtual, sourceScreen) {
     console.warn("[Perspecta] Invalid screen dimensions, using defaults");
     return { x: 100, y: 100, width: 800, height: 600 };
   }
-  const scaleX = screen.width / VIRTUAL_SCREEN.width;
+  const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+  const arPhys = screen.width / screen.height;
+  const params = calculateTransformParams(arVirt, arPhys);
+  const useForward = arPhys >= arVirt;
+  const phi = useForward ? phiForward : phiInverse;
+  const uL = safeVirtual.x / VIRTUAL_SCREEN.width;
+  const uR = (safeVirtual.x + safeVirtual.width) / VIRTUAL_SCREEN.width;
+  const pL = phi(uL, params);
+  const pR = phi(uR, params);
+  let x = Math.round(screen.x + pL * screen.width);
+  let width = Math.round((pR - pL) * screen.width);
   const scaleY = screen.height / VIRTUAL_SCREEN.height;
-  let x = Math.round(safeVirtual.x * scaleX) + screen.x;
-  let y = Math.round(safeVirtual.y * scaleY) + screen.y;
-  let width = Math.round(safeVirtual.width * scaleX);
+  let y = Math.round(screen.y + safeVirtual.y * scaleY);
   let height = Math.round(safeVirtual.height * scaleY);
   width = Math.max(MIN_WINDOW_SIZE, width);
   height = Math.max(MIN_WINDOW_SIZE, height);
@@ -557,12 +630,14 @@ function virtualToPhysical(virtual, sourceScreen) {
   y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
   const result = { x, y, width, height };
   if (coordinateDebug) {
-    console.log(`[Perspecta] virtualToPhysical:`, {
+    console.log(`[Perspecta] virtualToPhysical (non-linear):`, {
       virtual: safeVirtual,
       screen,
       virtualRef: VIRTUAL_SCREEN,
       sourceScreen,
-      scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+      aspectRatios: { virtual: arVirt.toFixed(3), physical: arPhys.toFixed(3) },
+      transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+      normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), pL: pL.toFixed(3), pR: pR.toFixed(3) },
       result
     });
   }
@@ -1728,7 +1803,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = /* @__PURE__ */ new Date();
+  const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -3040,7 +3115,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = /* @__PURE__ */ new Date();
+    const now = new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -3067,7 +3142,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }

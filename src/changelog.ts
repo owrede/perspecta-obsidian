@@ -11,6 +11,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.18',
+		date: '2025-12-28',
+		changes: [
+			'New: Non-linear center-preserving window scaling across different screen aspect ratios',
+			'Improved: Windows in the center of the screen maintain proportions when switching displays',
+			'Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)',
+			'Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays',
+		],
+	},
+	{
 		version: '0.1.17',
 		date: '2025-12-27',
 		changes: [
