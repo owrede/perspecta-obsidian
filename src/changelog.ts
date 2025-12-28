@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.19',
+		date: '2025-12-28',
+		changes: [
+			'New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context',
+			'Fixed: File context scanning now waits for Obsidian layout to be ready',
+			'Fixed: Modifier key tracking works in both main window and popout windows',
+		],
+	},
+	{
 		version: '0.1.18',
 		date: '2025-12-28',
 		changes: [

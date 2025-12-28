@@ -32,6 +32,15 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.19",
+    date: "2025-12-28",
+    changes: [
+      "New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context",
+      "Fixed: File context scanning now waits for Obsidian layout to be ready",
+      "Fixed: Modifier key tracking works in both main window and popout windows"
+    ]
+  },
+  {
     version: "0.1.18",
     date: "2025-12-28",
     changes: [
@@ -2429,6 +2438,8 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     this.isUnloading = false;
     // Guard against operations during plugin unload
     this.pendingTimeouts = /* @__PURE__ */ new Set();
+    // External context storage
+    this.shiftCmdHeld = false;
     // ============================================================================
     // Context Restore (Optimized)
     // ============================================================================
@@ -2439,7 +2450,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.pendingTabActivations = [];
   }
-  // External context storage
+  // Track Cmd+Shift for context restore on link click
   async onload() {
     await this.loadSettings();
     this.checkVersionCompatibility();
@@ -2491,7 +2502,9 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     });
     this.setupFocusTracking();
     this.setupContextIndicator();
-    this.setupFileExplorerIndicators();
+    this.app.workspace.onLayoutReady(() => {
+      this.setupFileExplorerIndicators();
+    });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof import_obsidian6.TFile && ["md", "canvas", "base"].includes(file.extension)) {
@@ -2515,19 +2528,36 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
         }
       }
     });
+    this.registerModifierKeyTracking(window);
+    this.registerEvent(
+      this.app.workspace.on("window-open", (_, win) => {
+        this.registerModifierKeyTracking(win);
+      })
+    );
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      if (!file || !this.shiftCmdHeld)
+        return;
+      if (this.filesWithContext.has(file.path)) {
+        setTimeout(() => {
+          this.restoreContext(file);
+        }, 50);
+      }
+      this.shiftCmdHeld = false;
+    }));
     this.registerDomEvent(document, "click", (evt) => {
-      if (evt.altKey && evt.button === 0) {
-        const link = evt.target.closest("a.internal-link");
-        if (link) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          const href = link.getAttribute("data-href");
-          if (href) {
-            const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian6.TFile)
-              this.openInNewWindow(file);
-          }
-        }
+      const link = evt.target.closest("a.internal-link");
+      if (!link || evt.button !== 0)
+        return;
+      const href = link.getAttribute("data-href");
+      if (!href)
+        return;
+      const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
+      if (!(file instanceof import_obsidian6.TFile))
+        return;
+      if (evt.altKey) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.openInNewWindow(file);
       }
     }, true);
     this.addSettingTab(new PerspectaSettingTab(this.app, this));
@@ -2597,6 +2627,23 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
           return;
       })
     );
+  }
+  /**
+   * Register keydown/keyup listeners on a window to track Cmd+Shift for context restore.
+   * Called for main window and each popout window.
+   */
+  registerModifierKeyTracking(win) {
+    const doc = win.document;
+    const keydownHandler = (evt) => {
+      if (evt.shiftKey && (evt.metaKey || evt.ctrlKey)) {
+        this.shiftCmdHeld = true;
+      }
+    };
+    const keyupHandler = () => {
+      this.shiftCmdHeld = false;
+    };
+    doc.addEventListener("keydown", keydownHandler);
+    doc.addEventListener("keyup", keyupHandler);
   }
   trackPopoutWindowFocus(win) {
     if (this.windowFocusListeners.has(win))

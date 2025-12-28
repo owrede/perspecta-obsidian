@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.19] - 2025-12-28
+
+- New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context
+- Fixed: File context scanning now waits for Obsidian layout to be ready
+- Fixed: Modifier key tracking works in both main window and popout windows
+
 ## [0.1.18] - 2025-12-28
 
 - New: Non-linear center-preserving window scaling across different screen aspect ratios

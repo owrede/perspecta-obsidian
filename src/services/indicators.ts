@@ -211,7 +211,7 @@ export class IndicatorsService {
 			hasContext = await baseHasContext(this.app, file);
 		} else {
 			// Markdown files: check frontmatter
-			hasContext = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] !== null;
+			hasContext = !!this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY];
 
 			// Also check external storage if enabled
 			if (!hasContext && this.getStorageMode() === 'external') {
