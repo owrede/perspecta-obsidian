@@ -45,6 +45,7 @@ export interface TabState {
 	uid?: string;   // Unique ID from frontmatter (for move/rename resilience)
 	name?: string;  // Filename without extension (fallback for search)
 	scroll?: number; // Scroll position (from view.currentMode.getScroll())
+	propertiesCollapsed?: boolean; // Whether Properties (frontmatter) section is collapsed in Live Preview
 	// Canvas viewport state
 	canvasViewport?: {
 		tx: number;    // Horizontal pan position
@@ -127,6 +128,7 @@ export interface PerspectaSettings {
 	automationScriptsPath: string;
 	perspectaFolderPath: string;
 	showDebugModal: boolean;
+	showDebugModalOnRestore: boolean;
 	enableDebugLogging: boolean;
 	focusTintDuration: number;
 	autoGenerateUids: boolean;
@@ -147,6 +149,7 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	automationScriptsPath: 'perspecta/scripts/',
 	perspectaFolderPath: 'perspecta',
 	showDebugModal: true,
+	showDebugModalOnRestore: true,
 	enableDebugLogging: false,
 	focusTintDuration: 8,
 	autoGenerateUids: true,

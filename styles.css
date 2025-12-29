@@ -175,6 +175,12 @@
     margin: 2px 0;
 }
 
+.perspecta-debug-props {
+    color: var(--text-muted);
+    font-size: 0.8em;
+    margin-left: 8px;
+}
+
 /* ============================================================================
    Focus Tint Animation
    ============================================================================ */
@@ -823,7 +829,6 @@ body.perspecta-proxy-window .workspace-leaf {
     overflow: hidden;
     /* Exclude from drag so clicking works */
     -webkit-app-region: no-drag;
-    app-region: no-drag;
 }
 
 /* Note: CSS :hover doesn't work reliably in Electron popout windows.
@@ -867,7 +872,6 @@ body.perspecta-proxy-window .workspace-leaf {
     margin-left: 8px;
     transition: color 0.15s ease, background-color 0.15s ease;
     -webkit-app-region: no-drag;
-    app-region: no-drag;
 }
 
 .perspecta-proxy-expand:hover {

@@ -183,6 +183,26 @@ function resolveFile(app: App, tab: TabState): { file: TFile | null; method: 'pa
 // Global debug flag for coordinate conversions (exposed from coordinates module)
 let COORDINATE_DEBUG = false;  // Local reference for quick access
 
+function getPropertiesCollapsed(view: unknown): boolean | undefined {
+	const containerEl = (view as { containerEl?: HTMLElement })?.containerEl;
+	if (!containerEl) return undefined;
+
+	const metadataEl = containerEl.querySelector('.metadata-container') as HTMLElement | null;
+	if (!metadataEl) return undefined;
+
+	if (metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed')) {
+		return true;
+	}
+
+	// Check if the metadata content is hidden (another way to detect collapsed state)
+	const metadataContent = metadataEl.querySelector('.metadata-content') as HTMLElement | null;
+	if (metadataContent && metadataContent.style.display === 'none') {
+		return true;
+	}
+
+	return false;
+}
+
 // ============================================================================
 // Main Plugin Class
 // ============================================================================
@@ -201,6 +221,14 @@ export default class PerspectaPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		try {
+			const stat = await this.app.vault.adapter.stat(`${this.manifest.dir}/main.js`);
+			const ts = stat?.mtime ? new Date(stat.mtime).toLocaleString() : 'unknown';
+			console.log(`[Perspecta] Loaded v${this.manifest.version} (main.js: ${ts})`);
+		} catch {
+			console.log(`[Perspecta] Loaded v${this.manifest.version}`);
+		}
 
 		// Check Obsidian version compatibility
 		this.checkVersionCompatibility();
@@ -721,6 +749,7 @@ export default class PerspectaPlugin extends Plugin {
 					uid,
 					name,
 					scroll: typeof scroll === 'number' ? scroll : undefined,
+					propertiesCollapsed: getPropertiesCollapsed(view),
 					canvasViewport
 				});
 			}
@@ -1590,6 +1619,15 @@ export default class PerspectaPlugin extends Plugin {
 			const _focusedWin = await this.applyArrangement(context, targetFile.path);
 			PerfTimer.mark('applyArrangement');
 
+			// Show restore debug modal if enabled
+			if (this.settings.showDebugModalOnRestore) {
+				// Wait a moment for UI to settle before capturing current state
+				setTimeout(() => {
+					const v2Context = this.normalizeToV2(context);
+					this.showRestoreDebugModal(v2Context, targetFile.name);
+				}, 1000);
+			}
+
 			// If any files were resolved via fallback, update the saved context with corrected paths
 			if (this.pathCorrections.size > 0) {
 				await this.updateContextWithCorrectedPaths(targetFile, context);
@@ -1856,6 +1894,16 @@ export default class PerspectaPlugin extends Plugin {
 				this.scheduleScrollRestoration(popout.root);
 			}
 			PerfTimer.mark('scheduleScrollRestoration');
+
+			// Schedule properties collapse/expand restoration for all leaves
+			if (this.settings.enableDebugLogging) {
+				console.log('[Perspecta] Scheduling properties restoration');
+			}
+			this.schedulePropertiesRestoration(v2.main.root);
+			for (const popout of v2.popouts) {
+				this.schedulePropertiesRestoration(popout.root);
+			}
+			PerfTimer.mark('schedulePropertiesRestoration');
 
 			// Find and focus the window containing the context note (the note used to restore)
 			// This ensures the context note is active and its window is in foreground
@@ -2235,6 +2283,96 @@ export default class PerspectaPlugin extends Plugin {
 				}
 			});
 		}, 500);
+	}
+
+	/**
+	 * Schedule properties collapse/expand restoration for all leaves.
+	 */
+	private schedulePropertiesRestoration(state: WorkspaceNodeState): void {
+		const propsMap = new Map<string, boolean>();
+		this.collectPropertiesState(state, propsMap);
+		if (propsMap.size === 0) {
+			return;
+		}
+
+		if (this.settings.enableDebugLogging) {
+			console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
+		}
+		
+		// Apply after delay to ensure all views are loaded
+		setTimeout(() => {
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				if (!hasFile(leaf.view)) return;
+				const file = leaf.view.file;
+
+				if (propsMap.has(file.path)) {
+					const collapsed = propsMap.get(file.path);
+					if (collapsed !== undefined) {
+						if (this.settings.enableDebugLogging) {
+							console.log(`[Perspecta] Restoring properties for ${file.path}: ${collapsed ? 'collapsed' : 'expanded'}`);
+						}
+						this.setPropertiesCollapsed(leaf.view, collapsed);
+					}
+				}
+			});
+		}, 1000);
+	}
+
+	/**
+	 * Collect properties collapse/expand state from workspace node state.
+	 */
+	private collectPropertiesState(state: WorkspaceNodeState, map: Map<string, boolean>): void {
+		if (state.type === 'tabs') {
+			for (const tab of state.tabs) {
+				if (tab.propertiesCollapsed !== undefined) {
+					map.set(tab.path, tab.propertiesCollapsed);
+				}
+			}
+			return;
+		}
+		for (const child of state.children) {
+			this.collectPropertiesState(child, map);
+		}
+	}
+
+	/**
+	 * Set properties collapse/expand state for a view.
+	 */
+	private setPropertiesCollapsed(view: unknown, collapsed: boolean): void {
+		const containerEl = (view as { containerEl?: HTMLElement })?.containerEl;
+		if (!containerEl) {
+			if (this.settings.enableDebugLogging) {
+				console.log('[Perspecta] Properties restoration: no container element found');
+			}
+			return;
+		}
+
+		// Try the standard metadata-container approach
+		const metadataEl = containerEl.querySelector('.metadata-container') as HTMLElement | null;
+		if (metadataEl) {
+			const isCollapsed = metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed');
+			
+			if (isCollapsed === collapsed) {
+				return; // Already in desired state
+			}
+
+			// The toggle is the .metadata-properties-heading element
+			const toggle = metadataEl.querySelector('.metadata-properties-heading') as HTMLElement | null;
+			if (toggle) {
+				try {
+					toggle.click();
+					if (this.settings.enableDebugLogging) {
+						const filePath = (view as { file?: { path: string } }).file?.path || 'unknown';
+						console.log(`[Perspecta] Properties ${collapsed ? 'collapsed' : 'expanded'} for ${filePath}`);
+					}
+					return;
+				} catch (e) {
+					if (this.settings.enableDebugLogging) {
+						console.log('[Perspecta] Properties restoration: click failed', e);
+					}
+				}
+			}
+		}
 	}
 
 	private collectViewPositions(
@@ -3252,6 +3390,60 @@ export default class PerspectaPlugin extends Plugin {
 		document.body.appendChild(modal);
 	}
 
+	private showRestoreDebugModal(storedContext: WindowArrangementV2, fileName: string) {
+		const overlay = document.createElement('div');
+		overlay.className = 'perspecta-debug-overlay';
+
+		const modal = document.createElement('div');
+		modal.className = 'perspecta-debug-modal';
+
+		modal.createEl('h3', { text: 'Context Restored - Comparison' });
+
+		const fileP = modal.createEl('p');
+		fileP.createEl('strong', { text: 'File: ' });
+		fileP.appendText(fileName);
+
+		// Stored state section
+		modal.createEl('h4', { text: '📋 Stored State' });
+		const storedSection = modal.createEl('div', { cls: 'perspecta-debug-section' });
+		this.buildDebugNodeDOM(storedSection, storedContext.main.root, 0);
+
+		if (storedContext.popouts.length) {
+			modal.createEl('h4', { text: `📋 Stored Popouts (${storedContext.popouts.length})` });
+			storedContext.popouts.forEach((p, i) => {
+				const popoutDiv = modal.createEl('div');
+				popoutDiv.createEl('p', { text: `Popout #${i + 1}:` });
+				this.buildDebugNodeDOM(popoutDiv, p.root, 0);
+			});
+		}
+
+		// Current state section
+		modal.createEl('h4', { text: '🔍 Current State (After Restore)' });
+		const currentSection = modal.createEl('div', { cls: 'perspecta-debug-section' });
+		
+		// Capture current state
+		const currentContext = this.captureWindowArrangement();
+		this.buildDebugNodeDOM(currentSection, currentContext.main.root, 0);
+
+		if (currentContext.popouts.length) {
+			modal.createEl('h4', { text: `🔍 Current Popouts (${currentContext.popouts.length})` });
+			currentContext.popouts.forEach((p, i) => {
+				const popoutDiv = modal.createEl('div');
+				popoutDiv.createEl('p', { text: `Popout #${i + 1}:` });
+				this.buildDebugNodeDOM(popoutDiv, p.root, 0);
+			});
+		}
+
+		const closeBtn = modal.createEl('button', { cls: 'perspecta-debug-close', text: 'Close' });
+
+		const closeModal = () => { modal.remove(); overlay.remove(); };
+		overlay.onclick = closeModal;
+		closeBtn.addEventListener('click', closeModal);
+
+		document.body.appendChild(overlay);
+		document.body.appendChild(modal);
+	}
+
 	private buildDebugNodeDOM(container: HTMLElement, node: WorkspaceNodeState, depth: number, sizePercent?: string): void {
 		const wrapper = container.createDiv({ cls: `perspecta-debug-node perspecta-debug-depth-${depth}` });
 
@@ -3264,6 +3456,13 @@ export default class PerspectaPlugin extends Plugin {
 				const tabLine = wrapper.createDiv({ cls: 'perspecta-debug-tab' });
 				tabLine.appendText(`📄 ${t.path.split('/').pop() || t.path}`);
 				if (t.active) tabLine.appendText(' ✓');
+				
+				// Show properties collapse/expand state if available
+				if (t.propertiesCollapsed !== undefined) {
+					const propsIcon = t.propertiesCollapsed ? '🔽' : '🔼';
+					const propsText = t.propertiesCollapsed ? 'Properties collapsed' : 'Properties expanded';
+					tabLine.createSpan({ cls: 'perspecta-debug-props', text: ` ${propsIcon} ${propsText}` });
+				}
 			}
 		} else {
 			const sizes = node.sizes;
@@ -3703,6 +3902,17 @@ class PerspectaSettingTab extends PluginSettingTab {
 		// Plugin title
 		containerEl.createEl('h1', { text: 'Perspecta', cls: 'perspecta-settings-title' });
 
+		const buildInfo = containerEl.createDiv({ cls: 'setting-item-description' });
+		buildInfo.style.marginTop = '6px';
+		buildInfo.style.marginBottom = '18px';
+		buildInfo.setText(`Version: v${this.plugin.manifest.version}`);
+		this.app.vault.adapter.stat(`${this.plugin.manifest.dir}/main.js`).then(stat => {
+			if (!stat?.mtime) return;
+			buildInfo.setText(`Version: v${this.plugin.manifest.version} (main.js: ${new Date(stat.mtime).toLocaleString()})`);
+		}).catch(() => {
+			// ignore
+		});
+
 		// Create tab navigation
 		const tabNav = containerEl.createDiv({ cls: 'perspecta-settings-tabs' });
 
@@ -4070,6 +4280,12 @@ class PerspectaSettingTab extends PluginSettingTab {
 			.setDesc('Show a modal with context details when saving')
 			.addToggle(t => t.setValue(this.plugin.settings.showDebugModal).onChange(async v => {
 				this.plugin.settings.showDebugModal = v; await this.plugin.saveSettings();
+			}));
+
+		new Setting(containerEl).setName('Show debug modal on restore')
+			.setDesc('Show a modal comparing stored vs actual state after restoring')
+			.addToggle(t => t.setValue(this.plugin.settings.showDebugModalOnRestore).onChange(async v => {
+				this.plugin.settings.showDebugModalOnRestore = v; await this.plugin.saveSettings();
 			}));
 
 		new Setting(containerEl).setName('Enable debug logging')

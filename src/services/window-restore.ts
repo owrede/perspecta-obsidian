@@ -59,6 +59,168 @@ import { PerfTimer } from '../utils/perf-timer';
 import { TIMING, LIMITS } from '../utils/constants';
 import { delay, retryAsync, withTimeout, safeTimeout } from '../utils/async-utils';
 
+function setPropertiesCollapsed(view: unknown, collapsed: boolean): void {
+	const containerEl = (view as { containerEl?: HTMLElement })?.containerEl;
+	if (!containerEl) {
+		console.log('[Perspecta] setPropertiesCollapsed: no containerEl');
+		return;
+	}
+
+	const filePath = (view as { file?: { path: string } }).file?.path || 'unknown';
+	console.log('[Perspecta] setPropertiesCollapsed starting:', { filePath, desired: collapsed });
+
+	// First, let's inspect the DOM structure to understand what we're working with
+	console.log('[Perspecta] DOM inspection - containerEl:', containerEl);
+	console.log('[Perspecta] DOM inspection - containerEl children:', containerEl.children.length);
+	
+	// Log all elements that might be related to properties
+	const allElements = containerEl.querySelectorAll('*');
+	const propertyRelatedElements: {element: HTMLElement, info: string}[] = [];
+	
+	for (let i = 0; i < allElements.length; i++) {
+		const el = allElements[i] as HTMLElement;
+		const className = el.className || '';
+		const ariaLabel = el.getAttribute('aria-label') || '';
+		const textContent = el.textContent?.slice(0, 50) || '';
+		
+		if (className.toLowerCase().includes('property') || 
+			className.toLowerCase().includes('metadata') ||
+			ariaLabel.toLowerCase().includes('property') || 
+			ariaLabel.toLowerCase().includes('metadata') ||
+			el.hasAttribute('aria-expanded')) {
+			
+			propertyRelatedElements.push({
+				element: el,
+				info: `tag: ${el.tagName}, class: "${className}", aria-label: "${ariaLabel}", aria-expanded: "${el.getAttribute('aria-expanded')}", text: "${textContent}"`
+			});
+		}
+	}
+	
+	console.log('[Perspecta] Found property-related elements:', propertyRelatedElements.map(e => e.info));
+
+	// Method 1: Try the standard metadata-container approach
+	const metadataEl = containerEl.querySelector('.metadata-container') as HTMLElement | null;
+	if (metadataEl) {
+		const isCollapsed = metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed');
+		console.log('[Perspecta] setPropertiesCollapsed - Method 1:', { 
+			foundMetadata: true, 
+			isCollapsed, 
+			desired: collapsed,
+			alreadyCorrect: isCollapsed === collapsed 
+		});
+		
+		if (isCollapsed === collapsed) {
+			console.log('[Perspecta] setPropertiesCollapsed: already in desired state');
+			return;
+		}
+
+		// The toggle is the .metadata-properties-heading element, not an aria-expanded element
+		const toggle = metadataEl.querySelector('.metadata-properties-heading') as HTMLElement | null;
+		if (toggle) {
+			console.log('[Perspecta] setPropertiesCollapsed: found toggle, clicking...');
+			console.log('[Perspecta] Toggle element:', {
+				tag: toggle.tagName,
+				class: toggle.className,
+				tabIndex: toggle.getAttribute('tabindex')
+			});
+			
+			try {
+				// Try multiple click methods
+				console.log('[Perspecta] Trying click() method...');
+				toggle.click();
+				console.log('[Perspecta] setPropertiesCollapsed: click() executed');
+				
+				// Wait a moment and check if it worked
+				setTimeout(() => {
+					const newIsCollapsed = metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed');
+					console.log('[Perspecta] After click - isCollapsed:', newIsCollapsed, 'desired:', collapsed);
+				}, 100);
+				
+				return;
+			} catch (e) {
+				console.log('[Perspecta] setPropertiesCollapsed: click failed', e);
+				
+				// Try alternative click methods
+				try {
+					console.log('[Perspecta] Trying MouseEvent click...');
+					const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+					toggle.dispatchEvent(event);
+					console.log('[Perspecta] MouseEvent click dispatched');
+					
+					// Check if MouseEvent worked
+					setTimeout(() => {
+						const newIsCollapsed = metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed');
+						console.log('[Perspecta] After MouseEvent - isCollapsed:', newIsCollapsed, 'desired:', collapsed);
+					}, 100);
+					
+					return;
+				} catch (e2) {
+					console.log('[Perspecta] MouseEvent click also failed', e2);
+				}
+			}
+		} else {
+			console.log('[Perspecta] setPropertiesCollapsed: no toggle element found in metadata-container');
+		}
+	} else {
+		console.log('[Perspecta] setPropertiesCollapsed: no metadata-container found');
+	}
+
+	// Method 2: Try alternative selectors for properties toggle
+	console.log('[Perspecta] setPropertiesCollapsed: trying alternative methods...');
+	
+	// Look for any clickable element that might toggle properties
+	const possibleToggles = containerEl.querySelectorAll(
+		'.metadata-toggle, .properties-toggle, [aria-label*="properties"], [aria-label*="Properties"], .clickable-icon'
+	) as NodeListOf<HTMLElement>;
+	
+	console.log('[Perspecta] setPropertiesCollapsed: found alternative toggles:', possibleToggles.length);
+	
+	for (let i = 0; i < possibleToggles.length; i++) {
+		const toggle = possibleToggles[i];
+		const ariaExpanded = toggle.getAttribute('aria-expanded');
+		console.log('[Perspecta] setPropertiesCollapsed: trying toggle', i, { ariaExpanded, desired: collapsed });
+		
+		if ((collapsed && ariaExpanded === 'true') || (!collapsed && ariaExpanded === 'false')) {
+			console.log('[Perspecta] setPropertiesCollapsed: clicking alternative toggle');
+			try {
+				toggle.click();
+				console.log('[Perspecta] setPropertiesCollapsed: alternative toggle clicked successfully');
+				return;
+			} catch (e) {
+				console.log('[Perspecta] setPropertiesCollapsed: alternative toggle click failed', e);
+			}
+		}
+	}
+
+	// Method 3: Try to find the collapse button by text content
+	const allButtons = Array.from(containerEl.querySelectorAll('button, .clickable-icon') as NodeListOf<HTMLElement>);
+	console.log('[Perspecta] setPropertiesCollapsed: checking all buttons:', allButtons.length);
+	
+	for (const button of allButtons) {
+		const text = button.textContent?.toLowerCase() || '';
+		const ariaLabel = button.getAttribute('aria-label')?.toLowerCase() || '';
+		
+		if (text.includes('properties') || ariaLabel.includes('properties') || 
+			text.includes('metadata') || ariaLabel.includes('metadata')) {
+			console.log('[Perspecta] setPropertiesCollapsed: found properties-related button:', { text, ariaLabel });
+			
+			const ariaExpanded = button.getAttribute('aria-expanded');
+			if ((collapsed && ariaExpanded === 'true') || (!collapsed && ariaExpanded === 'false')) {
+				console.log('[Perspecta] setPropertiesCollapsed: clicking properties button');
+				try {
+					button.click();
+					console.log('[Perspecta] setPropertiesCollapsed: properties button clicked successfully');
+					return;
+				} catch (e) {
+					console.log('[Perspecta] setPropertiesCollapsed: properties button click failed', e);
+				}
+			}
+		}
+	}
+
+	console.log('[Perspecta] setPropertiesCollapsed: failed to find or click any toggle');
+}
+
 /**
  * Options for window restoration.
  */
@@ -310,6 +472,21 @@ export class WindowRestoreService {
 				PerfTimer.mark('scheduleScrollRestoration');
 			}
 
+			// DEBUG: Add properties restoration debug right here where we know it executes
+			console.log('*** PERSPECTA DEBUG: About to call properties restoration ***');
+			console.log('*** PERSPECTA DEBUG: Main root type:', v2.main.root.type);
+			console.log('*** PERSPECTA DEBUG: Main root tabs count:', v2.main.root.type === 'tabs' ? v2.main.root.tabs?.length || 0 : 0);
+
+			// Schedule Properties (frontmatter) collapse/expand restoration
+			console.log('=== PERSPECTA PROPERTIES RESTORATION STARTING ===');
+			PerfTimer.mark('schedulePropertiesRestoration');
+			this.schedulePropertiesRestoration(v2.main.root);
+			for (const popout of v2.popouts) {
+				console.log('=== PERSPECTA PROPERTIES RESTORATION FOR POPOUT ===');
+				this.schedulePropertiesRestoration(popout.root);
+			}
+			console.log('=== PERSPECTA PROPERTIES RESTORATION SCHEDULED ===');
+
 			// Focus the context note window
 			let contextNoteWin: Window | null = null;
 			if (contextNotePath) {
@@ -332,6 +509,95 @@ export class WindowRestoreService {
 		} catch (e) {
 			new Notice('Error restoring context: ' + (e as Error).message, 4000);
 			return null;
+		}
+	}
+
+	// =========================================================================
+	// Properties (Frontmatter) UI Restoration
+	// =========================================================================
+
+	private schedulePropertiesRestoration(state: WorkspaceNodeState): void {
+		console.log('=== PERSPECTA schedulePropertiesRestoration FUNCTION CALLED ===');
+		const propsMap = new Map<string, boolean>();
+		this.collectPropertiesState(state, propsMap);
+		if (propsMap.size === 0) {
+			console.log('=== PERSPECTA NO PROPERTIES TO RESTORE ===');
+			return;
+		}
+
+		console.log('[Perspecta] schedulePropertiesRestoration: found properties to restore:', Array.from(propsMap.entries()));
+		
+		// Try multiple times with increasing delays
+		const tryRestore = (attempt: number) => {
+			console.log(`[Perspecta] schedulePropertiesRestoration: attempt ${attempt}`);
+			
+			safeTimeout(() => {
+				let restoredCount = 0;
+				this.app.workspace.iterateAllLeaves(leaf => {
+					const filePath = (leaf.view as { file?: TFile }).file?.path;
+					if (!filePath) return;
+					const collapsed = propsMap.get(filePath);
+					if (collapsed === undefined) return;
+					console.log('[Perspecta] schedulePropertiesRestoration: restoring for', filePath, collapsed);
+					setPropertiesCollapsed(leaf.view, collapsed);
+					restoredCount++;
+				});
+				
+				console.log(`[Perspecta] schedulePropertiesRestoration: attempt ${attempt} restored ${restoredCount} properties`);
+				
+				// If this was the last attempt, check if we need to try again
+				if (attempt < 3 && restoredCount > 0) {
+					// Wait a bit and check if the properties actually changed
+					safeTimeout(() => {
+						let needsRetry = false;
+						this.app.workspace.iterateAllLeaves(leaf => {
+							const filePath = (leaf.view as { file?: TFile }).file?.path;
+							if (!filePath) return;
+							const desired = propsMap.get(filePath);
+							if (desired === undefined) return;
+							
+							// Check current state
+							const containerEl = (leaf.view as { containerEl?: HTMLElement })?.containerEl;
+							if (containerEl) {
+								const metadataEl = containerEl.querySelector('.metadata-container') as HTMLElement | null;
+								if (metadataEl) {
+									const isCollapsed = metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed');
+									if (isCollapsed !== desired) {
+										needsRetry = true;
+										console.log(`[Perspecta] schedulePropertiesRestoration: ${filePath} still incorrect, will retry`);
+									}
+								}
+							}
+						});
+						
+						if (needsRetry) {
+							tryRestore(attempt + 1);
+						}
+					}, 1000);
+				}
+			}, TIMING.INDICATORS_REFRESH_DELAY + (attempt - 1) * 1000); // Increase delay each attempt
+		};
+		
+		// Start with first attempt
+		tryRestore(1);
+	}
+
+	private collectPropertiesState(state: WorkspaceNodeState, map: Map<string, boolean>): void {
+		console.log('[Perspecta] collectPropertiesState: called with state type:', state.type);
+		if (state.type === 'tabs') {
+			console.log('[Perspecta] collectPropertiesState: processing', state.tabs.length, 'tabs');
+			for (const tab of state.tabs) {
+				console.log('[Perspecta] collectPropertiesState: tab:', tab.path, 'propertiesCollapsed:', tab.propertiesCollapsed);
+				if (tab.propertiesCollapsed !== undefined) {
+					map.set(tab.path, tab.propertiesCollapsed);
+					console.log('[Perspecta] collectPropertiesState: added property for', tab.path, 'value:', tab.propertiesCollapsed);
+				}
+			}
+			return;
+		}
+		console.log('[Perspecta] collectPropertiesState: processing', state.children?.length || 0, 'children');
+		for (const child of state.children) {
+			this.collectPropertiesState(child, map);
 		}
 	}
 
@@ -893,6 +1159,7 @@ export class WindowRestoreService {
 	 * Schedules scroll position restoration for all views.
 	 */
 	scheduleScrollRestoration(state: WorkspaceNodeState): void {
+		console.log('*** PERSPECTA BUILD TEST: scheduleScrollRestoration called ***');
 		const scrollMap = new Map<string, number>();
 		const canvasMap = new Map<string, { tx: number; ty: number; zoom: number }>();
 

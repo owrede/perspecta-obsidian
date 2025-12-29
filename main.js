@@ -337,6 +337,7 @@ var DEFAULT_SETTINGS = {
   automationScriptsPath: "perspecta/scripts/",
   perspectaFolderPath: "perspecta",
   showDebugModal: true,
+  showDebugModalOnRestore: true,
   enableDebugLogging: false,
   focusTintDuration: 8,
   autoGenerateUids: true,
@@ -1922,7 +1923,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = /* @__PURE__ */ new Date();
+  const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2658,6 +2659,22 @@ function resolveFile2(app, tab) {
   return { file: result.file, method: result.method };
 }
 var COORDINATE_DEBUG = false;
+function getPropertiesCollapsed(view) {
+  const containerEl = view == null ? void 0 : view.containerEl;
+  if (!containerEl)
+    return void 0;
+  const metadataEl = containerEl.querySelector(".metadata-container");
+  if (!metadataEl)
+    return void 0;
+  if (metadataEl.classList.contains("is-collapsed") || metadataEl.classList.contains("collapsed")) {
+    return true;
+  }
+  const metadataContent = metadataEl.querySelector(".metadata-content");
+  if (metadataContent && metadataContent.style.display === "none") {
+    return true;
+  }
+  return false;
+}
 var PerspectaPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
@@ -2685,6 +2702,13 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
   // Track Cmd+Shift for context restore on link click
   async onload() {
     await this.loadSettings();
+    try {
+      const stat2 = await this.app.vault.adapter.stat(`${this.manifest.dir}/main.js`);
+      const ts = (stat2 == null ? void 0 : stat2.mtime) ? new Date(stat2.mtime).toLocaleString() : "unknown";
+      console.log(`[Perspecta] Loaded v${this.manifest.version} (main.js: ${ts})`);
+    } catch (e) {
+      console.log(`[Perspecta] Loaded v${this.manifest.version}`);
+    }
     this.checkVersionCompatibility();
     this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
     if (this.settings.storageMode === "external") {
@@ -3077,6 +3101,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
           uid,
           name,
           scroll: typeof scroll === "number" ? scroll : void 0,
+          propertiesCollapsed: getPropertiesCollapsed(view),
           canvasViewport
         });
       }
@@ -3394,7 +3419,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = /* @__PURE__ */ new Date();
+    const now = new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -3421,7 +3446,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }
@@ -3741,6 +3766,12 @@ ${content}`;
       }
       const _focusedWin = await this.applyArrangement(context, targetFile.path);
       PerfTimer.mark("applyArrangement");
+      if (this.settings.showDebugModalOnRestore) {
+        setTimeout(() => {
+          const v2Context = this.normalizeToV2(context);
+          this.showRestoreDebugModal(v2Context, targetFile.name);
+        }, 1e3);
+      }
       if (this.pathCorrections.size > 0) {
         await this.updateContextWithCorrectedPaths(targetFile, context);
         PerfTimer.mark("updateContextWithCorrectedPaths");
@@ -3937,6 +3968,14 @@ ${content}`;
         this.scheduleScrollRestoration(popout.root);
       }
       PerfTimer.mark("scheduleScrollRestoration");
+      if (this.settings.enableDebugLogging) {
+        console.log("[Perspecta] Scheduling properties restoration");
+      }
+      this.schedulePropertiesRestoration(v2.main.root);
+      for (const popout of v2.popouts) {
+        this.schedulePropertiesRestoration(popout.root);
+      }
+      PerfTimer.mark("schedulePropertiesRestoration");
       let contextNoteWin = null;
       if (contextNotePath) {
         contextNoteWin = this.findWindowContainingFile(contextNotePath);
@@ -4246,6 +4285,86 @@ ${content}`;
         }
       });
     }, 500);
+  }
+  /**
+   * Schedule properties collapse/expand restoration for all leaves.
+   */
+  schedulePropertiesRestoration(state) {
+    const propsMap = /* @__PURE__ */ new Map();
+    this.collectPropertiesState(state, propsMap);
+    if (propsMap.size === 0) {
+      return;
+    }
+    if (this.settings.enableDebugLogging) {
+      console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
+    }
+    setTimeout(() => {
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        if (!hasFile(leaf.view))
+          return;
+        const file = leaf.view.file;
+        if (propsMap.has(file.path)) {
+          const collapsed = propsMap.get(file.path);
+          if (collapsed !== void 0) {
+            if (this.settings.enableDebugLogging) {
+              console.log(`[Perspecta] Restoring properties for ${file.path}: ${collapsed ? "collapsed" : "expanded"}`);
+            }
+            this.setPropertiesCollapsed(leaf.view, collapsed);
+          }
+        }
+      });
+    }, 1e3);
+  }
+  /**
+   * Collect properties collapse/expand state from workspace node state.
+   */
+  collectPropertiesState(state, map) {
+    if (state.type === "tabs") {
+      for (const tab of state.tabs) {
+        if (tab.propertiesCollapsed !== void 0) {
+          map.set(tab.path, tab.propertiesCollapsed);
+        }
+      }
+      return;
+    }
+    for (const child of state.children) {
+      this.collectPropertiesState(child, map);
+    }
+  }
+  /**
+   * Set properties collapse/expand state for a view.
+   */
+  setPropertiesCollapsed(view, collapsed) {
+    var _a;
+    const containerEl = view == null ? void 0 : view.containerEl;
+    if (!containerEl) {
+      if (this.settings.enableDebugLogging) {
+        console.log("[Perspecta] Properties restoration: no container element found");
+      }
+      return;
+    }
+    const metadataEl = containerEl.querySelector(".metadata-container");
+    if (metadataEl) {
+      const isCollapsed = metadataEl.classList.contains("is-collapsed") || metadataEl.classList.contains("collapsed");
+      if (isCollapsed === collapsed) {
+        return;
+      }
+      const toggle = metadataEl.querySelector(".metadata-properties-heading");
+      if (toggle) {
+        try {
+          toggle.click();
+          if (this.settings.enableDebugLogging) {
+            const filePath = ((_a = view.file) == null ? void 0 : _a.path) || "unknown";
+            console.log(`[Perspecta] Properties ${collapsed ? "collapsed" : "expanded"} for ${filePath}`);
+          }
+          return;
+        } catch (e) {
+          if (this.settings.enableDebugLogging) {
+            console.log("[Perspecta] Properties restoration: click failed", e);
+          }
+        }
+      }
+    }
   }
   collectViewPositions(node, scrollMap, canvasViewportMap) {
     if (node.type === "tabs") {
@@ -5055,6 +5174,48 @@ ${content}`;
     document.body.appendChild(overlay);
     document.body.appendChild(modal);
   }
+  showRestoreDebugModal(storedContext, fileName) {
+    const overlay = document.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = document.createElement("div");
+    modal.className = "perspecta-debug-modal";
+    modal.createEl("h3", { text: "Context Restored - Comparison" });
+    const fileP = modal.createEl("p");
+    fileP.createEl("strong", { text: "File: " });
+    fileP.appendText(fileName);
+    modal.createEl("h4", { text: "\u{1F4CB} Stored State" });
+    const storedSection = modal.createEl("div", { cls: "perspecta-debug-section" });
+    this.buildDebugNodeDOM(storedSection, storedContext.main.root, 0);
+    if (storedContext.popouts.length) {
+      modal.createEl("h4", { text: `\u{1F4CB} Stored Popouts (${storedContext.popouts.length})` });
+      storedContext.popouts.forEach((p, i) => {
+        const popoutDiv = modal.createEl("div");
+        popoutDiv.createEl("p", { text: `Popout #${i + 1}:` });
+        this.buildDebugNodeDOM(popoutDiv, p.root, 0);
+      });
+    }
+    modal.createEl("h4", { text: "\u{1F50D} Current State (After Restore)" });
+    const currentSection = modal.createEl("div", { cls: "perspecta-debug-section" });
+    const currentContext = this.captureWindowArrangement();
+    this.buildDebugNodeDOM(currentSection, currentContext.main.root, 0);
+    if (currentContext.popouts.length) {
+      modal.createEl("h4", { text: `\u{1F50D} Current Popouts (${currentContext.popouts.length})` });
+      currentContext.popouts.forEach((p, i) => {
+        const popoutDiv = modal.createEl("div");
+        popoutDiv.createEl("p", { text: `Popout #${i + 1}:` });
+        this.buildDebugNodeDOM(popoutDiv, p.root, 0);
+      });
+    }
+    const closeBtn = modal.createEl("button", { cls: "perspecta-debug-close", text: "Close" });
+    const closeModal = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    overlay.onclick = closeModal;
+    closeBtn.addEventListener("click", closeModal);
+    document.body.appendChild(overlay);
+    document.body.appendChild(modal);
+  }
   buildDebugNodeDOM(container, node, depth, sizePercent) {
     const wrapper = container.createDiv({ cls: `perspecta-debug-node perspecta-debug-depth-${depth}` });
     if (node.type === "tabs") {
@@ -5067,6 +5228,11 @@ ${content}`;
         tabLine.appendText(`\u{1F4C4} ${t.path.split("/").pop() || t.path}`);
         if (t.active)
           tabLine.appendText(" \u2713");
+        if (t.propertiesCollapsed !== void 0) {
+          const propsIcon = t.propertiesCollapsed ? "\u{1F53D}" : "\u{1F53C}";
+          const propsText = t.propertiesCollapsed ? "Properties collapsed" : "Properties expanded";
+          tabLine.createSpan({ cls: "perspecta-debug-props", text: ` ${propsIcon} ${propsText}` });
+        }
       }
     } else {
       const sizes = node.sizes;
@@ -5416,6 +5582,16 @@ var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h1", { text: "Perspecta", cls: "perspecta-settings-title" });
+    const buildInfo = containerEl.createDiv({ cls: "setting-item-description" });
+    buildInfo.style.marginTop = "6px";
+    buildInfo.style.marginBottom = "18px";
+    buildInfo.setText(`Version: v${this.plugin.manifest.version}`);
+    this.app.vault.adapter.stat(`${this.plugin.manifest.dir}/main.js`).then((stat2) => {
+      if (!(stat2 == null ? void 0 : stat2.mtime))
+        return;
+      buildInfo.setText(`Version: v${this.plugin.manifest.version} (main.js: ${new Date(stat2.mtime).toLocaleString()})`);
+    }).catch(() => {
+    });
     const tabNav = containerEl.createDiv({ cls: "perspecta-settings-tabs" });
     const tabs = [
       { id: "changelog", label: "Changelog" },
@@ -5665,6 +5841,10 @@ var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
   displayDebugSettings(containerEl) {
     new import_obsidian6.Setting(containerEl).setName("Show debug modal on save").setDesc("Show a modal with context details when saving").addToggle((t) => t.setValue(this.plugin.settings.showDebugModal).onChange(async (v) => {
       this.plugin.settings.showDebugModal = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("Show debug modal on restore").setDesc("Show a modal comparing stored vs actual state after restoring").addToggle((t) => t.setValue(this.plugin.settings.showDebugModalOnRestore).onChange(async (v) => {
+      this.plugin.settings.showDebugModalOnRestore = v;
       await this.plugin.saveSettings();
     }));
     new import_obsidian6.Setting(containerEl).setName("Enable debug logging").setDesc("Log performance timing to the developer console (Cmd+Shift+I)").addToggle((t) => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async (v) => {

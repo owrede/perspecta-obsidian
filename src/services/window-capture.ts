@@ -50,6 +50,27 @@ import { physicalToVirtual, getPhysicalScreen } from '../utils/coordinates';
 import { PerfTimer } from '../utils/perf-timer';
 import { PROXY_VIEW_TYPE } from '../ui/proxy-view';
 
+function getPropertiesCollapsed(view: ExtendedView): boolean | undefined {
+	const containerEl = view?.containerEl as HTMLElement | undefined;
+	if (!containerEl) return undefined;
+
+	const metadataEl = containerEl.querySelector('.metadata-container') as HTMLElement | null;
+	if (!metadataEl) return undefined;
+
+	if (metadataEl.classList.contains('is-collapsed') || metadataEl.classList.contains('collapsed')) {
+		return true;
+	}
+
+	const toggleEl = metadataEl.querySelector('[aria-expanded]') as HTMLElement | null;
+	if (toggleEl) {
+		const expanded = toggleEl.getAttribute('aria-expanded');
+		if (expanded === 'true') return false;
+		if (expanded === 'false') return true;
+	}
+
+	return false;
+}
+
 /**
  * Options for window capture.
  */
@@ -357,6 +378,7 @@ export class WindowCaptureService {
 					uid,
 					name: file.basename,
 					scroll: typeof scroll === 'number' ? scroll : undefined,
+					propertiesCollapsed: getPropertiesCollapsed(view),
 					canvasViewport
 				});
 			}

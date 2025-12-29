@@ -15,6 +15,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const rootDir = join(__dirname, '..');
 
+const checkOnly = process.argv.includes('--check');
+
 // Read the TypeScript changelog file
 const changelogTsPath = join(rootDir, 'src', 'changelog.ts');
 const changelogTsContent = readFileSync(changelogTsPath, 'utf-8');
@@ -80,6 +82,20 @@ const changelogMd = lines.join('\n');
 
 // Write CHANGELOG.md
 const changelogPath = join(rootDir, 'CHANGELOG.md');
-writeFileSync(changelogPath, changelogMd);
+if (checkOnly) {
+	let current = '';
+	try {
+		current = readFileSync(changelogPath, 'utf-8');
+	} catch {
+		current = '';
+	}
 
-console.log(`Generated ${changelogPath} with ${entries.length} versions`);
+	if (current !== changelogMd) {
+		console.error(`CHANGELOG.md is out of date. Run: npm run changelog`);
+		process.exit(1);
+	}
+	console.log(`CHANGELOG.md is up to date (${entries.length} versions)`);
+} else {
+	writeFileSync(changelogPath, changelogMd);
+	console.log(`Generated ${changelogPath} with ${entries.length} versions`);
+}

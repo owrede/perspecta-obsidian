@@ -19,3 +19,5 @@ contexts/
 
 # Claude
 CLAUDE.md
+
+.agents/

@@ -1,11 +1,11 @@
 {
 	"id": "perspecta-obsidian",
 	"name": "Perspecta",
-	"version": "0.1.21",
-	"minAppVersion": "1.4.0",
-	"description": "Context-switching plugin that saves and restores window arrangements for knowledge work",
-	"author": "Perspecta Contributors",
-	"authorUrl": "https://github.com/perspecta-obsidian",
-	"fundingUrl": "",
+	"version": "0.1.22",
+	"minAppVersion": "0.15.0",
+	"description": "Save and restore complex window arrangements across multiple displays with context-aware workspace management for Obsidian.",
+	"author": "Oliver Wrede",
+	"authorUrl": "https://wrede.interfacedesign.org",
+	"fundingUrl": "https://github.com/sponsors/wrede",
 	"isDesktopOnly": true
 }

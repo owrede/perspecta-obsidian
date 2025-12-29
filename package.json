@@ -5,11 +5,12 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "build": "npm run changelog && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "changelog": "node scripts/generate-changelog.mjs",
-    "version": "node version-bump.mjs && git add manifest.json versions.json"
+    "changelog:check": "node scripts/generate-changelog.mjs --check",
+    "version": "npm run changelog && node version-bump.mjs && git add CHANGELOG.md manifest.json versions.json"
   },
   "keywords": [
     "obsidian",
