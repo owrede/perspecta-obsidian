@@ -140,7 +140,6 @@ import { ExternalContextStore } from './storage/external-store';
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
 import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 import { PerspectaSettingTab } from './ui/settings-tab';
-import { ContextIndicators } from './ui/context-indicators';
 
 // ============================================================================
 // Unified file helpers (works for markdown, canvas, and base files)
@@ -210,12 +209,13 @@ export default class PerspectaPlugin extends Plugin {
 	settings: PerspectaSettings;
 	private focusedWindowIndex = -1;
 	private windowFocusListeners: Map<Window, () => void> = new Map();
+	private filesWithContext = new Set<string>();
+	private refreshIndicatorsTimeout: ReturnType<typeof setTimeout> | null = null;
 	private isClosingWindow = false; // Guard against operations during window close
 	private isUnloading = false; // Guard against operations during plugin unload
 	private pendingTimeouts = new Set<ReturnType<typeof setTimeout>>(); // Track timeouts for cleanup
 	externalStore: ExternalContextStore;  // External context storage
 	private shiftCmdHeld = false; // Track Cmd+Shift for context restore on link click
-	contextIndicators: ContextIndicators; // Context indicator manager
 
 	async onload() {
 		await this.loadSettings();
@@ -236,9 +236,6 @@ export default class PerspectaPlugin extends Plugin {
 		if (this.settings.storageMode === 'external') {
 			await this.externalStore.initialize();
 		}
-
-		// Initialize context indicators
-		this.contextIndicators = new ContextIndicators(this);
 
 		// Hide perspecta-uid from the Properties view (keep it visible in source mode)
 		this.hideInternalProperties();
@@ -293,16 +290,12 @@ export default class PerspectaPlugin extends Plugin {
 		});
 
 		this.setupFocusTracking();
-
-		// Setup context indicators
-		const indicatorEvents = this.contextIndicators.setupContextIndicator();
-		indicatorEvents.forEach(event => this.registerEvent(event));
+		this.setupContextIndicator();
 
 		// Wait for layout to be ready before scanning for files with context
 		// The metadata cache may not be fully populated during onload()
-		this.app.workspace.onLayoutReady(async () => {
-			const explorerEvents = await this.contextIndicators.setupFileExplorerIndicators();
-			explorerEvents.forEach(event => this.registerEvent(event));
+		this.app.workspace.onLayoutReady(() => {
+			this.setupFileExplorerIndicators();
 		});
 
 		this.registerEvent(
@@ -379,12 +372,12 @@ export default class PerspectaPlugin extends Plugin {
 	async onunload() {
 		// Set unloading flag to prevent new operations
 		this.isUnloading = true;
-		this.contextIndicators.setUnloading(true);
-
-		// Cleanup context indicators
-		this.contextIndicators.cleanup();
 
 		// Clear all pending timeouts
+		if (this.refreshIndicatorsTimeout) {
+			clearTimeout(this.refreshIndicatorsTimeout);
+			this.refreshIndicatorsTimeout = null;
+		}
 		this.pendingTimeouts.forEach(timeout => clearTimeout(timeout));
 		this.pendingTimeouts.clear();
 
@@ -431,7 +424,6 @@ export default class PerspectaPlugin extends Plugin {
 			this.app.workspace.on('window-close', (_: unknown, win: Window) => {
 				// Set guard to prevent other handlers from doing work during close
 				this.isClosingWindow = true;
-				this.contextIndicators.setClosingWindow(true);
 
 				// Clean up our focus listener for this window
 				const listener = this.windowFocusListeners.get(win);
@@ -443,7 +435,6 @@ export default class PerspectaPlugin extends Plugin {
 				// Reset guard after a short delay to allow Obsidian to finish cleanup
 				this.safeTimeout(() => {
 					this.isClosingWindow = false;
-					this.contextIndicators.setClosingWindow(false);
 				}, 100);
 
 				// Debug: Check if main thread gets blocked after our handler (uncomment to debug)
@@ -1091,8 +1082,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Refresh indicators
 		this.filesWithContext.clear();
-		const events = await this.contextIndicators.setupFileExplorerIndicators();
-		events.forEach(event => this.registerEvent(event));
+		await this.setupFileExplorerIndicators();
 
 		return { migrated, errors };
 	}
@@ -1134,8 +1124,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Refresh indicators
 		this.filesWithContext.clear();
-		const events = await this.contextIndicators.setupFileExplorerIndicators();
-		events.forEach(event => this.registerEvent(event));
+		await this.setupFileExplorerIndicators();
 
 		return { migrated, errors };
 	}
@@ -1304,8 +1293,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Refresh indicators
 		this.filesWithContext.clear();
-		const events = await this.contextIndicators.setupFileExplorerIndicators();
-		events.forEach(event => this.registerEvent(event));
+		await this.setupFileExplorerIndicators();
 
 		return { restored, errors };
 	}
