@@ -126,8 +126,11 @@ var DEFAULT_SETTINGS = {
   proxyPreviewScale: 0.35,
   enableWallpaperCapture: false,
   enableWallpaperRestore: false,
-  storeWallpapersLocally: true
+  storeWallpapersLocally: true,
   // Default to local storage for portability
+  // Performance settings
+  enableParallelPopoutCreation: false
+  // Default to sequential for safety
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
@@ -1700,7 +1703,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2888,6 +2891,12 @@ var PerspectaSettingTab = class extends import_obsidian6.PluginSettingTab {
     const warning = containerEl.createDiv({ cls: "perspecta-experimental-warning" });
     warning.createSpan({ cls: "perspecta-experimental-warning-icon", text: "\u26A0\uFE0F" });
     warning.createSpan({ text: "These features are experimental and may change or break in future updates." });
+    containerEl.createEl("h4", { text: "Performance" });
+    new import_obsidian6.Setting(containerEl).setName("Parallel popout window creation").setDesc("Create popout windows in parallel instead of sequentially. Can improve restoration speed by 30-50% when restoring multiple popout windows.").addToggle((t) => t.setValue(this.plugin.settings.enableParallelPopoutCreation).onChange(async (v) => {
+      this.plugin.settings.enableParallelPopoutCreation = v;
+      await this.plugin.saveSettings();
+    }));
+    containerEl.createEl("h4", { text: "Proxy windows" });
     new import_obsidian6.Setting(containerEl).setName("Enable proxy windows").setDesc('Allows converting popout windows to minimalist "proxy" windows that show only the note title. Click the title to restore its arrangement.').addToggle((t) => t.setValue(this.plugin.settings.enableProxyWindows).onChange(async (v) => {
       this.plugin.settings.enableProxyWindows = v;
       await this.plugin.saveSettings();
@@ -3758,7 +3767,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = new Date();
+    const now = /* @__PURE__ */ new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -3785,7 +3794,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }
@@ -4265,6 +4274,7 @@ ${content}`;
       await this.restoreWorkspaceNode(workspace.rootSplit, v2.main.root, mainLeaves[0]);
       PerfTimer.mark("restoreMainWorkspace");
       const restoredPaths = /* @__PURE__ */ new Set();
+      const popoutsToRestore = [];
       for (let i = 0; i < v2.popouts.length; i++) {
         const firstTab = this.getFirstTab(v2.popouts[i].root);
         const popoutPath = firstTab == null ? void 0 : firstTab.path;
@@ -4275,8 +4285,21 @@ ${content}`;
           restoredPaths.add(popoutPath);
         }
         const tiledPosition = useTiling && tiledPositions.length > i + 1 ? tiledPositions[i + 1] : void 0;
-        await this.restorePopoutWindow(v2.popouts[i], v2.sourceScreen, tiledPosition);
-        PerfTimer.mark(`restorePopout[${i}]`);
+        popoutsToRestore.push({ index: i, state: v2.popouts[i], tiledPosition });
+      }
+      if (this.settings.enableParallelPopoutCreation && popoutsToRestore.length > 1) {
+        await Promise.all(
+          popoutsToRestore.map(async ({ index, state, tiledPosition }) => {
+            await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition);
+            PerfTimer.mark(`restorePopout[${index}]`);
+          })
+        );
+        PerfTimer.mark("restorePopoutsParallel");
+      } else {
+        for (const { index, state, tiledPosition } of popoutsToRestore) {
+          await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition);
+          PerfTimer.mark(`restorePopout[${index}]`);
+        }
       }
       if (this.pendingTabActivations.length > 0) {
         requestAnimationFrame(() => {
