@@ -11,7 +11,7 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
-		version: '0.1.18',
+		version: '0.1.21',
 		date: '2025-12-29',
 		changes: [
 			'Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks',
@@ -26,6 +26,32 @@ export const CHANGELOG: ChangelogEntry[] = [
 			'Refactor: Created utility modules for constants, event management, and async operations',
 			'Refactor: Eliminated magic numbers throughout codebase with centralized constants',
 			'Refactor: Consistent async patterns across all services',
+		],
+	},
+	{
+		version: '0.1.20',
+		date: '2025-12-29',
+		changes: [
+			'Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)',
+		],
+	},
+	{
+		version: '0.1.19',
+		date: '2025-12-28',
+		changes: [
+			'New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context',
+			'Fixed: File context scanning now waits for Obsidian layout to be ready',
+			'Fixed: Modifier key tracking works in both main window and popout windows',
+		],
+	},
+	{
+		version: '0.1.18',
+		date: '2025-12-28',
+		changes: [
+			'New: Non-linear center-preserving window scaling across different screen aspect ratios',
+			'Improved: Windows in the center of the screen maintain proportions when switching displays',
+			'Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)',
+			'Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays',
 		],
 	},
 	{

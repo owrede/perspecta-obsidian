@@ -197,6 +197,7 @@ export default class PerspectaPlugin extends Plugin {
 	private isUnloading = false; // Guard against operations during plugin unload
 	private pendingTimeouts = new Set<ReturnType<typeof setTimeout>>(); // Track timeouts for cleanup
 	externalStore: ExternalContextStore;  // External context storage
+	private shiftCmdHeld = false; // Track Cmd+Shift for context restore on link click
 
 	async onload() {
 		await this.loadSettings();
@@ -264,7 +265,12 @@ export default class PerspectaPlugin extends Plugin {
 
 		this.setupFocusTracking();
 		this.setupContextIndicator();
-		this.setupFileExplorerIndicators();
+		
+		// Wait for layout to be ready before scanning for files with context
+		// The metadata cache may not be fully populated during onload()
+		this.app.workspace.onLayoutReady(() => {
+			this.setupFileExplorerIndicators();
+		});
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu: Menu, file: TAbstractFile) => {
@@ -291,18 +297,46 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		});
 
+		// Track modifier keys globally for Cmd+Shift+Click context restore
+		// Register on main window
+		this.registerModifierKeyTracking(window);
+		
+		// Register on popout windows as they open
+		this.registerEvent(
+			this.app.workspace.on('window-open', (_: unknown, win: Window) => {
+				this.registerModifierKeyTracking(win);
+			})
+		);
+		
+		// Intercept file-open: if Shift+Cmd was held when navigating, restore context instead
+		this.registerEvent(this.app.workspace.on('file-open', (file) => {
+			if (!file || !this.shiftCmdHeld) return;
+			
+			if (this.filesWithContext.has(file.path)) {
+				// Small delay to let Obsidian finish its navigation, then restore
+				// Use forceLatest=true to skip the arrangement selector modal
+				setTimeout(() => {
+					this.restoreContext(file, true);
+				}, 50);
+			}
+			this.shiftCmdHeld = false;
+		}));
+
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			if (evt.altKey && evt.button === 0) {
-				const link = (evt.target as HTMLElement).closest('a.internal-link') as HTMLAnchorElement;
-				if (link) {
-					evt.preventDefault();
-					evt.stopPropagation();
-					const href = link.getAttribute('data-href');
-					if (href) {
-						const file = this.app.metadataCache.getFirstLinkpathDest(href, '');
-						if (file instanceof TFile) this.openInNewWindow(file);
-					}
-				}
+			const link = (evt.target as HTMLElement).closest('a.internal-link') as HTMLAnchorElement;
+			if (!link || evt.button !== 0) return;
+			
+			const href = link.getAttribute('data-href');
+			if (!href) return;
+			
+			const file = this.app.metadataCache.getFirstLinkpathDest(href, '');
+			if (!(file instanceof TFile)) return;
+			
+			// Alt+Click: Open in new window
+			if (evt.altKey) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				this.openInNewWindow(file);
 			}
 		}, true);
 
@@ -412,6 +446,30 @@ export default class PerspectaPlugin extends Plugin {
 				// console.log(`[Perspecta] active-leaf-change: ${path}`);
 			})
 		);
+	}
+
+	/**
+	 * Register keydown/keyup listeners on a window to track Cmd+Shift for context restore.
+	 * Called for main window and each popout window.
+	 */
+	private registerModifierKeyTracking(win: Window) {
+		const doc = win.document;
+		
+		const keydownHandler = (evt: KeyboardEvent) => {
+			if (evt.shiftKey && (evt.metaKey || evt.ctrlKey)) {
+				this.shiftCmdHeld = true;
+			}
+		};
+		
+		const keyupHandler = () => {
+			this.shiftCmdHeld = false;
+		};
+		
+		doc.addEventListener('keydown', keydownHandler);
+		doc.addEventListener('keyup', keyupHandler);
+		
+		// Note: These listeners will be cleaned up when the window closes
+		// as the document is destroyed with the window
 	}
 
 	private trackPopoutWindowFocus(win: Window) {

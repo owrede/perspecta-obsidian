@@ -32,7 +32,7 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
-    version: "0.1.18",
+    version: "0.1.21",
     date: "2025-12-29",
     changes: [
       "Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks",
@@ -47,6 +47,32 @@ var CHANGELOG = [
       "Refactor: Created utility modules for constants, event management, and async operations",
       "Refactor: Eliminated magic numbers throughout codebase with centralized constants",
       "Refactor: Consistent async patterns across all services"
+    ]
+  },
+  {
+    version: "0.1.20",
+    date: "2025-12-29",
+    changes: [
+      "Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)"
+    ]
+  },
+  {
+    version: "0.1.19",
+    date: "2025-12-28",
+    changes: [
+      "New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context",
+      "Fixed: File context scanning now waits for Obsidian layout to be ready",
+      "Fixed: Modifier key tracking works in both main window and popout windows"
+    ]
+  },
+  {
+    version: "0.1.18",
+    date: "2025-12-28",
+    changes: [
+      "New: Non-linear center-preserving window scaling across different screen aspect ratios",
+      "Improved: Windows in the center of the screen maintain proportions when switching displays",
+      "Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)",
+      "Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays"
     ]
   },
   {
@@ -601,6 +627,47 @@ var coordinateDebug = false;
 function setCoordinateDebug(enabled) {
   coordinateDebug = enabled;
 }
+var CENTER_ZONE_MIN = 0.15;
+var CENTER_ZONE_MAX = 0.35;
+var CENTER_SLOPE_MIN = 0.5;
+var CENTER_SLOPE_MAX = 1;
+var AR_RATIO_MAX = 1;
+function calculateTransformParams(arSource, arTarget) {
+  const r = Math.max(arSource, arTarget) / Math.min(arSource, arTarget);
+  const d = r - 1;
+  const s = Math.min(d / AR_RATIO_MAX, 1);
+  const c = CENTER_ZONE_MIN + (CENTER_ZONE_MAX - CENTER_ZONE_MIN) * s;
+  const b = CENTER_SLOPE_MAX - (CENTER_SLOPE_MAX - CENTER_SLOPE_MIN) * s;
+  const a = (0.5 - b * c) / (0.5 - c);
+  return { c, b, a };
+}
+function phiForward(u, params) {
+  const { c, b, a } = params;
+  u = Math.max(0, Math.min(1, u));
+  if (u <= 0.5) {
+    if (u <= 0.5 - c) {
+      return a * u;
+    } else {
+      return b * (u - 0.5) + 0.5;
+    }
+  } else {
+    return 1 - phiForward(1 - u, params);
+  }
+}
+function phiInverse(y, params) {
+  const { c, b, a } = params;
+  y = Math.max(0, Math.min(1, y));
+  const yC = 0.5 - b * c;
+  if (y <= 0.5) {
+    if (y <= yC) {
+      return y / a;
+    } else {
+      return (y - 0.5) / b + 0.5;
+    }
+  } else {
+    return 1 - phiInverse(1 - y, params);
+  }
+}
 function getPhysicalScreen() {
   var _a, _b;
   const screen = window.screen;
@@ -613,20 +680,34 @@ function getPhysicalScreen() {
 }
 function physicalToVirtual(physical) {
   const screen = getPhysicalScreen();
-  const scaleX = VIRTUAL_SCREEN.width / screen.width;
+  const arPhys = screen.width / screen.height;
+  const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+  const params = calculateTransformParams(arPhys, arVirt);
+  const useForward = arVirt >= arPhys;
+  const phi = useForward ? phiForward : phiInverse;
+  const uL = (physical.x - screen.x) / screen.width;
+  const uR = (physical.x + physical.width - screen.x) / screen.width;
+  const vL = phi(uL, params);
+  const vR = phi(uR, params);
+  const virtualX = vL * VIRTUAL_SCREEN.width;
+  const virtualWidth = (vR - vL) * VIRTUAL_SCREEN.width;
   const scaleY = VIRTUAL_SCREEN.height / screen.height;
+  const virtualY = (physical.y - screen.y) * scaleY;
+  const virtualHeight = physical.height * scaleY;
   const result = {
-    x: Math.round((physical.x - screen.x) * scaleX),
-    y: Math.round((physical.y - screen.y) * scaleY),
-    width: Math.round(physical.width * scaleX),
-    height: Math.round(physical.height * scaleY)
+    x: Math.round(virtualX),
+    y: Math.round(virtualY),
+    width: Math.round(virtualWidth),
+    height: Math.round(virtualHeight)
   };
   if (coordinateDebug) {
-    console.log(`[Perspecta] physicalToVirtual:`, {
+    console.log(`[Perspecta] physicalToVirtual (non-linear):`, {
       physical,
       screen,
       virtualRef: VIRTUAL_SCREEN,
-      scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+      aspectRatios: { physical: arPhys.toFixed(3), virtual: arVirt.toFixed(3) },
+      transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+      normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), vL: vL.toFixed(3), vR: vR.toFixed(3) },
       result
     });
   }
@@ -639,11 +720,19 @@ function virtualToPhysical(virtual, sourceScreen) {
     console.warn("[Perspecta] Invalid screen dimensions, using defaults");
     return { x: 100, y: 100, width: 800, height: 600 };
   }
-  const scaleX = screen.width / VIRTUAL_SCREEN.width;
+  const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+  const arPhys = screen.width / screen.height;
+  const params = calculateTransformParams(arVirt, arPhys);
+  const useForward = arPhys >= arVirt;
+  const phi = useForward ? phiForward : phiInverse;
+  const uL = safeVirtual.x / VIRTUAL_SCREEN.width;
+  const uR = (safeVirtual.x + safeVirtual.width) / VIRTUAL_SCREEN.width;
+  const pL = phi(uL, params);
+  const pR = phi(uR, params);
+  let x = Math.round(screen.x + pL * screen.width);
+  let width = Math.round((pR - pL) * screen.width);
   const scaleY = screen.height / VIRTUAL_SCREEN.height;
-  let x = Math.round(safeVirtual.x * scaleX) + screen.x;
-  let y = Math.round(safeVirtual.y * scaleY) + screen.y;
-  let width = Math.round(safeVirtual.width * scaleX);
+  let y = Math.round(screen.y + safeVirtual.y * scaleY);
   let height = Math.round(safeVirtual.height * scaleY);
   width = Math.max(MIN_WINDOW_SIZE, width);
   height = Math.max(MIN_WINDOW_SIZE, height);
@@ -653,12 +742,14 @@ function virtualToPhysical(virtual, sourceScreen) {
   y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
   const result = { x, y, width, height };
   if (coordinateDebug) {
-    console.log(`[Perspecta] virtualToPhysical:`, {
+    console.log(`[Perspecta] virtualToPhysical (non-linear):`, {
       virtual: safeVirtual,
       screen,
       virtualRef: VIRTUAL_SCREEN,
       sourceScreen,
-      scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+      aspectRatios: { virtual: arVirt.toFixed(3), physical: arPhys.toFixed(3) },
+      transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+      normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), pL: pL.toFixed(3), pR: pR.toFixed(3) },
       result
     });
   }
@@ -2579,6 +2670,8 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     this.isUnloading = false;
     // Guard against operations during plugin unload
     this.pendingTimeouts = /* @__PURE__ */ new Set();
+    // External context storage
+    this.shiftCmdHeld = false;
     // ============================================================================
     // Context Restore (Optimized)
     // ============================================================================
@@ -2589,7 +2682,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.pendingTabActivations = [];
   }
-  // External context storage
+  // Track Cmd+Shift for context restore on link click
   async onload() {
     await this.loadSettings();
     this.checkVersionCompatibility();
@@ -2641,7 +2734,9 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     });
     this.setupFocusTracking();
     this.setupContextIndicator();
-    this.setupFileExplorerIndicators();
+    this.app.workspace.onLayoutReady(() => {
+      this.setupFileExplorerIndicators();
+    });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof import_obsidian6.TFile && ["md", "canvas", "base"].includes(file.extension)) {
@@ -2665,19 +2760,36 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
         }
       }
     });
+    this.registerModifierKeyTracking(window);
+    this.registerEvent(
+      this.app.workspace.on("window-open", (_, win) => {
+        this.registerModifierKeyTracking(win);
+      })
+    );
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      if (!file || !this.shiftCmdHeld)
+        return;
+      if (this.filesWithContext.has(file.path)) {
+        setTimeout(() => {
+          this.restoreContext(file, true);
+        }, 50);
+      }
+      this.shiftCmdHeld = false;
+    }));
     this.registerDomEvent(document, "click", (evt) => {
-      if (evt.altKey && evt.button === 0) {
-        const link = evt.target.closest("a.internal-link");
-        if (link) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          const href = link.getAttribute("data-href");
-          if (href) {
-            const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
-            if (file instanceof import_obsidian6.TFile)
-              this.openInNewWindow(file);
-          }
-        }
+      const link = evt.target.closest("a.internal-link");
+      if (!link || evt.button !== 0)
+        return;
+      const href = link.getAttribute("data-href");
+      if (!href)
+        return;
+      const file = this.app.metadataCache.getFirstLinkpathDest(href, "");
+      if (!(file instanceof import_obsidian6.TFile))
+        return;
+      if (evt.altKey) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.openInNewWindow(file);
       }
     }, true);
     this.addSettingTab(new PerspectaSettingTab(this.app, this));
@@ -2747,6 +2859,23 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
           return;
       })
     );
+  }
+  /**
+   * Register keydown/keyup listeners on a window to track Cmd+Shift for context restore.
+   * Called for main window and each popout window.
+   */
+  registerModifierKeyTracking(win) {
+    const doc = win.document;
+    const keydownHandler = (evt) => {
+      if (evt.shiftKey && (evt.metaKey || evt.ctrlKey)) {
+        this.shiftCmdHeld = true;
+      }
+    };
+    const keyupHandler = () => {
+      this.shiftCmdHeld = false;
+    };
+    doc.addEventListener("keydown", keydownHandler);
+    doc.addEventListener("keyup", keyupHandler);
   }
   trackPopoutWindowFocus(win) {
     if (this.windowFocusListeners.has(win))

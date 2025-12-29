@@ -117,6 +117,103 @@ export function setCoordinateDebug(enabled: boolean) {
 	coordinateDebug = enabled;
 }
 
+// ============================================================================
+// Non-Linear Center-Preserving X-Axis Scaling
+// ============================================================================
+// When screens have different aspect ratios, linear scaling causes windows
+// to stretch/compress proportionally across the entire screen. This results
+// in windows in the center becoming too wide/narrow.
+//
+// This non-linear approach:
+// - Preserves window proportions in the CENTER of the screen
+// - Absorbs aspect ratio differences at the LEFT/RIGHT EDGES
+// - Uses a piecewise-linear symmetric transform φ(u) on normalized X coords
+
+// Configuration for center-preserving transform
+const CENTER_ZONE_MIN = 0.15;  // Half-width of center zone at minimum distortion
+const CENTER_ZONE_MAX = 0.35;  // Half-width of center zone at maximum distortion
+const CENTER_SLOPE_MIN = 0.5;  // Flattest center slope (most preservation)
+const CENTER_SLOPE_MAX = 1.0;  // Linear (no preservation)
+const AR_RATIO_MAX = 1.0;      // AR ratio difference at which full effect kicks in
+
+interface TransformParams {
+	c: number;  // Half-width of center zone in normalized [0,1] coords
+	b: number;  // Slope in center zone
+	a: number;  // Slope in edge zones
+}
+
+/**
+ * Calculate transform parameters based on aspect ratio difference.
+ */
+function calculateTransformParams(arSource: number, arTarget: number): TransformParams {
+	const r = Math.max(arSource, arTarget) / Math.min(arSource, arTarget);
+	const d = r - 1;  // 0 for equal AR, grows with difference
+	const s = Math.min(d / AR_RATIO_MAX, 1);  // Strength in [0, 1]
+	
+	// Center zone width grows with distortion
+	const c = CENTER_ZONE_MIN + (CENTER_ZONE_MAX - CENTER_ZONE_MIN) * s;
+	// Center slope decreases with distortion (more conservative)
+	const b = CENTER_SLOPE_MAX - (CENTER_SLOPE_MAX - CENTER_SLOPE_MIN) * s;
+	// Edge slope computed from continuity constraint
+	const a = (0.5 - b * c) / (0.5 - c);
+	
+	return { c, b, a };
+}
+
+/**
+ * Forward transform φ(u): maps normalized X coordinate through center-preserving curve.
+ * - u ∈ [0,1] normalized input
+ * - Returns φ(u) ∈ [0,1]
+ * - φ(0)=0, φ(0.5)=0.5, φ(1)=1, symmetric
+ */
+function phiForward(u: number, params: TransformParams): number {
+	const { c, b, a } = params;
+	
+	// Clamp to [0,1]
+	u = Math.max(0, Math.min(1, u));
+	
+	if (u <= 0.5) {
+		if (u <= 0.5 - c) {
+			// Left edge zone
+			return a * u;
+		} else {
+			// Center zone
+			return b * (u - 0.5) + 0.5;
+		}
+	} else {
+		// Symmetric right side: φ(u) = 1 - φ(1 - u)
+		return 1 - phiForward(1 - u, params);
+	}
+}
+
+/**
+ * Inverse transform φ⁻¹(y): inverts the center-preserving curve.
+ * - y ∈ [0,1] normalized input (in transformed space)
+ * - Returns u ∈ [0,1]
+ */
+function phiInverse(y: number, params: TransformParams): number {
+	const { c, b, a } = params;
+	
+	// Clamp to [0,1]
+	y = Math.max(0, Math.min(1, y));
+	
+	// Boundary value in output space at edge of center zone
+	const yC = 0.5 - b * c;
+	
+	if (y <= 0.5) {
+		if (y <= yC) {
+			// Left edge zone
+			return y / a;
+		} else {
+			// Center zone
+			return (y - 0.5) / b + 0.5;
+		}
+	} else {
+		// Symmetric right side
+		return 1 - phiInverse(1 - y, params);
+	}
+}
+
 export interface PhysicalScreen {
 	width: number;
 	height: number;
@@ -135,24 +232,53 @@ export function getPhysicalScreen(): PhysicalScreen {
 }
 
 // Convert physical coordinates to virtual (for saving)
+// Uses non-linear center-preserving transform on X-axis
 export function physicalToVirtual(physical: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
 	const screen = getPhysicalScreen();
-	const scaleX = VIRTUAL_SCREEN.width / screen.width;
+	
+	// Aspect ratios
+	const arPhys = screen.width / screen.height;
+	const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+	
+	// Calculate transform parameters based on AR difference
+	const params = calculateTransformParams(arPhys, arVirt);
+	
+	// Determine direction: use forward if target (virtual) is wider
+	const useForward = arVirt >= arPhys;
+	const phi = useForward ? phiForward : phiInverse;
+	
+	// Normalize X coordinates to [0, 1]
+	const uL = (physical.x - screen.x) / screen.width;
+	const uR = (physical.x + physical.width - screen.x) / screen.width;
+	
+	// Apply non-linear transform to both edges
+	const vL = phi(uL, params);
+	const vR = phi(uR, params);
+	
+	// Convert back to virtual coordinates
+	const virtualX = vL * VIRTUAL_SCREEN.width;
+	const virtualWidth = (vR - vL) * VIRTUAL_SCREEN.width;
+	
+	// Y-axis remains linear
 	const scaleY = VIRTUAL_SCREEN.height / screen.height;
+	const virtualY = (physical.y - screen.y) * scaleY;
+	const virtualHeight = physical.height * scaleY;
 
 	const result = {
-		x: Math.round((physical.x - screen.x) * scaleX),
-		y: Math.round((physical.y - screen.y) * scaleY),
-		width: Math.round(physical.width * scaleX),
-		height: Math.round(physical.height * scaleY)
+		x: Math.round(virtualX),
+		y: Math.round(virtualY),
+		width: Math.round(virtualWidth),
+		height: Math.round(virtualHeight)
 	};
 
 	if (coordinateDebug) {
-		console.log(`[Perspecta] physicalToVirtual:`, {
+		console.log(`[Perspecta] physicalToVirtual (non-linear):`, {
 			physical,
 			screen,
 			virtualRef: VIRTUAL_SCREEN,
-			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+			aspectRatios: { physical: arPhys.toFixed(3), virtual: arVirt.toFixed(3) },
+			transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+			normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), vL: vL.toFixed(3), vR: vR.toFixed(3) },
 			result
 		});
 	}
@@ -161,6 +287,7 @@ export function physicalToVirtual(physical: { x: number; y: number; width: numbe
 }
 
 // Convert virtual coordinates to physical (for restoring)
+// Uses non-linear center-preserving transform on X-axis
 export function virtualToPhysical(
 	virtual: { x: number; y: number; width: number; height: number },
 	sourceScreen?: ScreenInfo
@@ -176,12 +303,32 @@ export function virtualToPhysical(
 		return { x: 100, y: 100, width: 800, height: 600 };
 	}
 	
-	const scaleX = screen.width / VIRTUAL_SCREEN.width;
+	// Aspect ratios
+	const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
+	const arPhys = screen.width / screen.height;
+	
+	// Calculate transform parameters based on AR difference
+	const params = calculateTransformParams(arVirt, arPhys);
+	
+	// Determine direction: use forward if target (physical) is wider
+	const useForward = arPhys >= arVirt;
+	const phi = useForward ? phiForward : phiInverse;
+	
+	// Normalize virtual X coordinates to [0, 1]
+	const uL = safeVirtual.x / VIRTUAL_SCREEN.width;
+	const uR = (safeVirtual.x + safeVirtual.width) / VIRTUAL_SCREEN.width;
+	
+	// Apply non-linear transform to both edges
+	const pL = phi(uL, params);
+	const pR = phi(uR, params);
+	
+	// Convert to physical coordinates
+	let x = Math.round(screen.x + pL * screen.width);
+	let width = Math.round((pR - pL) * screen.width);
+	
+	// Y-axis remains linear
 	const scaleY = screen.height / VIRTUAL_SCREEN.height;
-
-	let x = Math.round(safeVirtual.x * scaleX) + screen.x;
-	let y = Math.round(safeVirtual.y * scaleY) + screen.y;
-	let width = Math.round(safeVirtual.width * scaleX);
+	let y = Math.round(screen.y + safeVirtual.y * scaleY);
 	let height = Math.round(safeVirtual.height * scaleY);
 
 	// Ensure minimum window size
@@ -197,12 +344,14 @@ export function virtualToPhysical(
 	const result = { x, y, width, height };
 
 	if (coordinateDebug) {
-		console.log(`[Perspecta] virtualToPhysical:`, {
+		console.log(`[Perspecta] virtualToPhysical (non-linear):`, {
 			virtual: safeVirtual,
 			screen,
 			virtualRef: VIRTUAL_SCREEN,
 			sourceScreen,
-			scale: { x: scaleX.toFixed(3), y: scaleY.toFixed(3) },
+			aspectRatios: { virtual: arVirt.toFixed(3), physical: arPhys.toFixed(3) },
+			transformParams: { c: params.c.toFixed(3), b: params.b.toFixed(3), a: params.a.toFixed(3) },
+			normalized: { uL: uL.toFixed(3), uR: uR.toFixed(3), pL: pL.toFixed(3), pR: pR.toFixed(3) },
 			result
 		});
 	}

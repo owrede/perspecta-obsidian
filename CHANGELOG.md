@@ -2,7 +2,7 @@
 
 All notable changes to Perspecta will be documented in this file.
 
-## [0.1.18] - 2025-12-29
+## [0.1.21] - 2025-12-29
 
 - Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks
 - Performance: Replaced all hardcoded setTimeout calls with centralized timing constants
@@ -16,6 +16,23 @@ All notable changes to Perspecta will be documented in this file.
 - Refactor: Created utility modules for constants, event management, and async operations
 - Refactor: Eliminated magic numbers throughout codebase with centralized constants
 - Refactor: Consistent async patterns across all services
+
+## [0.1.20] - 2025-12-29
+
+- Changed: Cmd+Shift+Click now auto-restores most recent arrangement (skips selector modal)
+
+## [0.1.19] - 2025-12-28
+
+- New: Cmd+Shift+Click (macOS) or Ctrl+Shift+Click (Windows/Linux) on links restores target note context
+- Fixed: File context scanning now waits for Obsidian layout to be ready
+- Fixed: Modifier key tracking works in both main window and popout windows
+
+## [0.1.18] - 2025-12-28
+
+- New: Non-linear center-preserving window scaling across different screen aspect ratios
+- Improved: Windows in the center of the screen maintain proportions when switching displays
+- Improved: Left/right edge windows absorb aspect ratio differences (stretching/compression)
+- Fixed: Windows no longer get excessively stretched on ultrawide or compressed on narrow displays
 
 ## [0.1.17] - 2025-12-27
 
