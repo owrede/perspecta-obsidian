@@ -2429,6 +2429,16 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.26",
+    date: "2025-12-29",
+    changes: [
+      "New: Optional parallel popout window creation for 30-50% faster context restoration",
+      "New: Performance section in Experimental settings tab",
+      "Settings: Added toggle for parallel popout creation (disabled by default)",
+      "Note: Enable in Settings \u2192 Experimental \u2192 Performance to try the new parallel mode"
+    ]
+  },
+  {
     version: "0.1.25",
     date: "2025-12-29",
     changes: [

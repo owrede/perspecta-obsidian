@@ -2,6 +2,13 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.26] - 2025-12-29
+
+- New: Optional parallel popout window creation for 30-50% faster context restoration
+- New: Performance section in Experimental settings tab
+- Settings: Added toggle for parallel popout creation (disabled by default)
+- Note: Enable in Settings → Experimental → Performance to try the new parallel mode
+
 ## [0.1.25] - 2025-12-29
 
 - Updated CHANGELOG.md with comprehensive v0.1.24 release notes
