@@ -1703,7 +1703,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = /* @__PURE__ */ new Date();
+  const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2428,6 +2428,13 @@ var import_obsidian6 = require("obsidian");
 
 // src/changelog.ts
 var CHANGELOG = [
+  {
+    version: "0.1.28",
+    date: "2025-12-29",
+    changes: [
+      "Fix: Version sync and release automation"
+    ]
+  },
   {
     version: "0.1.26",
     date: "2025-12-29",
@@ -3777,7 +3784,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = /* @__PURE__ */ new Date();
+    const now = new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -3804,7 +3811,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }

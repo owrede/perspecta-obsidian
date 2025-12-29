@@ -2,6 +2,10 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.28] - 2025-12-29
+
+- Fix: Version sync and release automation
+
 ## [0.1.26] - 2025-12-29
 
 - New: Optional parallel popout window creation for 30-50% faster context restoration
