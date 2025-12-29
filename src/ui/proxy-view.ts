@@ -323,7 +323,6 @@ export class ProxyNoteView extends ItemView {
 				this.renderComponent
 			);
 		} catch (e) {
-			console.log('[Perspecta] Could not render preview:', e);
 			container.setText('Preview unavailable');
 		}
 	}

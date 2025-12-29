@@ -424,10 +424,6 @@ export default class PerspectaPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.workspace.on('window-close', (_: unknown, win: Window) => {
-				// Debug timing (uncomment to debug window close performance)
-				// const start = performance.now();
-				// console.log(`[Perspecta] Window close event START`);
-
 				// Set guard to prevent other handlers from doing work during close
 				this.isClosingWindow = true;
 
@@ -437,10 +433,6 @@ export default class PerspectaPlugin extends Plugin {
 					win.removeEventListener('focus', listener);
 					this.windowFocusListeners.delete(win);
 				}
-
-				// Debug timing (uncomment to debug window close performance)
-				// const elapsed = performance.now() - start;
-				// console.log(`[Perspecta] Window close event END (${elapsed.toFixed(1)}ms)`);
 
 				// Reset guard after a short delay to allow Obsidian to finish cleanup
 				this.safeTimeout(() => {
@@ -460,18 +452,13 @@ export default class PerspectaPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('layout-change', () => {
 				if (this.isClosingWindow) {
-					// console.log(`[Perspecta] layout-change skipped (window closing)`);
 					return;
 				}
-				// console.log(`[Perspecta] layout-change event`);
 			})
 		);
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (_leaf) => {
 				if (this.isClosingWindow) return;
-				// Debug: uncomment to log leaf changes
-				// const path = (_leaf?.view as any)?.file?.path || 'unknown';
-				// console.log(`[Perspecta] active-leaf-change: ${path}`);
 			})
 		);
 	}
@@ -505,7 +492,6 @@ export default class PerspectaPlugin extends Plugin {
 		const listener = () => {
 			// Skip if we're in the middle of closing a window
 			if (this.isClosingWindow) {
-				// console.log(`[Perspecta] popoutFocusHandler skipped (window closing)`);
 				return;
 			}
 			PerfTimer.begin('popoutFocusHandler');
@@ -3687,7 +3673,6 @@ export default class PerspectaPlugin extends Plugin {
 		this.refreshIndicatorsTimeout = setTimeout(() => {
 			// Skip if we're in the middle of closing a window
 			if (this.isClosingWindow) {
-				// console.log(`[Perspecta] refreshFileExplorerIndicators skipped (window closing)`);
 				this.refreshIndicatorsTimeout = null;
 				return;
 			}
