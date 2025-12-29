@@ -2,6 +2,15 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.24] - 2025-12-29
+
+- Refactor: Extracted Settings Tab to separate module (`ui/settings-tab.ts`)
+- Refactor: Reduced `main.ts` from 4,320 to 3,873 lines (10.3% reduction)
+- Improved: Better code organization and separation of concerns
+- Improved: Settings UI now independently testable and maintainable
+- Fixed: Build errors from incomplete refactoring attempts
+- Internal: No user-facing changes, all functionality maintained
+
 ## [0.1.21] - 2025-12-29
 
 - Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks
