@@ -1923,7 +1923,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2495,7 +2495,6 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
         this.renderComponent
       );
     } catch (e) {
-      console.log("[Perspecta] Could not render preview:", e);
       container.setText("Preview unavailable");
     }
   }
@@ -3419,7 +3418,7 @@ ${newFm}
     if (!await this.app.vault.adapter.exists(backupFolder)) {
       await this.app.vault.createFolder(backupFolder);
     }
-    const now = new Date();
+    const now = /* @__PURE__ */ new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupFileName = `arrangements-backup-${timestamp}.json`;
     const backupPath = `${backupFolder}/${backupFileName}`;
@@ -3446,7 +3445,7 @@ ${newFm}
         const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
         if (match) {
           const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-          const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+          const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
           backups.push({ name: fileName, path: filePath, date });
         }
       }

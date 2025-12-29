@@ -108,35 +108,6 @@ export function debounceAsync<T extends any[], R>(
 }
 
 /**
- * Throttle function for async operations
- */
-export function throttleAsync<T extends any[], R>(
-	fn: (...args: T) => Promise<R>,
-	delay: number
-): (...args: T) => Promise<R | undefined> {
-	let lastExecution = 0;
-	let pendingPromise: Promise<R> | null = null;
-
-	return async (...args: T): Promise<R | undefined> => {
-		const now = Date.now();
-		
-		if (now - lastExecution < delay) {
-			return pendingPromise || undefined;
-		}
-
-		lastExecution = now;
-		pendingPromise = fn(...args);
-		
-		try {
-			return await pendingPromise;
-		} catch (error) {
-			console.error('[Perspecta] Throttled operation failed:', error);
-			return undefined;
-		}
-	};
-}
-
-/**
  * Wait for a condition to become true with timeout
  */
 export async function waitForCondition(
@@ -169,32 +140,4 @@ export function safeTimeout(
 			clearTimeout(timeoutId);
 		}
 	};
-}
-
-/**
- * Execute multiple promises in parallel with limited concurrency
- */
-export async function limitedConcurrency<T, R>(
-	items: T[],
-	mapper: (item: T) => Promise<R>,
-	concurrency: number = 3
-): Promise<R[]> {
-	const results: R[] = [];
-	const executing: Promise<void>[] = [];
-	
-	for (const item of items) {
-		const promise = mapper(item).then(result => {
-			results.push(result);
-		});
-		
-		executing.push(promise);
-		
-		if (executing.length >= concurrency) {
-			await Promise.race(executing);
-			executing.splice(executing.findIndex(p => p === promise), 1);
-		}
-	}
-	
-	await Promise.all(executing);
-	return results;
 }

@@ -2,6 +2,14 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.23] - 2025-12-29
+
+- Refactor: Removed unused `throttleAsync()` and `limitedConcurrency()` functions from async-utils
+- Refactor: Removed ~50+ debug console.log statements across the codebase
+- Refactor: Simplified `setPropertiesCollapsed()` function by removing verbose debug logging (~160 lines)
+- Refactor: Removed commented-out debug code in event handlers
+- Performance: Reduced code size by ~200 lines through cleanup of unused code and debug statements
+
 ## [0.1.21] - 2025-12-29
 
 - Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks
