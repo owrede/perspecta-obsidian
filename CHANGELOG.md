@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.29] - 2025-12-30
+
+- Performance: Wallpaper restore now runs concurrently (non-blocking) for faster context switching
+- Fix: DevTools window now stays open during context restore for debugging
+- Fix: DevTools automatically re-opens if it was open before restore
+
 ## [0.1.28] - 2025-12-29
 
 - Fix: Version sync and release automation

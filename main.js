@@ -2429,6 +2429,15 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.29",
+    date: "2025-12-30",
+    changes: [
+      "Performance: Wallpaper restore now runs concurrently (non-blocking) for faster context switching",
+      "Fix: DevTools window now stays open during context restore for debugging",
+      "Fix: DevTools automatically re-opens if it was open before restore"
+    ]
+  },
+  {
     version: "0.1.28",
     date: "2025-12-29",
     changes: [
@@ -3520,6 +3529,10 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       var _a, _b;
       const win = (_b = (_a = leaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win;
       if (win && !seen.has(win)) {
+        if (this.isDevToolsWindow(win)) {
+          seen.add(win);
+          return;
+        }
         seen.add(win);
         windows.push(win);
       }
@@ -3529,6 +3542,54 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       console.warn(`[Perspecta] \u26A0 SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
     }
     return windows;
+  }
+  isDevToolsWindow(win) {
+    var _a, _b;
+    try {
+      const url = ((_a = win.location) == null ? void 0 : _a.href) || "";
+      const title = ((_b = win.document) == null ? void 0 : _b.title) || "";
+      return url.includes("devtools://") || url.includes("chrome-devtools://") || title.includes("DevTools") || title.includes("Developer Tools");
+    } catch (e) {
+      return true;
+    }
+  }
+  isDevToolsOpen() {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    try {
+      const remote = (_a = window.require) == null ? void 0 : _a.call(window, "@electron/remote");
+      if (remote) {
+        const win = remote.getCurrentWindow();
+        return (_d = (_c = (_b = win == null ? void 0 : win.webContents) == null ? void 0 : _b.isDevToolsOpened) == null ? void 0 : _c.call(_b)) != null ? _d : false;
+      }
+      const legacyRemote = (_f = (_e = window.require) == null ? void 0 : _e.call(window, "electron")) == null ? void 0 : _f.remote;
+      if (legacyRemote) {
+        const win = legacyRemote.getCurrentWindow();
+        return (_i = (_h = (_g = win == null ? void 0 : win.webContents) == null ? void 0 : _g.isDevToolsOpened) == null ? void 0 : _h.call(_g)) != null ? _i : false;
+      }
+    } catch (e) {
+    }
+    return false;
+  }
+  openDevTools() {
+    var _a, _b, _c, _d, _e, _f, _g;
+    try {
+      const remote = (_a = window.require) == null ? void 0 : _a.call(window, "@electron/remote");
+      if (remote) {
+        const win = remote.getCurrentWindow();
+        (_c = (_b = win == null ? void 0 : win.webContents) == null ? void 0 : _b.openDevTools) == null ? void 0 : _c.call(_b);
+        return;
+      }
+      const legacyRemote = (_e = (_d = window.require) == null ? void 0 : _d.call(window, "electron")) == null ? void 0 : _e.remote;
+      if (legacyRemote) {
+        const win = legacyRemote.getCurrentWindow();
+        (_g = (_f = win == null ? void 0 : win.webContents) == null ? void 0 : _f.openDevTools) == null ? void 0 : _g.call(_f);
+        return;
+      }
+    } catch (e) {
+    }
+    if (this.settings.enableDebugLogging) {
+      console.log("[Perspecta] Could not re-open DevTools - Electron remote not available");
+    }
   }
   // ============================================================================
   // Context Save (Optimized)
@@ -4252,6 +4313,10 @@ ${content}`;
     var _a, _b;
     try {
       PerfTimer.mark("applyArrangement:start");
+      const devToolsWasOpen = this.isDevToolsOpen();
+      if (devToolsWasOpen && this.settings.enableDebugLogging) {
+        console.log("[Perspecta] DevTools detected as open, will re-open after restore");
+      }
       const v2 = this.normalizeToV2(arrangement);
       PerfTimer.mark("normalizeToV2");
       const useTiling = needsTiling(v2.sourceScreen);
@@ -4272,10 +4337,16 @@ ${content}`;
       PerfTimer.mark("checkTilingNeeded");
       const popoutWindows = this.getPopoutWindowObjects();
       PerfTimer.mark("getPopoutWindowObjects");
+      if (this.settings.enableDebugLogging) {
+        console.log(`[Perspecta] Found ${popoutWindows.length} popout windows to close`);
+      }
       for (const win of popoutWindows) {
         this.closePopoutWindow(win);
       }
       PerfTimer.mark("closePopoutWindows");
+      if (devToolsWasOpen) {
+        this.openDevTools();
+      }
       const mainLeaves = this.getMainWindowLeaves();
       PerfTimer.mark("getMainWindowLeaves");
       for (let i = 1; i < mainLeaves.length; i++)
@@ -4331,16 +4402,15 @@ ${content}`;
         this.restoreSidebarState("right", v2.rightSidebar);
       PerfTimer.mark("restoreSidebars");
       if (this.settings.enableWallpaperRestore && v2.wallpaper) {
-        try {
-          const result = await setWallpaper(v2.wallpaper);
+        setWallpaper(v2.wallpaper).then((result) => {
           if (result.success) {
             PerfTimer.mark("restoreWallpaper");
           } else {
             console.log("[Perspecta] Could not restore wallpaper:", result.error);
           }
-        } catch (e) {
+        }).catch((e) => {
           console.log("[Perspecta] Wallpaper restoration failed:", e);
-        }
+        });
       }
       this.scheduleScrollRestoration(v2.main.root);
       for (const popout of v2.popouts) {

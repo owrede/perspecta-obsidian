@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.29',
+		date: '2025-12-30',
+		changes: [
+			'Performance: Wallpaper restore now runs concurrently (non-blocking) for faster context switching',
+			'Fix: DevTools window now stays open during context restore for debugging',
+			'Fix: DevTools automatically re-opens if it was open before restore',
+		],
+	},
+	{
 		version: '0.1.28',
 		date: '2025-12-29',
 		changes: [

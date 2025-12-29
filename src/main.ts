@@ -793,6 +793,11 @@ export default class PerspectaPlugin extends Plugin {
 		this.app.workspace.iterateAllLeaves((leaf) => {
 			const win = leaf.view?.containerEl?.win;
 			if (win && !seen.has(win)) {
+				// Skip DevTools windows
+				if (this.isDevToolsWindow(win)) {
+					seen.add(win);
+					return;
+				}
 				seen.add(win);
 				windows.push(win);
 			}
@@ -802,6 +807,69 @@ export default class PerspectaPlugin extends Plugin {
 			console.warn(`[Perspecta] ⚠ SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
 		}
 		return windows;
+	}
+
+	private isDevToolsWindow(win: Window): boolean {
+		try {
+			// DevTools windows have specific characteristics
+			const url = win.location?.href || '';
+			const title = win.document?.title || '';
+			return url.includes('devtools://') || 
+			       url.includes('chrome-devtools://') ||
+			       title.includes('DevTools') ||
+			       title.includes('Developer Tools');
+		} catch {
+			// Cross-origin access denied - likely DevTools
+			return true;
+		}
+	}
+
+	private isDevToolsOpen(): boolean {
+		try {
+			// Access Electron's remote module to check DevTools state
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const remote = (window as any).require?.('@electron/remote');
+			if (remote) {
+				const win = remote.getCurrentWindow();
+				return win?.webContents?.isDevToolsOpened?.() ?? false;
+			}
+			// Fallback: try legacy remote
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const legacyRemote = (window as any).require?.('electron')?.remote;
+			if (legacyRemote) {
+				const win = legacyRemote.getCurrentWindow();
+				return win?.webContents?.isDevToolsOpened?.() ?? false;
+			}
+		} catch {
+			// Remote not available
+		}
+		return false;
+	}
+
+	private openDevTools(): void {
+		try {
+			// Access Electron's remote module to open DevTools
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const remote = (window as any).require?.('@electron/remote');
+			if (remote) {
+				const win = remote.getCurrentWindow();
+				win?.webContents?.openDevTools?.();
+				return;
+			}
+			// Fallback: try legacy remote
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const legacyRemote = (window as any).require?.('electron')?.remote;
+			if (legacyRemote) {
+				const win = legacyRemote.getCurrentWindow();
+				win?.webContents?.openDevTools?.();
+				return;
+			}
+		} catch {
+			// Remote not available
+		}
+		if (this.settings.enableDebugLogging) {
+			console.log('[Perspecta] Could not re-open DevTools - Electron remote not available');
+		}
 	}
 
 	// ============================================================================
@@ -1772,6 +1840,12 @@ export default class PerspectaPlugin extends Plugin {
 		try {
 			PerfTimer.mark('applyArrangement:start');
 
+			// Check if DevTools is open before restore (so we can re-open it after)
+			const devToolsWasOpen = this.isDevToolsOpen();
+			if (devToolsWasOpen && this.settings.enableDebugLogging) {
+				console.log('[Perspecta] DevTools detected as open, will re-open after restore');
+			}
+
 			const v2 = this.normalizeToV2(arrangement);
 			PerfTimer.mark('normalizeToV2');
 
@@ -1794,14 +1868,23 @@ export default class PerspectaPlugin extends Plugin {
 			}
 			PerfTimer.mark('checkTilingNeeded');
 
-			// Close popouts
+			// Close popouts (but not DevTools)
 			const popoutWindows = this.getPopoutWindowObjects();
 			PerfTimer.mark('getPopoutWindowObjects');
+
+			if (this.settings.enableDebugLogging) {
+				console.log(`[Perspecta] Found ${popoutWindows.length} popout windows to close`);
+			}
 
 			for (const win of popoutWindows) {
 				this.closePopoutWindow(win);
 			}
 			PerfTimer.mark('closePopoutWindows');
+
+			// Re-open DevTools if it was open before (do this early so logs are visible)
+			if (devToolsWasOpen) {
+				this.openDevTools();
+			}
 
 			// Get main window leaves (single iteration)
 			const mainLeaves = this.getMainWindowLeaves();
@@ -1880,18 +1963,17 @@ export default class PerspectaPlugin extends Plugin {
 			if (v2.rightSidebar) this.restoreSidebarState('right', v2.rightSidebar);
 			PerfTimer.mark('restoreSidebars');
 
-			// Restore wallpaper if enabled (experimental)
+			// Restore wallpaper if enabled (experimental) - run concurrently, non-blocking
 			if (this.settings.enableWallpaperRestore && v2.wallpaper) {
-				try {
-					const result = await setWallpaper(v2.wallpaper);
+				setWallpaper(v2.wallpaper).then(result => {
 					if (result.success) {
 						PerfTimer.mark('restoreWallpaper');
 					} else {
 						console.log('[Perspecta] Could not restore wallpaper:', result.error);
 					}
-				} catch (e) {
+				}).catch(e => {
 					console.log('[Perspecta] Wallpaper restoration failed:', e);
-				}
+				});
 			}
 
 			// Schedule scroll position restoration for all leaves
