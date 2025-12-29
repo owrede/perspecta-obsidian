@@ -141,6 +141,8 @@ export interface PerspectaSettings {
 	enableWallpaperCapture: boolean;  // Save desktop wallpaper with context
 	enableWallpaperRestore: boolean;  // Restore wallpaper when restoring context
 	storeWallpapersLocally: boolean;  // Copy wallpapers to perspecta/wallpapers folder
+	// Performance settings
+	enableParallelPopoutCreation: boolean;  // Create popout windows in parallel for faster restoration
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -161,7 +163,9 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	proxyPreviewScale: 0.35,
 	enableWallpaperCapture: false,
 	enableWallpaperRestore: false,
-	storeWallpapersLocally: true  // Default to local storage for portability
+	storeWallpapersLocally: true,  // Default to local storage for portability
+	// Performance settings
+	enableParallelPopoutCreation: false  // Default to sequential for safety
 };
 
 // Timestamped arrangement for multi-arrangement storage

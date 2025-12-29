@@ -1825,6 +1825,12 @@ export default class PerspectaPlugin extends Plugin {
 
 			// Restore popouts (with deduplication to prevent duplicate windows)
 			const restoredPaths = new Set<string>();
+			const popoutsToRestore: Array<{
+				index: number;
+				state: WindowStateV2;
+				tiledPosition?: { x: number; y: number; width: number; height: number };
+			}> = [];
+
 			for (let i = 0; i < v2.popouts.length; i++) {
 				// Get the primary file path for this popout to detect duplicates
 				const firstTab = this.getFirstTab(v2.popouts[i].root);
@@ -1839,8 +1845,24 @@ export default class PerspectaPlugin extends Plugin {
 				}
 
 				const tiledPosition = useTiling && tiledPositions.length > i + 1 ? tiledPositions[i + 1] : undefined;
-				await this.restorePopoutWindow(v2.popouts[i], v2.sourceScreen, tiledPosition);
-				PerfTimer.mark(`restorePopout[${i}]`);
+				popoutsToRestore.push({ index: i, state: v2.popouts[i], tiledPosition });
+			}
+
+			if (this.settings.enableParallelPopoutCreation && popoutsToRestore.length > 1) {
+				// Parallel restoration - create all popouts concurrently
+				await Promise.all(
+					popoutsToRestore.map(async ({ index, state, tiledPosition }) => {
+						await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition);
+						PerfTimer.mark(`restorePopout[${index}]`);
+					})
+				);
+				PerfTimer.mark('restorePopoutsParallel');
+			} else {
+				// Sequential restoration (default behavior)
+				for (const { index, state, tiledPosition } of popoutsToRestore) {
+					await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition);
+					PerfTimer.mark(`restorePopout[${index}]`);
+				}
 			}
 
 			// Process pending tab activations after a delay to ensure windows are fully ready
