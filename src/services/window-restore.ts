@@ -56,6 +56,8 @@ import {
 } from '../utils/coordinates';
 import { resolveFile } from '../utils/file-resolver';
 import { PerfTimer } from '../utils/perf-timer';
+import { TIMING, LIMITS } from '../utils/constants';
+import { delay, retryAsync, withTimeout, safeTimeout } from '../utils/async-utils';
 
 /**
  * Options for window restoration.
@@ -105,6 +107,7 @@ export class WindowRestoreService {
 	private app: App;
 	private pathCorrections: Map<string, PathCorrection> = new Map();
 	private pendingTabActivations: PendingTabActivation[] = [];
+	private scrollTimeoutCleanup: (() => void) | null = null;
 
 	constructor(app: App) {
 		this.app = app;
@@ -494,11 +497,11 @@ export class WindowRestoreService {
 		for (let i = 1; i < state.children.length; i++) {
 			const child = state.children[i];
 
-			await new Promise(resolve => setTimeout(resolve, opts.splitDelay));
+			await delay(TIMING.WINDOW_SPLIT_DELAY);
 
 			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
 
-			await new Promise(resolve => setTimeout(resolve, opts.splitDelay));
+			await delay(TIMING.WINDOW_SPLIT_DELAY);
 
 			if (child.type === 'tabs') {
 				const firstTab = child.tabs[0];
@@ -578,7 +581,7 @@ export class WindowRestoreService {
 		// Build rest of structure
 		for (let i = 0; i < state.children.length; i++) {
 			const child = state.children[i];
-			await new Promise(resolve => setTimeout(resolve, opts.splitDelay));
+			await delay(TIMING.WINDOW_SPLIT_DELAY);
 
 			if (i === 0) {
 				if (child.type === 'tabs' && child.tabs.length > 1) {
@@ -588,7 +591,7 @@ export class WindowRestoreService {
 			}
 
 			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
-			await new Promise(resolve => setTimeout(resolve, opts.splitDelay));
+			await delay(TIMING.WINDOW_SPLIT_DELAY);
 
 			if (child.type === 'tabs') {
 				const tab = child.tabs[0];
@@ -661,7 +664,7 @@ export class WindowRestoreService {
 	 * Applies split sizes to children.
 	 */
 	private async applySplitSizes(anyLeaf: WorkspaceLeaf, sizes: number[]): Promise<void> {
-		await new Promise(resolve => setTimeout(resolve, 200));
+		await delay(TIMING.SCROLL_RESTORATION_DELAY);
 
 		let parent = (anyLeaf as unknown as { parent?: WorkspaceSplit | null }).parent ?? null;
 		let attempts = 0;
@@ -774,7 +777,7 @@ export class WindowRestoreService {
 			return;
 		}
 		
-		await new Promise(resolve => setTimeout(resolve, 100));
+		await delay(TIMING.TAB_ACTIVATION_DELAY);
 
 		// Position window with validated coordinates
 		const win = popoutLeaf.view?.containerEl?.win;
@@ -895,8 +898,8 @@ export class WindowRestoreService {
 
 		this.collectPositions(state, scrollMap, canvasMap);
 
-		// Apply after delay
-		setTimeout(() => {
+		// Apply after delay using safe timeout
+		const cleanup = safeTimeout(() => {
 			this.app.workspace.iterateAllLeaves(leaf => {
 				const filePath = (leaf.view as { file?: TFile }).file?.path;
 				if (!filePath) return;
@@ -914,7 +917,10 @@ export class WindowRestoreService {
 					}
 				}
 			});
-		}, 500);
+		}, TIMING.INDICATORS_REFRESH_DELAY);
+		
+		// Store cleanup function for potential cancellation
+		this.scrollTimeoutCleanup = cleanup;
 	}
 
 	/**

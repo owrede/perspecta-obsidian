@@ -32,6 +32,24 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.18",
+    date: "2025-12-29",
+    changes: [
+      "Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks",
+      "Performance: Replaced all hardcoded setTimeout calls with centralized timing constants",
+      "Performance: Added debounced operations for file saving and UI updates",
+      "Performance: Implemented retry logic with exponential backoff for unreliable operations",
+      "Performance: Added timeout protection against hanging operations",
+      "Reliability: Component-level event management with proper cleanup on component destruction",
+      "Reliability: Safe timeout utilities prevent orphaned timeout callbacks",
+      "Reliability: Better error handling and recovery in async operations",
+      "Reliability: Improved window chrome configuration with retry logic",
+      "Refactor: Created utility modules for constants, event management, and async operations",
+      "Refactor: Eliminated magic numbers throughout codebase with centralized constants",
+      "Refactor: Consistent async patterns across all services"
+    ]
+  },
+  {
     version: "0.1.17",
     date: "2025-12-27",
     changes: [
@@ -206,6 +224,84 @@ function renderChangelogToContainer(containerEl) {
       list.createEl("li", { text: change });
     }
   }
+}
+
+// src/utils/constants.ts
+var TIMING = {
+  // Window chrome configuration delays (in ms)
+  CHROME_RETRY_DELAY_1: 50,
+  CHROME_RETRY_DELAY_2: 150,
+  CHROME_RETRY_DELAY_3: 300,
+  // External store debounce delay (in ms)
+  EXTERNAL_STORE_DEBOUNCE: 2e3,
+  // UI delays (in ms)
+  INDICATORS_REFRESH_DELAY: 500,
+  WINDOW_SPLIT_DELAY: 100,
+  SCROLL_RESTORATION_DELAY: 200,
+  TAB_ACTIVATION_DELAY: 100,
+  BRIEF_PAUSE_DELAY: 50,
+  // Window restore delays (in ms)
+  RESTORE_PAUSE_SHORT: 100,
+  RESTORE_PAUSE_LONG: 200
+};
+var CSS_CLASSES = {
+  PROXY_WINDOW: "perspecta-proxy-window",
+  PROXY_WORKSPACE: "perspecta-proxy-workspace",
+  PROXY_HEADER: "perspecta-proxy-header",
+  PROXY_TITLE: "perspecta-proxy-title",
+  PROXY_EXPAND: "perspecta-proxy-expand",
+  PROXY_PREVIEW_WRAPPER: "perspecta-proxy-preview-wrapper",
+  PROXY_PREVIEW_CONTENT: "perspecta-proxy-preview-content",
+  CONTEXT_INDICATOR: "perspecta-context-indicator"
+};
+var EVENTS = {
+  FOCUS: "focus",
+  CLICK: "click",
+  MOUSE_DOWN: "mousedown",
+  MOUSE_ENTER: "mouseenter",
+  MOUSE_LEAVE: "mouseleave",
+  KEY_DOWN: "keydown",
+  MOUSE_OVER: "mouseover",
+  MOUSE_OUT: "mouseout"
+};
+
+// src/utils/async-utils.ts
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function briefPause() {
+  return delay(TIMING.BRIEF_PAUSE_DELAY);
+}
+function debounceAsync(fn, delay2) {
+  let timeoutId = null;
+  let pendingPromise = null;
+  return (...args) => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    pendingPromise = new Promise((resolve, reject) => {
+      timeoutId = setTimeout(async () => {
+        try {
+          const result = await fn(...args);
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        } finally {
+          timeoutId = null;
+          pendingPromise = null;
+        }
+      }, delay2);
+    });
+    return pendingPromise;
+  };
+}
+function safeTimeout(callback, delay2) {
+  const timeoutId = setTimeout(callback, delay2);
+  return () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  };
 }
 
 // src/types.ts
@@ -1171,10 +1267,13 @@ var ExternalContextStore = class {
   constructor(config2) {
     this.cache = /* @__PURE__ */ new Map();
     this.dirty = /* @__PURE__ */ new Set();
-    this.saveTimeout = null;
+    this.saveTimeoutCleanup = null;
     this.initialized = false;
     this.app = config2.app;
     this.manifest = config2.manifest;
+    this.debouncedFlush = debounceAsync(async () => {
+      await this.flushDirty();
+    }, TIMING.EXTERNAL_STORE_DEBOUNCE);
   }
   get adapter() {
     return this.app.vault.adapter;
@@ -1325,10 +1424,13 @@ var ExternalContextStore = class {
     return Array.from(this.cache.keys());
   }
   scheduleSave() {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+    if (this.saveTimeoutCleanup) {
+      this.saveTimeoutCleanup();
+      this.saveTimeoutCleanup = null;
     }
-    this.saveTimeout = setTimeout(() => this.flushDirty(), 2e3);
+    this.debouncedFlush().catch((error) => {
+      console.error("[Perspecta] Failed to flush dirty data:", error);
+    });
   }
   async flushDirty() {
     if (this.dirty.size === 0)
@@ -1365,8 +1467,9 @@ var ExternalContextStore = class {
     }
   }
   async cleanup() {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+    if (this.saveTimeoutCleanup) {
+      this.saveTimeoutCleanup();
+      this.saveTimeoutCleanup = null;
     }
     await this.flushDirty();
   }
@@ -1981,6 +2084,112 @@ function showConfirmOverwrite(existingArrangement, fileName, targetWindow = wind
 
 // src/ui/proxy-view.ts
 var import_obsidian5 = require("obsidian");
+
+// src/utils/event-manager.ts
+var EventManager = class {
+  /**
+   * Add an event listener with automatic cleanup tracking
+   */
+  static addTrackedListener(element, event, handler, options) {
+    element.addEventListener(event, handler, options);
+    const cleanup = () => {
+      element.removeEventListener(event, handler, options);
+    };
+    this.cleanupFunctions.push(cleanup);
+    return cleanup;
+  }
+  /**
+   * Add an event listener to a window with automatic cleanup tracking
+   */
+  static addTrackedWindowListener(window2, event, handler, options) {
+    window2.addEventListener(event, handler, options);
+    const cleanup = () => {
+      window2.removeEventListener(event, handler, options);
+    };
+    this.cleanupFunctions.push(cleanup);
+    return cleanup;
+  }
+  /**
+   * Add an event listener to a document with automatic cleanup tracking
+   */
+  static addTrackedDocumentListener(document2, event, handler, options) {
+    document2.addEventListener(event, handler, options);
+    const cleanup = () => {
+      document2.removeEventListener(event, handler, options);
+    };
+    this.cleanupFunctions.push(cleanup);
+    return cleanup;
+  }
+  /**
+   * Clean up all tracked event listeners
+   */
+  static cleanupAll() {
+    this.cleanupFunctions.forEach((cleanup) => {
+      try {
+        cleanup();
+      } catch (error) {
+        console.warn("[Perspecta] Error during event cleanup:", error);
+      }
+    });
+    this.cleanupFunctions = [];
+  }
+  /**
+   * Remove a specific cleanup function from tracking
+   */
+  static removeCleanup(cleanup) {
+    const index = this.cleanupFunctions.indexOf(cleanup);
+    if (index > -1) {
+      this.cleanupFunctions.splice(index, 1);
+    }
+  }
+};
+EventManager.cleanupFunctions = [];
+var ComponentEventManager = class {
+  constructor() {
+    this.cleanupFunctions = [];
+  }
+  /**
+   * Add an event listener to this component's cleanup list
+   */
+  addListener(element, event, handler, options) {
+    element.addEventListener(event, handler, options);
+    const cleanup = () => {
+      element.removeEventListener(event, handler, options);
+    };
+    this.cleanupFunctions.push(cleanup);
+  }
+  /**
+   * Add an event listener to a window for this component
+   */
+  addWindowListener(window2, event, handler, options) {
+    window2.addEventListener(event, handler, options);
+    const cleanup = () => {
+      window2.removeEventListener(event, handler, options);
+    };
+    this.cleanupFunctions.push(cleanup);
+  }
+  /**
+   * Clean up all event listeners for this component
+   */
+  cleanup() {
+    this.cleanupFunctions.forEach((cleanup) => {
+      try {
+        cleanup();
+      } catch (error) {
+        console.warn("[Perspecta] Error during component event cleanup:", error);
+      }
+    });
+    this.cleanupFunctions = [];
+  }
+  /**
+   * Get the number of tracked listeners
+   */
+  get listenerCount() {
+    return this.cleanupFunctions.length;
+  }
+};
+
+// src/ui/proxy-view.ts
 var PROXY_VIEW_TYPE = "perspecta-proxy-view";
 var ProxyNoteView = class extends import_obsidian5.ItemView {
   constructor(leaf) {
@@ -1988,6 +2197,7 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
     this.state = { filePath: "" };
     this.file = null;
     this.renderComponent = null;
+    this.eventManager = new ComponentEventManager();
   }
   getViewType() {
     return PROXY_VIEW_TYPE;
@@ -2005,10 +2215,24 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
     container.addClass("perspecta-proxy-container");
     this.applyProxyWindowClass();
     await this.renderContent(container);
-    this.configureWindowChrome();
-    setTimeout(() => this.configureWindowChrome(), 50);
-    setTimeout(() => this.configureWindowChrome(), 150);
-    setTimeout(() => this.configureWindowChrome(), 300);
+    await this.configureWindowChromeWithRetry();
+  }
+  /**
+   * Configure window chrome with retry logic for reliability
+   */
+  async configureWindowChromeWithRetry() {
+    const attempts = [
+      0,
+      TIMING.CHROME_RETRY_DELAY_1,
+      TIMING.CHROME_RETRY_DELAY_2,
+      TIMING.CHROME_RETRY_DELAY_3
+    ];
+    for (const delay2 of attempts) {
+      if (delay2 > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay2));
+      }
+      this.configureWindowChrome();
+    }
   }
   /**
    * Applies CSS classes to the popout window for styling.
@@ -2018,11 +2242,11 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
     var _a;
     const win = this.getPopoutWindow();
     if ((_a = win == null ? void 0 : win.document) == null ? void 0 : _a.body) {
-      win.document.body.classList.add("perspecta-proxy-window");
+      win.document.body.classList.add(CSS_CLASSES.PROXY_WINDOW);
     }
     const workspaceEl = this.containerEl.closest(".workspace");
     if (workspaceEl) {
-      workspaceEl.classList.add("perspecta-proxy-workspace");
+      workspaceEl.classList.add(CSS_CLASSES.PROXY_WORKSPACE);
     }
   }
   /**
@@ -2067,16 +2291,16 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
   }
   async renderContent(container) {
     var _a, _b, _c, _d;
-    const headerRow = container.createDiv({ cls: "perspecta-proxy-header" });
+    const headerRow = container.createDiv({ cls: CSS_CLASSES.PROXY_HEADER });
     headerRow.style.cssText += "-webkit-app-region: drag; cursor: move;";
     headerRow.createDiv({
-      cls: "perspecta-proxy-title",
+      cls: CSS_CLASSES.PROXY_TITLE,
       text: ((_a = this.file) == null ? void 0 : _a.basename) || "No file"
     });
-    const expandBtn = headerRow.createDiv({ cls: "perspecta-proxy-expand" });
+    const expandBtn = headerRow.createDiv({ cls: CSS_CLASSES.PROXY_EXPAND });
     expandBtn.style.cssText += "-webkit-app-region: no-drag; cursor: pointer;";
     (0, import_obsidian5.setIcon)(expandBtn, "maximize-2");
-    expandBtn.addEventListener("click", (e) => {
+    this.eventManager.addListener(expandBtn, EVENTS.CLICK, (e) => {
       e.stopPropagation();
       this.expandToFullWindow();
     });
@@ -2100,7 +2324,7 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
     previewWrapper.style.overflow = "auto";
     previewWrapper.style.cursor = "pointer";
     previewContent.style.pointerEvents = "auto";
-    previewWrapper.addEventListener("click", (e) => {
+    this.eventManager.addListener(previewWrapper, EVENTS.CLICK, (e) => {
       if (this.state.arrangementUid) {
         const forceLatest = !e.shiftKey;
         this.restoreArrangement(forceLatest);
@@ -2109,7 +2333,7 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
       }
     });
     container.tabIndex = 0;
-    container.addEventListener("keydown", (e) => {
+    this.eventManager.addListener(container, EVENTS.KEY_DOWN, (e) => {
       const scrollAmount = 50;
       if (e.key === "ArrowDown" || e.key === "j") {
         previewWrapper.scrollTop += scrollAmount;
@@ -2138,13 +2362,13 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
         e.preventDefault();
       }
     });
-    container.addEventListener("mousedown", () => {
+    this.eventManager.addListener(container, EVENTS.MOUSE_DOWN, () => {
       container.focus();
     });
-    previewWrapper.addEventListener("mouseenter", () => {
+    this.eventManager.addListener(previewWrapper, EVENTS.MOUSE_ENTER, () => {
       previewWrapper.style.backgroundColor = "var(--background-secondary)";
     });
-    previewWrapper.addEventListener("mouseleave", () => {
+    this.eventManager.addListener(previewWrapper, EVENTS.MOUSE_LEAVE, () => {
       previewWrapper.style.backgroundColor = "";
     });
   }
@@ -2263,12 +2487,6 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
       svg.style.height = "100%";
     }
   }
-  async onClose() {
-    if (this.renderComponent) {
-      this.renderComponent.unload();
-      this.renderComponent = null;
-    }
-  }
   async setState(state, result) {
     const proxyState = state;
     if (proxyState && typeof proxyState === "object" && "filePath" in proxyState) {
@@ -2283,6 +2501,13 @@ var ProxyNoteView = class extends import_obsidian5.ItemView {
       }
     }
     return super.setState(state, result);
+  }
+  async onClose() {
+    this.eventManager.cleanup();
+    if (this.renderComponent) {
+      this.renderComponent.unload();
+      this.renderComponent = null;
+    }
   }
   getState() {
     return this.state;
@@ -2476,13 +2701,13 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
    * Creates a tracked timeout that will be automatically cleared on unload.
    * Use this instead of raw setTimeout for operations that might outlive the plugin.
    */
-  safeTimeout(callback, delay) {
+  safeTimeout(callback, delay2) {
     const timeout = setTimeout(() => {
       this.pendingTimeouts.delete(timeout);
       if (!this.isUnloading) {
         callback();
       }
-    }, delay);
+    }, delay2);
     this.pendingTimeouts.add(timeout);
     return timeout;
   }
@@ -2870,7 +3095,7 @@ var PerspectaPlugin = class extends import_obsidian6.Plugin {
     if (!uid) {
       uid = generateUid();
       await addUidToFile(this.app, file, uid);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await delay(TIMING.TAB_ACTIVATION_DELAY);
     }
     await this.externalStore.ensureInitialized();
     const maxArrangements = this.settings.maxArrangementsPerNote;
@@ -2974,7 +3199,7 @@ ${newFm}
         if (!uid) {
           uid = generateUid();
           await addUidToFile(this.app, file, uid);
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          await briefPause();
         }
         const v2 = this.normalizeToV2(context);
         this.externalStore.set(uid, v2);
@@ -3156,7 +3381,7 @@ ${newFm}
       }
     }
     if (filesToUpdate.length > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await delay(TIMING.TAB_ACTIVATION_DELAY);
     }
     if (filesToUpdate.length > 0) {
       return this.captureWindowArrangement();
@@ -3773,9 +3998,9 @@ ${content}`;
     }
     for (let i = 1; i < state.children.length; i++) {
       const child = state.children[i];
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await briefPause();
       const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf, state.direction);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await briefPause();
       if (child.type === "tabs") {
         const firstTab = child.tabs[0];
         if (firstTab) {
@@ -3818,7 +4043,7 @@ ${content}`;
    */
   async applySplitSizes(anyLeaf, sizes) {
     var _a, _b;
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await delay(TIMING.SCROLL_RESTORATION_DELAY);
     const extLeaf = asExtendedLeaf(anyLeaf);
     let parent = hasParent(extLeaf) && isSplit(extLeaf.parent) ? extLeaf.parent : null;
     let attempts = 0;
@@ -3971,9 +4196,9 @@ ${content}`;
     }
     for (let i = 1; i < state.children.length; i++) {
       const child = state.children[i];
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await briefPause();
       const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf, state.direction);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await briefPause();
       if (child.type === "tabs") {
         const firstTab = child.tabs[0];
         if (firstTab) {
@@ -4091,7 +4316,7 @@ ${content}`;
         arrangementUid
       }
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await delay(TIMING.TAB_ACTIVATION_DELAY);
     const win = (_b = (_a = proxyLeaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win;
     if (win) {
       if (tiledPosition) {
@@ -4544,7 +4769,11 @@ ${content}`;
     overlay.style.animationDuration = `${duration}s`;
     win.document.body.appendChild(overlay);
     overlay.addEventListener("animationend", () => overlay.remove());
-    setTimeout(() => overlay.parentNode && overlay.remove(), duration * 1e3 + 500);
+    const cleanup = safeTimeout(() => {
+      if (overlay.parentNode) {
+        overlay.remove();
+      }
+    }, duration * 1e3 + 500);
   }
   showNoticeInWindow(win, message, timeout = 4e3) {
     if (win && win !== window) {

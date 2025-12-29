@@ -14,6 +14,8 @@ import { baseHasContext } from '../storage/base';
 import { getUidFromCache } from '../utils/uid';
 import { ExternalContextStore } from '../storage/external-store';
 import { PerfTimer } from '../utils/perf-timer';
+import { TIMING } from '../utils/constants';
+import { safeTimeout } from '../utils/async-utils';
 
 /**
  * Configuration for the indicators service.
@@ -40,7 +42,7 @@ export class IndicatorsService {
 	private isUnloading: () => boolean;
 	
 	private filesWithContext = new Set<string>();
-	private refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+	private refreshTimeoutCleanup: (() => void) | null = null;
 	private eventUnsubscribers: (() => void)[] = [];
 
 	constructor(config: IndicatorsConfig) {
@@ -61,7 +63,8 @@ export class IndicatorsService {
 		this.setupEventListeners();
 		
 		// Initial render after a short delay to let the file explorer load
-		setTimeout(() => this.refresh(), 500);
+		const cleanup = safeTimeout(() => this.refresh(), TIMING.INDICATORS_REFRESH_DELAY);
+		this.refreshTimeoutCleanup = cleanup;
 		
 		PerfTimer.end('IndicatorsService.initialize');
 	}
@@ -70,10 +73,13 @@ export class IndicatorsService {
 	 * Clean up resources.
 	 */
 	cleanup(): void {
-		if (this.refreshTimeout) {
-			clearTimeout(this.refreshTimeout);
-			this.refreshTimeout = null;
+		// Clear any pending timeout
+		if (this.refreshTimeoutCleanup) {
+			this.refreshTimeoutCleanup();
+			this.refreshTimeoutCleanup = null;
 		}
+		
+		// Unsubscribe from all events
 		this.eventUnsubscribers.forEach(unsub => unsub());
 		this.eventUnsubscribers = [];
 		this.filesWithContext.clear();
@@ -235,16 +241,20 @@ export class IndicatorsService {
 	 * Debounced refresh to batch multiple updates.
 	 */
 	private debouncedRefresh(): void {
-		if (this.refreshTimeout) {
-			clearTimeout(this.refreshTimeout);
+		// Clear any existing timeout
+		if (this.refreshTimeoutCleanup) {
+			this.refreshTimeoutCleanup();
+			this.refreshTimeoutCleanup = null;
 		}
-		this.refreshTimeout = setTimeout(() => {
+		
+		// Set new timeout with shorter delay for better responsiveness
+		this.refreshTimeoutCleanup = safeTimeout(() => {
 			if (this.isClosingWindow()) {
-				this.refreshTimeout = null;
+				this.refreshTimeoutCleanup = null;
 				return;
 			}
 			this.refresh();
-			this.refreshTimeout = null;
+			this.refreshTimeoutCleanup = null;
 		}, 100);
 	}
 

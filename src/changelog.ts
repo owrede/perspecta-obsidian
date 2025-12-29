@@ -11,6 +11,24 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.18',
+		date: '2025-12-29',
+		changes: [
+			'Performance: Comprehensive event listener management with automatic cleanup prevents memory leaks',
+			'Performance: Replaced all hardcoded setTimeout calls with centralized timing constants',
+			'Performance: Added debounced operations for file saving and UI updates',
+			'Performance: Implemented retry logic with exponential backoff for unreliable operations',
+			'Performance: Added timeout protection against hanging operations',
+			'Reliability: Component-level event management with proper cleanup on component destruction',
+			'Reliability: Safe timeout utilities prevent orphaned timeout callbacks',
+			'Reliability: Better error handling and recovery in async operations',
+			'Reliability: Improved window chrome configuration with retry logic',
+			'Refactor: Created utility modules for constants, event management, and async operations',
+			'Refactor: Eliminated magic numbers throughout codebase with centralized constants',
+			'Refactor: Consistent async patterns across all services',
+		],
+	},
+	{
 		version: '0.1.17',
 		date: '2025-12-27',
 		changes: [

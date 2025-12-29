@@ -18,6 +18,9 @@
  */
 
 import { ItemView, WorkspaceLeaf, TFile, setIcon, MarkdownRenderer, Component, ViewStateResult } from 'obsidian';
+import { TIMING, CSS_CLASSES, EVENTS } from '../utils/constants';
+import { ComponentEventManager } from '../utils/event-manager';
+import { delay, retryAsync, safeTimeout } from '../utils/async-utils';
 
 export const PROXY_VIEW_TYPE = 'perspecta-proxy-view';
 
@@ -40,6 +43,7 @@ export class ProxyNoteView extends ItemView {
 	private state: ProxyViewState = { filePath: '' };
 	private file: TFile | null = null;
 	private renderComponent: Component | null = null;
+	private eventManager = new ComponentEventManager();
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
@@ -68,12 +72,28 @@ export class ProxyNoteView extends ItemView {
 		// Render content first
 		await this.renderContent(container);
 
-		// Configure window chrome via CSS (no Electron remote needed)
-		// Use multiple delays to catch the chrome at different stages of creation
-		this.configureWindowChrome();
-		setTimeout(() => this.configureWindowChrome(), 50);
-		setTimeout(() => this.configureWindowChrome(), 150);
-		setTimeout(() => this.configureWindowChrome(), 300);
+		// Configure window chrome via CSS with improved retry logic
+		await this.configureWindowChromeWithRetry();
+	}
+
+	/**
+	 * Configure window chrome with retry logic for reliability
+	 */
+	private async configureWindowChromeWithRetry(): Promise<void> {
+		// Try immediately and at different intervals to catch chrome at various stages
+		const attempts = [
+			0,
+			TIMING.CHROME_RETRY_DELAY_1,
+			TIMING.CHROME_RETRY_DELAY_2,
+			TIMING.CHROME_RETRY_DELAY_3
+		];
+
+		for (const delay of attempts) {
+			if (delay > 0) {
+				await new Promise(resolve => setTimeout(resolve, delay));
+			}
+			this.configureWindowChrome();
+		}
 	}
 
 	/**
@@ -84,13 +104,13 @@ export class ProxyNoteView extends ItemView {
 		// Try multiple ways to get the window and add the class
 		const win = this.getPopoutWindow();
 		if (win?.document?.body) {
-			win.document.body.classList.add('perspecta-proxy-window');
+			win.document.body.classList.add(CSS_CLASSES.PROXY_WINDOW);
 		}
 
 		// Also add to the workspace container for this leaf
 		const workspaceEl = this.containerEl.closest('.workspace');
 		if (workspaceEl) {
-			workspaceEl.classList.add('perspecta-proxy-workspace');
+			workspaceEl.classList.add(CSS_CLASSES.PROXY_WORKSPACE);
 		}
 	}
 
@@ -147,22 +167,23 @@ export class ProxyNoteView extends ItemView {
 
 	private async renderContent(container: HTMLElement): Promise<void> {
 		// Header row with title and expand button - this is the drag handle
-		const headerRow = container.createDiv({ cls: 'perspecta-proxy-header' });
+		const headerRow = container.createDiv({ cls: CSS_CLASSES.PROXY_HEADER });
 
 		// Make header draggable (for window movement)
 		headerRow.style.cssText += '-webkit-app-region: drag; cursor: move;';
 
 		// Note title (top left)
 		headerRow.createDiv({
-			cls: 'perspecta-proxy-title',
+			cls: CSS_CLASSES.PROXY_TITLE,
 			text: this.file?.basename || 'No file'
 		});
 
 		// Expand button (top right) - must be no-drag to be clickable
-		const expandBtn = headerRow.createDiv({ cls: 'perspecta-proxy-expand' });
+		const expandBtn = headerRow.createDiv({ cls: CSS_CLASSES.PROXY_EXPAND });
 		expandBtn.style.cssText += '-webkit-app-region: no-drag; cursor: pointer;';
 		setIcon(expandBtn, 'maximize-2');
-		expandBtn.addEventListener('click', (e) => {
+		
+		this.eventManager.addListener(expandBtn, EVENTS.CLICK, (e) => {
 			e.stopPropagation();
 			this.expandToFullWindow();
 		});
@@ -201,7 +222,7 @@ export class ProxyNoteView extends ItemView {
 		previewContent.style.pointerEvents = 'auto';
 
 		// Click on preview area triggers restore
-		previewWrapper.addEventListener('click', (e) => {
+		this.eventManager.addListener(previewWrapper, EVENTS.CLICK, (e) => {
 			if (this.state.arrangementUid) {
 				// Has arrangement - restore it (hold Shift for selector)
 				const forceLatest = !e.shiftKey;
@@ -214,7 +235,7 @@ export class ProxyNoteView extends ItemView {
 
 		// Enable keyboard scrolling when focused
 		container.tabIndex = 0;  // Make focusable
-		container.addEventListener('keydown', (e) => {
+		this.eventManager.addListener(container, EVENTS.KEY_DOWN, (e) => {
 			const scrollAmount = 50;
 			if (e.key === 'ArrowDown' || e.key === 'j') {
 				previewWrapper.scrollTop += scrollAmount;
@@ -246,15 +267,15 @@ export class ProxyNoteView extends ItemView {
 		});
 
 		// Focus the container when clicking on it (for keyboard navigation)
-		container.addEventListener('mousedown', () => {
+		this.eventManager.addListener(container, EVENTS.MOUSE_DOWN, () => {
 			container.focus();
 		});
 
 		// Add hover effect via JavaScript (more reliable than CSS in popout windows)
-		previewWrapper.addEventListener('mouseenter', () => {
+		this.eventManager.addListener(previewWrapper, EVENTS.MOUSE_ENTER, () => {
 			previewWrapper.style.backgroundColor = 'var(--background-secondary)';
 		});
-		previewWrapper.addEventListener('mouseleave', () => {
+		this.eventManager.addListener(previewWrapper, EVENTS.MOUSE_LEAVE, () => {
 			previewWrapper.style.backgroundColor = '';
 		});
 	}
@@ -385,14 +406,6 @@ export class ProxyNoteView extends ItemView {
 		}
 	}
 
-	async onClose(): Promise<void> {
-		// Clean up render component
-		if (this.renderComponent) {
-			this.renderComponent.unload();
-			this.renderComponent = null;
-		}
-	}
-
 	async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		// Type guard for our state format
 		const proxyState = state as ProxyViewState;
@@ -412,6 +425,17 @@ export class ProxyNoteView extends ItemView {
 		}
 
 		return super.setState(state, result);
+	}
+
+	async onClose(): Promise<void> {
+		// Clean up all event listeners
+		this.eventManager.cleanup();
+		
+		// Clean up render component
+		if (this.renderComponent) {
+			this.renderComponent.unload();
+			this.renderComponent = null;
+		}
 	}
 
 	getState(): ProxyViewState {

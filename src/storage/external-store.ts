@@ -7,6 +7,8 @@
 import { App, DataAdapter, PluginManifest } from 'obsidian';
 import { WindowArrangementV2, ArrangementCollection, TimestampedArrangement } from '../types';
 import { PerfTimer } from '../utils/perf-timer';
+import { TIMING } from '../utils/constants';
+import { debounceAsync, safeTimeout } from '../utils/async-utils';
 
 const CONTEXTS_FOLDER = 'contexts';
 
@@ -25,12 +27,18 @@ export class ExternalContextStore {
 	private manifest: PluginManifest;
 	private cache: Map<string, ArrangementCollection> = new Map();
 	private dirty: Set<string> = new Set();
-	private saveTimeout: ReturnType<typeof setTimeout> | null = null;
+	private saveTimeoutCleanup: (() => void) | null = null;
 	private initialized = false;
+	private debouncedFlush: () => Promise<void>;
 
 	constructor(config: ExternalStoreConfig) {
 		this.app = config.app;
 		this.manifest = config.manifest;
+		
+		// Initialize debounced flush with timing constant
+		this.debouncedFlush = debounceAsync(async () => {
+			await this.flushDirty();
+		}, TIMING.EXTERNAL_STORE_DEBOUNCE);
 	}
 
 	private get adapter(): DataAdapter {
@@ -210,10 +218,16 @@ export class ExternalContextStore {
 	}
 
 	private scheduleSave(): void {
-		if (this.saveTimeout) {
-			clearTimeout(this.saveTimeout);
+		// Clear any existing timeout
+		if (this.saveTimeoutCleanup) {
+			this.saveTimeoutCleanup();
+			this.saveTimeoutCleanup = null;
 		}
-		this.saveTimeout = setTimeout(() => this.flushDirty(), 2000);
+		
+		// Use debounced flush for better performance
+		this.debouncedFlush().catch(error => {
+			console.error('[Perspecta] Failed to flush dirty data:', error);
+		});
 	}
 
 	async flushDirty(): Promise<void> {
@@ -258,9 +272,13 @@ export class ExternalContextStore {
 	}
 
 	async cleanup(): Promise<void> {
-		if (this.saveTimeout) {
-			clearTimeout(this.saveTimeout);
+		// Clear any pending timeout
+		if (this.saveTimeoutCleanup) {
+			this.saveTimeoutCleanup();
+			this.saveTimeoutCleanup = null;
 		}
+		
+		// Flush any pending changes
 		await this.flushDirty();
 	}
 

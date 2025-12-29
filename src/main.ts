@@ -55,6 +55,11 @@ import { App, FileSystemAdapter, Menu, MenuItem, Platform, Plugin, PluginSetting
 // Import changelog
 import { renderChangelogToContainer } from './changelog';
 
+// Import utility modules
+import { TIMING, LIMITS } from './utils/constants';
+import { delay, briefPause, retryAsync, withTimeout, safeTimeout } from './utils/async-utils';
+import { EventManager } from './utils/event-manager';
+
 // Import types
 import {
 	TabState,
@@ -837,7 +842,7 @@ export default class PerspectaPlugin extends Plugin {
 			uid = generateUid();
 			await addUidToFile(this.app, file, uid);
 			// Wait for cache update
-			await new Promise(resolve => setTimeout(resolve, 100));
+			await delay(TIMING.TAB_ACTIVATION_DELAY);
 		}
 
 		// Initialize external store if not already
@@ -980,7 +985,7 @@ export default class PerspectaPlugin extends Plugin {
 				if (!uid) {
 					uid = generateUid();
 					await addUidToFile(this.app, file, uid);
-					await new Promise(resolve => setTimeout(resolve, 50)); // Brief pause for cache
+					await briefPause(); // Brief pause for cache
 				}
 
 				// Save to external store
@@ -1248,7 +1253,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Wait for metadata cache to update (if we added any UIDs)
 		if (filesToUpdate.length > 0) {
-			await new Promise(resolve => setTimeout(resolve, 100));
+			await delay(TIMING.TAB_ACTIVATION_DELAY);
 		}
 
 		// Re-capture to get the new UIDs
@@ -2019,13 +2024,13 @@ export default class PerspectaPlugin extends Plugin {
 			const child = state.children[i];
 
 			// Small delay to ensure previous split operations are fully established
-			await new Promise(resolve => setTimeout(resolve, 50));
+			await briefPause();
 
 			// Use createLeafBySplit from the FIRST leaf
 			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
 
 			// Wait for the split to be established
-			await new Promise(resolve => setTimeout(resolve, 50));
+			await briefPause();
 
 			if (child.type === 'tabs') {
 				const firstTab = child.tabs[0];
@@ -2075,7 +2080,7 @@ export default class PerspectaPlugin extends Plugin {
 	 */
 	private async applySplitSizes(anyLeaf: WorkspaceLeaf, sizes: number[]): Promise<void> {
 		// Longer delay to ensure layout is fully ready
-		await new Promise(resolve => setTimeout(resolve, 200));
+		await delay(TIMING.SCROLL_RESTORATION_DELAY);
 
 		// Navigate up the parent chain to find the split container with matching child count
 		const extLeaf = asExtendedLeaf(anyLeaf);
@@ -2273,13 +2278,13 @@ export default class PerspectaPlugin extends Plugin {
 			const child = state.children[i];
 
 			// Small delay to ensure previous operations are fully established
-			await new Promise(resolve => setTimeout(resolve, 50));
+			await briefPause();
 
 			// Split from firstLeaf
 			const newLeaf = this.app.workspace.createLeafBySplit(firstLeaf!, state.direction);
 
 			// Wait for the split to be established
-			await new Promise(resolve => setTimeout(resolve, 50));
+			await briefPause();
 
 			if (child.type === 'tabs') {
 				const firstTab = child.tabs[0];
@@ -2440,7 +2445,7 @@ export default class PerspectaPlugin extends Plugin {
 		});
 
 		// Wait for view to be ready
-		await new Promise(resolve => setTimeout(resolve, 100));
+		await delay(TIMING.TAB_ACTIVATION_DELAY);
 
 		// Restore window position (and size if needed)
 		const win = proxyLeaf.view?.containerEl?.win;
@@ -3000,7 +3005,13 @@ export default class PerspectaPlugin extends Plugin {
 		overlay.style.animationDuration = `${duration}s`;
 		win.document.body.appendChild(overlay);
 		overlay.addEventListener('animationend', () => overlay.remove());
-		setTimeout(() => overlay.parentNode && overlay.remove(), duration * 1000 + 500);
+		
+		// Use safe timeout for animation cleanup
+		const cleanup = safeTimeout(() => {
+			if (overlay.parentNode) {
+				overlay.remove();
+			}
+		}, duration * 1000 + 500);
 	}
 
 	private showNoticeInWindow(win: Window | null, message: string, timeout = 4000) {
