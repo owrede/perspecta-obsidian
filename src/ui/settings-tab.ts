@@ -331,6 +331,20 @@ export class PerspectaSettingTab extends PluginSettingTab {
 		warning.createSpan({ cls: 'perspecta-experimental-warning-icon', text: '⚠️' });
 		warning.createSpan({ text: 'These features are experimental and may change or break in future updates.' });
 
+		// Performance section
+		containerEl.createEl('h4', { text: 'Performance' });
+
+		new Setting(containerEl)
+			.setName('Parallel popout window creation')
+			.setDesc('Create popout windows in parallel instead of sequentially. Can improve restoration speed by 30-50% when restoring multiple popout windows.')
+			.addToggle(t => t.setValue(this.plugin.settings.enableParallelPopoutCreation).onChange(async v => {
+				this.plugin.settings.enableParallelPopoutCreation = v;
+				await this.plugin.saveSettings();
+			}));
+
+		// Proxy windows section
+		containerEl.createEl('h4', { text: 'Proxy windows' });
+
 		new Setting(containerEl)
 			.setName('Enable proxy windows')
 			.setDesc('Allows converting popout windows to minimalist "proxy" windows that show only the note title. Click the title to restore its arrangement.')

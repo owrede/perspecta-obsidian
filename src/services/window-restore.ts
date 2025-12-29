@@ -147,13 +147,16 @@ export interface RestoreOptions {
 	restoreCanvasViewport?: boolean;
 	/** Delay between split operations (ms) */
 	splitDelay?: number;
+	/** Create popout windows in parallel for faster restoration */
+	parallelPopouts?: boolean;
 }
 
 const DEFAULT_OPTIONS: RestoreOptions = {
 	debug: false,
 	restoreScroll: true,
 	restoreCanvasViewport: true,
-	splitDelay: 50
+	splitDelay: 50,
+	parallelPopouts: false
 };
 
 /**
@@ -344,6 +347,12 @@ export class WindowRestoreService {
 
 			// Restore popouts with deduplication
 			const restoredPaths = new Set<string>();
+			const popoutsToRestore: Array<{
+				index: number;
+				state: WindowStateV2;
+				tiledPosition?: { x: number; y: number; width: number; height: number };
+			}> = [];
+
 			for (let i = 0; i < v2.popouts.length; i++) {
 				const firstTab = this.getFirstTab(v2.popouts[i].root);
 				const popoutPath = firstTab?.path;
@@ -359,8 +368,24 @@ export class WindowRestoreService {
 					? tiledPositions[i + 1]
 					: undefined;
 
-				await this.restorePopoutWindow(v2.popouts[i], v2.sourceScreen, tiledPosition, opts);
-				PerfTimer.mark(`restorePopout[${i}]`);
+				popoutsToRestore.push({ index: i, state: v2.popouts[i], tiledPosition });
+			}
+
+			if (opts.parallelPopouts && popoutsToRestore.length > 1) {
+				// Parallel restoration - create all popouts concurrently
+				await Promise.all(
+					popoutsToRestore.map(async ({ index, state, tiledPosition }) => {
+						await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition, opts);
+						PerfTimer.mark(`restorePopout[${index}]`);
+					})
+				);
+				PerfTimer.mark('restorePopoutsParallel');
+			} else {
+				// Sequential restoration (default behavior)
+				for (const { index, state, tiledPosition } of popoutsToRestore) {
+					await this.restorePopoutWindow(state, v2.sourceScreen, tiledPosition, opts);
+					PerfTimer.mark(`restorePopout[${index}]`);
+				}
 			}
 
 			// Process pending tab activations
