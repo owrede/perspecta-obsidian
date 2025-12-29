@@ -2426,6 +2426,28 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.25",
+    date: "2025-12-29",
+    changes: [
+      "Updated CHANGELOG.md with comprehensive v0.1.24 release notes",
+      "Documented Settings Tab refactoring details",
+      "Clarified code organization improvements",
+      "Note: This is a documentation-only release, no code changes"
+    ]
+  },
+  {
+    version: "0.1.24",
+    date: "2025-12-29",
+    changes: [
+      "Refactor: Extracted Settings Tab to separate module (ui/settings-tab.ts)",
+      "Refactor: Reduced main.ts from 4,320 to 3,873 lines (10.3% reduction)",
+      "Improved: Better code organization and separation of concerns",
+      "Improved: Settings UI now independently testable and maintainable",
+      "Fixed: Build errors from incomplete refactoring attempts",
+      "Internal: No user-facing changes, all functionality maintained"
+    ]
+  },
+  {
     version: "0.1.21",
     date: "2025-12-29",
     changes: [
