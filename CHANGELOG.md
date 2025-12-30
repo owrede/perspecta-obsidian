@@ -2,6 +2,11 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.30] - 2025-12-30
+
+- Fix: Split pane sizes (e.g., 25%/75%) now correctly restored instead of defaulting to 50%/50%
+- Fix: Improved parent chain traversal for finding split containers during restore
+
 ## [0.1.29] - 2025-12-30
 
 - Performance: Wallpaper restore now runs concurrently (non-blocking) for faster context switching

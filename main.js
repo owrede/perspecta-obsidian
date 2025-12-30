@@ -2429,6 +2429,14 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.30",
+    date: "2025-12-30",
+    changes: [
+      "Fix: Split pane sizes (e.g., 25%/75%) now correctly restored instead of defaulting to 50%/50%",
+      "Fix: Improved parent chain traversal for finding split containers during restore"
+    ]
+  },
+  {
     version: "0.1.29",
     date: "2025-12-30",
     changes: [
@@ -4647,7 +4655,12 @@ ${content}`;
       }
     }
     if (state.sizes && state.sizes.length > 0 && firstLeaf) {
+      if (this.settings.enableDebugLogging) {
+        console.log(`[Perspecta] restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
+      }
       await this.applySplitSizes(firstLeaf, state.sizes);
+    } else if (this.settings.enableDebugLogging) {
+      console.log(`[Perspecta] restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
     }
     if (COORDINATE_DEBUG) {
       console.log(`[Perspecta] restoreSplit END: direction=${state.direction}`);
@@ -4659,17 +4672,28 @@ ${content}`;
    * Gets the parent container from any leaf and sets dimension on its children.
    */
   async applySplitSizes(anyLeaf, sizes) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     await delay(TIMING.SCROLL_RESTORATION_DELAY);
     const extLeaf = asExtendedLeaf(anyLeaf);
-    let parent = hasParent(extLeaf) && isSplit(extLeaf.parent) ? extLeaf.parent : null;
+    let current = hasParent(extLeaf) ? extLeaf.parent : null;
+    let parent = null;
     let attempts = 0;
-    const maxAttempts = 5;
-    while (parent && attempts < maxAttempts) {
-      if (((_a = parent.children) == null ? void 0 : _a.length) === sizes.length && parent.direction) {
+    const maxAttempts = 10;
+    if (this.settings.enableDebugLogging) {
+      console.log(`[Perspecta] applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
+    }
+    while (current && attempts < maxAttempts) {
+      if (this.settings.enableDebugLogging) {
+        const isSplitNode = isSplit(current);
+        const childCount = (_b = (_a = current.children) == null ? void 0 : _a.length) != null ? _b : 0;
+        const direction = (_c = current.direction) != null ? _c : "none";
+        console.log(`[Perspecta] applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
+      }
+      if (isSplit(current) && ((_d = current.children) == null ? void 0 : _d.length) === sizes.length && current.direction) {
+        parent = current;
         break;
       }
-      parent = (_b = parent.parent) != null ? _b : null;
+      current = (_e = current.parent) != null ? _e : null;
       attempts++;
     }
     if (!(parent == null ? void 0 : parent.children) || parent.children.length !== sizes.length) {

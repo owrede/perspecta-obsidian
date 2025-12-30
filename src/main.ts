@@ -2258,7 +2258,12 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Apply saved sizes to the split children
 		if (state.sizes && state.sizes.length > 0 && firstLeaf) {
+			if (this.settings.enableDebugLogging) {
+				console.log(`[Perspecta] restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
+			}
 			await this.applySplitSizes(firstLeaf, state.sizes);
+		} else if (this.settings.enableDebugLogging) {
+			console.log(`[Perspecta] restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
 		}
 
 		if (COORDINATE_DEBUG) {
@@ -2277,17 +2282,35 @@ export default class PerspectaPlugin extends Plugin {
 		await delay(TIMING.SCROLL_RESTORATION_DELAY);
 
 		// Navigate up the parent chain to find the split container with matching child count
+		// Start from the leaf's parent (which is typically a TabContainer), then go up
 		const extLeaf = asExtendedLeaf(anyLeaf);
-		let parent: WorkspaceSplit | null = hasParent(extLeaf) && isSplit(extLeaf.parent) ? extLeaf.parent : null;
+		
+		// Get the immediate parent (TabContainer) and then its parent (Split)
+		let current: WorkspaceSplit | WorkspaceTabContainer | null = hasParent(extLeaf) ? extLeaf.parent as WorkspaceSplit | WorkspaceTabContainer : null;
+		let parent: WorkspaceSplit | null = null;
 		let attempts = 0;
-		const maxAttempts = 5;
+		const maxAttempts = 10;
 
-		while (parent && attempts < maxAttempts) {
-			if (parent.children?.length === sizes.length && parent.direction) {
+		if (this.settings.enableDebugLogging) {
+			console.log(`[Perspecta] applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
+		}
+
+		while (current && attempts < maxAttempts) {
+			if (this.settings.enableDebugLogging) {
+				const isSplitNode = isSplit(current);
+				const childCount = (current as WorkspaceSplit).children?.length ?? 0;
+				const direction = (current as WorkspaceSplit).direction ?? 'none';
+				console.log(`[Perspecta] applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
+			}
+
+			if (isSplit(current) && current.children?.length === sizes.length && current.direction) {
 				// Found the right split container
+				parent = current;
 				break;
 			}
-			parent = parent.parent ?? null;
+			
+			// Move up the chain
+			current = (current as WorkspaceSplit).parent ?? null;
 			attempts++;
 		}
 

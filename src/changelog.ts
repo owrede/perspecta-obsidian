@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.30',
+		date: '2025-12-30',
+		changes: [
+			'Fix: Split pane sizes (e.g., 25%/75%) now correctly restored instead of defaulting to 50%/50%',
+			'Fix: Improved parent chain traversal for finding split containers during restore',
+		],
+	},
+	{
 		version: '0.1.29',
 		date: '2025-12-30',
 		changes: [
