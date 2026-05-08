@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.32] - 2026-05-08
+
+- Reliability: Scroll/canvas-viewport restoration now waits for target leaves to actually load (with a 2s safety cap) instead of relying on a fixed 500ms delay. Fixes silent loss of scroll position when restoring large arrangements on slow disks.
+- Reliability: Restore-pipeline timeouts (debug modal, tab activation, scroll, properties, etc.) now use safeTimeout, so they no longer fire after the plugin has been disabled or the vault closed mid-restore.
+- Internal: Removed 2,101 lines of dead code from src/services/ — three service classes (WindowRestoreService, WindowCaptureService, IndicatorsService) were extracted in earlier refactor attempts but never wired in. esbuild was already tree-shaking them, so bundle size is unchanged.
+
 ## [0.1.31] - 2026-05-08
 
 - Fix: Frontmatter storage now preserves split pane sizes — previously the compact codec dropped the `sizes` field, so frontmatter-mode restore always fell back to 50/50 (external storage was unaffected)

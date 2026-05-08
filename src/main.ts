@@ -54,7 +54,7 @@ import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, W
 
 // Import utility modules
 import { TIMING, LIMITS } from './utils/constants';
-import { delay, briefPause, retryAsync, withTimeout, safeTimeout } from './utils/async-utils';
+import { delay, briefPause, retryAsync, withTimeout, safeTimeout, waitForCondition } from './utils/async-utils';
 import { EventManager } from './utils/event-manager';
 
 // Import types
@@ -2384,26 +2384,27 @@ export default class PerspectaPlugin extends Plugin {
 
 	/**
 	 * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
+	 *
+	 * Waits for the target leaves to actually exist before applying positions, with a hard
+	 * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
+	 * dropped scroll position when restoring large arrangements on slow disks.
 	 */
 	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
-		// Build maps of path -> scroll and path -> canvasViewport from the state
 		const scrollMap = new Map<string, number>();
 		const canvasViewportMap = new Map<string, { tx: number; ty: number; zoom: number }>();
 		this.collectViewPositions(state, scrollMap, canvasViewportMap);
 
 		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
+		const targetPaths = new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
+		const expectedCount = targetPaths.size;
+		Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
 
-		// Apply positions after a longer delay to ensure all views in splits are loaded.
-		// Re-iterate leaves inside timeout since split views may not exist yet when this is called.
-		// safeTimeout: don't fire after unload.
-		this.safeTimeout(() => {
+		const apply = () => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
 				const file = leaf.view.file;
 
-				// Restore scroll position for markdown files
 				if (scrollMap.has(file.path)) {
 					const scroll = scrollMap.get(file.path);
 					if (scroll !== undefined && scroll > 0) {
@@ -2413,7 +2414,6 @@ export default class PerspectaPlugin extends Plugin {
 					}
 				}
 
-				// Restore canvas viewport
 				if (canvasViewportMap.has(file.path)) {
 					const viewport = canvasViewportMap.get(file.path);
 					if (viewport) {
@@ -2421,7 +2421,29 @@ export default class PerspectaPlugin extends Plugin {
 					}
 				}
 			});
-		}, 500);
+		};
+
+		// Fire-and-forget async wait — if we don't reach the target count in time
+		// (slow disk, file genuinely missing) we still apply best-effort.
+		(async () => {
+			try {
+				await waitForCondition(() => {
+					if (this.isUnloading) return true; // bail out cleanly
+					let matched = 0;
+					this.app.workspace.iterateAllLeaves((leaf) => {
+						if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
+							matched++;
+						}
+					});
+					return matched >= expectedCount;
+				}, /* timeoutMs */ 2000, /* intervalMs */ 50);
+				Logger.debug('scheduleScrollRestoration: target leaves loaded, applying positions');
+			} catch {
+				Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+			}
+			if (this.isUnloading) return;
+			apply();
+		})();
 	}
 
 	/**

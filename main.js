@@ -98,6 +98,16 @@ function debounceAsync(fn, delay2) {
     return pendingPromise;
   };
 }
+async function waitForCondition(condition, timeoutMs = 5e3, intervalMs = 50) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (await condition()) {
+      return;
+    }
+    await delay(intervalMs);
+  }
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
+}
 function safeTimeout(callback, delay2) {
   const timeoutId = setTimeout(callback, delay2);
   return () => {
@@ -2429,6 +2439,15 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.32",
+    date: "2026-05-08",
+    changes: [
+      "Reliability: Scroll/canvas-viewport restoration now waits for target leaves to actually load (with a 2s safety cap) instead of relying on a fixed 500ms delay. Fixes silent loss of scroll position when restoring large arrangements on slow disks.",
+      "Reliability: Restore-pipeline timeouts (debug modal, tab activation, scroll, properties, etc.) now use safeTimeout, so they no longer fire after the plugin has been disabled or the vault closed mid-restore.",
+      "Internal: Removed 2,101 lines of dead code from src/services/ \u2014 three service classes (WindowRestoreService, WindowCaptureService, IndicatorsService) were extracted in earlier refactor attempts but never wired in. esbuild was already tree-shaking them, so bundle size is unchanged."
+    ]
+  },
+  {
     version: "0.1.31",
     date: "2026-05-08",
     changes: [
@@ -4741,6 +4760,10 @@ ${content}`;
   }
   /**
    * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
+   *
+   * Waits for the target leaves to actually exist before applying positions, with a hard
+   * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
+   * dropped scroll position when restoring large arrangements on slow disks.
    */
   scheduleScrollRestoration(state) {
     const scrollMap = /* @__PURE__ */ new Map();
@@ -4748,8 +4771,10 @@ ${content}`;
     this.collectViewPositions(state, scrollMap, canvasViewportMap);
     if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
-    Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
-    this.safeTimeout(() => {
+    const targetPaths = /* @__PURE__ */ new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
+    const expectedCount = targetPaths.size;
+    Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
+    const apply = () => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         if (!hasFile(leaf.view))
           return;
@@ -4769,7 +4794,34 @@ ${content}`;
           }
         }
       });
-    }, 500);
+    };
+    (async () => {
+      try {
+        await waitForCondition(
+          () => {
+            if (this.isUnloading)
+              return true;
+            let matched = 0;
+            this.app.workspace.iterateAllLeaves((leaf) => {
+              if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
+                matched++;
+              }
+            });
+            return matched >= expectedCount;
+          },
+          /* timeoutMs */
+          2e3,
+          /* intervalMs */
+          50
+        );
+        Logger.debug("scheduleScrollRestoration: target leaves loaded, applying positions");
+      } catch (e) {
+        Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+      }
+      if (this.isUnloading)
+        return;
+      apply();
+    })();
   }
   /**
    * Schedule properties collapse/expand restoration for all leaves.
