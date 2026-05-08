@@ -66,7 +66,6 @@ import {
 	WindowStateV2,
 	SidebarState,
 	ScreenInfo,
-	WindowArrangementV1,
 	WindowArrangementV2,
 	WindowArrangement,
 	PerspectaSettings,
@@ -112,7 +111,7 @@ import {
 	calculateTiledLayout
 } from './utils/coordinates';
 import { getWallpaper, setWallpaper, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
-import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
+import { generateUid, getUidFromCache, addUidToFile } from './utils/uid';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
 
 // Import storage
@@ -134,7 +133,18 @@ import {
 	baseHasContext
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
-import { encodeArrangement, decodeArrangement } from './storage/codec';
+import {
+	getContextFromFrontmatter,
+	saveContextToFrontmatter,
+	removeContextFromFrontmatter,
+} from './storage/frontmatter-store';
+import { backupArrangements, listBackups, restoreFromBackup } from './services/backup';
+import {
+	cleanupOldUidProperties as cleanupOldUidPropertiesOp,
+	migrateToExternalStorage as migrateToExternalStorageOp,
+	migrateToFrontmatter as migrateToFrontmatterOp,
+	normalizeToV2,
+} from './services/migrations';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
@@ -961,7 +971,7 @@ export default class PerspectaPlugin extends Plugin {
 			saved = await this.saveContextExternal(targetFile, context);
 			PerfTimer.mark('saveContextExternal');
 		} else {
-			await this.saveArrangementToNote(targetFile, context);
+			await saveContextToFrontmatter(this.app, targetFile, context);
 			PerfTimer.mark('saveArrangementToNote');
 		}
 
@@ -1011,7 +1021,7 @@ export default class PerspectaPlugin extends Plugin {
 		this.externalStore.set(uid, context, maxArrangements);
 
 		// Remove perspecta-arrangement from frontmatter (if present) to avoid duplication
-		await this.removeArrangementFromFrontmatter(file);
+		await removeContextFromFrontmatter(this.app, file);
 
 		this.filesWithContext.add(file.path);
 		this.debouncedRefreshIndicators();
@@ -1019,34 +1029,6 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// Remove perspecta-arrangement property from a file's frontmatter
-	private async removeArrangementFromFrontmatter(file: TFile): Promise<boolean> {
-		const content = await this.app.vault.read(file);
-		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-		const match = content.match(frontmatterRegex);
-
-		if (!match) return false;
-
-		const fm = match[1];
-		// Check if arrangement exists in frontmatter
-		if (!fm.includes(`${FRONTMATTER_KEY}:`)) return false;
-
-		// Remove arrangement (both old multi-line YAML and new single-line format)
-		const newFm = fm
-			.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')  // Old multi-line
-			.replace(/perspecta-arrangement: ".*"\n?/g, '')  // New single-line
-			.trim();
-
-		// If frontmatter is empty now (except whitespace), we could remove it entirely
-		// but better to keep it if there's other content
-		const newContent = content.replace(frontmatterRegex, `---\n${newFm}\n---`);
-
-		if (newContent !== content) {
-			await this.app.vault.modify(file, newContent);
-			return true;
-		}
-		return false;
-	}
-
 	// ============================================================================
 	// Storage Migration & Cleanup
 	// ============================================================================
@@ -1093,284 +1075,73 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
-	// Clean up old 'uid' properties from all files that have perspecta-uid
+	// Migration ops live in src/services/migrations.ts; thin shims keep the
+	// settings-tab callsites unchanged.
 	async cleanupOldUidProperties(): Promise<number> {
-		const files = this.app.vault.getMarkdownFiles();
-		let cleaned = 0;
-
-		for (const file of files) {
-			try {
-				if (await cleanupOldUid(this.app, file)) {
-					cleaned++;
-				}
-			} catch (e) {
-				Logger.warn(`Failed to cleanup ${file.path}:`, e);
-			}
-		}
-
-		return cleaned;
+		return cleanupOldUidPropertiesOp(this.app);
 	}
 
-	// Migrate all contexts from frontmatter to external storage
 	async migrateToExternalStorage(): Promise<{ migrated: number; errors: number }> {
-		const files = this.app.vault.getMarkdownFiles();
-		let migrated = 0;
-		let errors = 0;
-
-		// Initialize external store
-		await this.externalStore.ensureInitialized();
-
-		for (const file of files) {
-			try {
-				// Check if file has context in frontmatter
-				const context = this.getContextFromNote(file);
-				if (!context) continue;
-
-				// Ensure file has a UID
-				let uid = getUidFromCache(this.app, file);
-				if (!uid) {
-					uid = generateUid();
-					await addUidToFile(this.app, file, uid);
-					await briefPause(); // Brief pause for cache
-				}
-
-				// Save to external store
-				const v2 = this.normalizeToV2(context);
-				this.externalStore.set(uid, v2);
-
-				// Remove from frontmatter
-				await this.removeArrangementFromFrontmatter(file);
-
-				migrated++;
-			} catch (e) {
-				Logger.error(`Failed to migrate ${file.path}:`, e);
-				errors++;
-			}
-		}
-
-		// Flush to disk
-		await this.externalStore.flushDirty();
-
-		// Update settings
-		this.settings.storageMode = 'external';
-		await this.saveSettings();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { migrated, errors };
+		return migrateToExternalStorageOp({
+			app: this.app,
+			externalStore: this.externalStore,
+			onAfterMigrate: async (newMode) => {
+				this.settings.storageMode = newMode;
+				await this.saveSettings();
+				this.filesWithContext.clear();
+				await this.setupFileExplorerIndicators();
+			},
+		});
 	}
 
-	// Migrate all contexts from external storage to frontmatter
 	async migrateToFrontmatter(): Promise<{ migrated: number; errors: number }> {
-		const files = this.app.vault.getMarkdownFiles();
-		let migrated = 0;
-		let errors = 0;
-
-		// Initialize external store to load all contexts
-		await this.externalStore.ensureInitialized();
-
-		for (const file of files) {
-			try {
-				// Check if file has a UID with stored context
-				const uid = getUidFromCache(this.app, file);
-				if (!uid) continue;
-
-				const context = this.externalStore.getLatest(uid);
-				if (!context) continue;
-
-				// Save to frontmatter
-				await this.saveArrangementToNote(file, context);
-
-				// Delete from external store
-				await this.externalStore.delete(uid);
-
-				migrated++;
-			} catch (e) {
-				Logger.error(`Failed to migrate ${file.path}:`, e);
-				errors++;
-			}
-		}
-
-		// Update settings
-		this.settings.storageMode = 'frontmatter';
-		await this.saveSettings();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { migrated, errors };
+		return migrateToFrontmatterOp({
+			app: this.app,
+			externalStore: this.externalStore,
+			onAfterMigrate: async (newMode) => {
+				this.settings.storageMode = newMode;
+				await this.saveSettings();
+				this.filesWithContext.clear();
+				await this.setupFileExplorerIndicators();
+			},
+		});
 	}
 
-	// Get the backup folder path
-	private getBackupFolderPath(): string {
-		const basePath = this.settings.perspectaFolderPath.replace(/\/+$/, ''); // Remove trailing slashes
-		return `${basePath}/backups`;
-	}
-
-	// Backup all arrangements to the perspecta folder
+	// Backup operations live in src/services/backup.ts; thin shims keep the
+	// settings-tab callsites unchanged.
 	async backupArrangements(): Promise<{ count: number; path: string }> {
-		// Initialize external store if needed
-		await this.externalStore.ensureInitialized();
-
-		// Collect all arrangements from external store
-		const allArrangements: Record<string, unknown> = {};
-		const uids = this.externalStore.getAllUids();
-
-		for (const uid of uids) {
-			const arrangements = this.externalStore.getAll(uid);
-			if (arrangements.length > 0) {
-				allArrangements[uid] = arrangements;
-			}
-		}
-
-		// Create backup folder if it doesn't exist
-		const backupFolder = this.getBackupFolderPath();
-		if (!await this.app.vault.adapter.exists(backupFolder)) {
-			await this.app.vault.createFolder(backupFolder);
-		}
-
-		// Generate backup filename with timestamp
-		const now = new Date();
-		const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-		const backupFileName = `arrangements-backup-${timestamp}.json`;
-		const backupPath = `${backupFolder}/${backupFileName}`;
-
-		// Create backup data with metadata
-		const backupData = {
-			version: 1,
-			createdAt: now.toISOString(),
-			arrangementCount: Object.keys(allArrangements).length,
-			arrangements: allArrangements
-		};
-
-		// Write backup file
-		await this.app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
-
-		return { count: Object.keys(allArrangements).length, path: backupPath };
+		return backupArrangements({
+			app: this.app,
+			externalStore: this.externalStore,
+			perspectaFolderPath: this.settings.perspectaFolderPath,
+		});
 	}
 
-	// List available backups
 	async listBackups(): Promise<{ name: string; path: string; date: Date }[]> {
-		const backupFolder = this.getBackupFolderPath();
-
-		if (!await this.app.vault.adapter.exists(backupFolder)) {
-			return [];
-		}
-
-		const files = await this.app.vault.adapter.list(backupFolder);
-		const backups: { name: string; path: string; date: Date }[] = [];
-
-		for (const filePath of files.files) {
-			if (filePath.endsWith('.json')) {
-				const fileName = filePath.split('/').pop() || '';
-				// Parse date from filename: arrangements-backup-YYYY-MM-DDTHH-MM-SS.json
-				const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
-				if (match) {
-					const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ':' : '-').replace('T', 'T');
-					const date = new Date(dateStr.slice(0, 10) + 'T' + dateStr.slice(11).replace(/-/g, ':'));
-					backups.push({ name: fileName, path: filePath, date });
-				}
-			}
-		}
-
-		// Sort by date, newest first
-		backups.sort((a, b) => b.date.getTime() - a.date.getTime());
-		return backups;
+		return listBackups({
+			app: this.app,
+			perspectaFolderPath: this.settings.perspectaFolderPath,
+		});
 	}
 
-	// Restore arrangements from a backup file
-	async restoreFromBackup(backupPath: string, mode?: RestoreMode): Promise<{ restored: number; errors: number; cancelled?: boolean }> {
-		// Extract backup name from path
-		const backupName = backupPath.split('/').pop() || 'backup';
-
-		// Show mode selector if not provided
-		if (!mode) {
-			const result = await showRestoreModeSelector(backupName);
-			if (result.cancelled) {
-				return { restored: 0, errors: 0, cancelled: true };
-			}
-			mode = result.mode;
-		}
-
-		// Read and parse backup file with error handling
-		let backupData: { arrangements?: Record<string, unknown> };
-		try {
-			const content = await this.app.vault.adapter.read(backupPath);
-			backupData = JSON.parse(content);
-		} catch (e) {
-			Logger.error('Failed to parse backup file:', e);
-			new Notice('Failed to parse backup file. The file may be corrupted.');
-			return { restored: 0, errors: 1 };
-		}
-
-		if (!backupData.arrangements || typeof backupData.arrangements !== 'object') {
-			new Notice('Invalid backup file format');
-			return { restored: 0, errors: 1 };
-		}
-
-		// Initialize external store if needed
-		await this.externalStore.ensureInitialized();
-
-		let restored = 0;
-		let errors = 0;
-
-		if (mode === 'overwrite') {
-			// Clear all existing arrangements first
-			await this.externalStore.clearAll();
-		}
-
-		for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
-			try {
-				const backupArrangements = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
-
-				if (mode === 'merge') {
-					// Get existing arrangements for this UID
-					const existing = this.externalStore.get(uid) || [];
-					
-					// Combine existing and backup arrangements
-					const combined = [...existing];
-					
-					for (const backupItem of backupArrangements) {
-						// Check if this exact arrangement already exists (by savedAt timestamp)
-						const alreadyExists = combined.some(e => e.savedAt === backupItem.savedAt);
-						if (!alreadyExists) {
-							combined.push(backupItem);
-						}
-					}
-					
-					// Sort by savedAt (newest first) and keep only max allowed
-					combined.sort((a, b) => b.savedAt - a.savedAt);
-					const trimmed = combined.slice(0, this.settings.maxArrangementsPerNote);
-					
-					// Replace the arrangements for this UID
-					this.externalStore.clearUid(uid);
-					for (const item of trimmed) {
-						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
-					}
-				} else {
-					// Overwrite mode - just restore from backup
-					for (const item of backupArrangements) {
-						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
-					}
-				}
-				restored++;
-			} catch (e) {
-				Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
-				errors++;
-			}
-		}
-
-		// Flush to disk
-		await this.externalStore.flushDirty();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { restored, errors };
+	async restoreFromBackup(
+		backupPath: string,
+		mode?: RestoreMode
+	): Promise<{ restored: number; errors: number; cancelled?: boolean }> {
+		return restoreFromBackup(
+			{
+				app: this.app,
+				externalStore: this.externalStore,
+				perspectaFolderPath: this.settings.perspectaFolderPath,
+				maxArrangementsPerNote: this.settings.maxArrangementsPerNote,
+				onAfterRestore: async () => {
+					this.filesWithContext.clear();
+					await this.setupFileExplorerIndicators();
+				},
+			},
+			backupPath,
+			mode
+		);
 	}
 
 	// Generate UIDs for any files in the context that don't have them
@@ -1432,43 +1203,6 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
-	private async saveArrangementToNote(file: TFile, arrangement: WindowArrangementV2) {
-		const readStart = performance.now();
-		const content = await this.app.vault.read(file);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
-		}
-
-		const fmStart = performance.now();
-		const newContent = this.updateFrontmatter(content, arrangement);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
-		}
-
-		const writeStart = performance.now();
-		await this.app.vault.modify(file, newContent);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
-		}
-	}
-
-	private updateFrontmatter(content: string, arrangement: WindowArrangementV2): string {
-		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-		const match = content.match(frontmatterRegex);
-		const encoded = encodeArrangement(arrangement);
-
-		if (match) {
-			// Remove old arrangement (both old multi-line YAML and new single-line format)
-			let fm = match[1]
-				.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')  // Old multi-line
-				.replace(/perspecta-arrangement: ".*"/g, '')  // New single-line
-				.trim();
-			fm = fm ? fm + '\n' + encoded : encoded;
-			return content.replace(frontmatterRegex, `---\n${fm}\n---`);
-		}
-		return `---\n${encoded}\n---\n${content}`;
-	}
-
 
 	// ============================================================================
 	// Context Restore (Optimized)
@@ -1522,7 +1256,7 @@ export default class PerspectaPlugin extends Plugin {
 				// Wait a moment for UI to settle before capturing current state.
 				// safeTimeout: don't fire after unload.
 				this.safeTimeout(() => {
-					const v2Context = this.normalizeToV2(context);
+					const v2Context = normalizeToV2(context);
 					this.showRestoreDebugModal(v2Context, targetFile.name);
 				}, 1000);
 			}
@@ -1570,7 +1304,7 @@ export default class PerspectaPlugin extends Plugin {
 
 				if (arrangements.length === 0) {
 					// No arrangements in external store, fall back to frontmatter
-					return { context: this.getContextFromNote(file), cancelled: false };
+					return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 				}
 
 				if (arrangements.length === 1 || forceLatest) {
@@ -1596,7 +1330,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
-		return { context: this.getContextFromNote(file), cancelled: false };
+		return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 	}
 
 	// Get context for file - handles markdown, canvas, base, and external storage
@@ -1623,23 +1357,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
-		return this.getContextFromNote(file);
-	}
-
-	private getContextFromNote(file: TFile): WindowArrangement | null {
-		const cache = this.app.metadataCache.getFileCache(file);
-		const rawValue = cache?.frontmatter?.[FRONTMATTER_KEY];
-
-		if (!rawValue) return null;
-
-		// Check if it's the new base64 format (string) or old YAML format (object)
-		if (typeof rawValue === 'string') {
-			// New compact format - decode from base64
-			return decodeArrangement(rawValue);
-		} else {
-			// Old YAML format - return as-is (backward compatibility)
-			return rawValue as WindowArrangement;
-		}
+		return getContextFromFrontmatter(this.app, file);
 	}
 
 	// Update saved context with corrected file paths after fallback resolution
@@ -1654,7 +1372,7 @@ export default class PerspectaPlugin extends Plugin {
 		correctedContext.focusedWindow = originalContext.focusedWindow;
 
 		// Preserve source screen info if it existed
-		const v2Original = this.normalizeToV2(originalContext);
+		const v2Original = normalizeToV2(originalContext);
 		if (v2Original.sourceScreen) {
 			correctedContext.sourceScreen = v2Original.sourceScreen;
 		}
@@ -1672,7 +1390,7 @@ export default class PerspectaPlugin extends Plugin {
 				this.externalStore.set(uid, correctedContext);
 			}
 		} else {
-			await this.saveArrangementToNote(contextFile, correctedContext);
+			await saveContextToFrontmatter(this.app, contextFile, correctedContext);
 		}
 
 		if (PerfTimer.isEnabled()) {
@@ -1693,7 +1411,7 @@ export default class PerspectaPlugin extends Plugin {
 				Logger.debug('DevTools detected as open, will re-open after restore');
 			}
 
-			const v2 = this.normalizeToV2(arrangement);
+			const v2 = normalizeToV2(arrangement);
 			PerfTimer.mark('normalizeToV2');
 
 			// Check if we need to tile windows due to aspect ratio mismatch
@@ -1875,17 +1593,6 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		});
 		return leaves;
-	}
-
-	private normalizeToV2(arr: WindowArrangement): WindowArrangementV2 {
-		if (arr.v === 2) return arr as WindowArrangementV2;
-		const v1 = arr as WindowArrangementV1;
-		return {
-			v: 2, ts: v1.ts, focusedWindow: v1.focusedWindow,
-			main: { root: { type: 'tabs', tabs: v1.main.tabs }, x: v1.main.x, y: v1.main.y, width: v1.main.width, height: v1.main.height },
-			popouts: v1.popouts.map(p => ({ root: { type: 'tabs', tabs: p.tabs }, x: p.x, y: p.y, width: p.width, height: p.height })),
-			leftSidebar: v1.leftSidebar, rightSidebar: v1.rightSidebar
-		};
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3224,7 +2931,7 @@ export default class PerspectaPlugin extends Plugin {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		const targetWindow = activeLeaf?.view?.containerEl?.win ?? window;
 
-		const v2 = this.normalizeToV2(context);
+		const v2 = normalizeToV2(context);
 		this.showContextDetailsModal(v2, file.name, targetWindow);
 	}
 
