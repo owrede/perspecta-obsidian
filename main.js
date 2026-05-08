@@ -3536,8 +3536,11 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     // Track path corrections during restore (populated by restoreTabGroup and helpers)
     this.pathCorrections = /* @__PURE__ */ new Map();
     this.isRestoring = false;
-    // Queue of pending tab activations to process after restore
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // Queue of pending tab activations to process after restore.
+    // `container` is Obsidian's internal WorkspaceParent — there's no public
+    // type for it, but we only ever poke at three optional methods (each
+    // runtime-checked at the use site). Structural type beats `any` here:
+    // it tells the reader exactly what we touch.
     this.pendingTabActivations = [];
   }
   // Track Cmd+Shift for context restore on link click
@@ -4581,7 +4584,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     });
     return leaves;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreWorkspaceNode(parent, state, existingLeaf) {
     if (!(state == null ? void 0 : state.type)) {
       const legacyState = state;
@@ -4592,7 +4594,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
     return state.type === "tabs" ? this.restoreTabGroup(parent, state, existingLeaf) : this.restoreSplit(parent, state, existingLeaf);
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreTabGroup(_parent, state, existingLeaf) {
     var _a, _b, _c;
     if (!((_a = state.tabs) == null ? void 0 : _a.length))
@@ -5618,7 +5619,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     overlay.style.animationDuration = `${duration}s`;
     win.document.body.appendChild(overlay);
     overlay.addEventListener("animationend", () => overlay.remove());
-    const cleanup = safeTimeout(() => {
+    safeTimeout(() => {
       if (overlay.parentNode) {
         overlay.remove();
       }

@@ -50,12 +50,11 @@
  * @license MIT
  */
 
-import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, WorkspaceLeaf, Notice, setIcon } from 'obsidian';
+import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, WorkspaceLeaf, WorkspaceSplit as ObsidianWorkspaceSplit, Notice, setIcon } from 'obsidian';
 
 // Import utility modules
-import { TIMING, LIMITS } from './utils/constants';
-import { delay, briefPause, retryAsync, withTimeout, safeTimeout, waitForCondition } from './utils/async-utils';
-import { EventManager } from './utils/event-manager';
+import { TIMING } from './utils/constants';
+import { delay, briefPause, safeTimeout } from './utils/async-utils';
 
 // Import types
 import {
@@ -78,7 +77,6 @@ import {
 import {
 	ExtendedWorkspace,
 	ExtendedView,
-	ExtendedApp,
 	WorkspaceSplit,
 	WorkspaceTabContainer,
 	hasFloatingSplit,
@@ -147,7 +145,7 @@ import {
 } from './services/migrations';
 
 // Import UI components
-import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
+import { showArrangementSelector, showConfirmOverwrite, RestoreMode } from './ui/modals';
 import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 import { PerspectaSettingTab } from './ui/settings-tab';
 
@@ -217,6 +215,25 @@ function getPropertiesCollapsed(view: unknown): boolean | undefined {
 interface ProxyContainerChild {
 	view?: { getViewType?: () => string };
 	children?: ProxyContainerChild[];
+}
+
+// Shape of the internal WorkspaceParent we poke at when activating a tab
+// after restore. All fields are optional because Obsidian's API has shifted
+// across versions — we runtime-check each at the use site.
+interface TabActivationContainer {
+	currentTab?: number;
+	updateTabDisplay?: () => void;
+	onResize?: () => void;
+	selectTab?: (leaf: WorkspaceLeaf) => void;
+}
+
+// The parent passed through the restore tree (a WorkspaceSplit-ish object).
+// `restoreSplit` reads/writes `direction` and inspects `constructor.name` for
+// debug logs. The full Obsidian internal interface is bigger; this records
+// only what we actually touch.
+interface SplitParent {
+	direction?: 'horizontal' | 'vertical';
+	constructor?: { name?: string };
 }
 
 // ============================================================================
@@ -1595,8 +1612,7 @@ export default class PerspectaPlugin extends Plugin {
 		return leaves;
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async restoreWorkspaceNode(parent: any, state: WorkspaceNodeState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreWorkspaceNode(parent: SplitParent | null, state: WorkspaceNodeState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state?.type) {
 			// Handle legacy states without explicit type - check for tabs property
 			const legacyState = state as unknown as { tabs?: TabState[] };
@@ -1610,8 +1626,7 @@ export default class PerspectaPlugin extends Plugin {
 			: this.restoreSplit(parent, state as SplitState, existingLeaf);
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async restoreTabGroup(_parent: any, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreTabGroup(_parent: SplitParent | null, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.tabs?.length) return existingLeaf;
 
 		// Find the active tab index
@@ -1674,8 +1689,11 @@ export default class PerspectaPlugin extends Plugin {
 				firstLeaf = leaf;
 				isFirstTabOpened = true;
 			} else if (!isFirstTabOpened) {
-				// No existing leaf, create new one
-				leaf = this.app.workspace.createLeafInParent(_parent, 0);
+				// No existing leaf, create new one. Cast back to Obsidian's
+				// public WorkspaceSplit at the API boundary — the local
+				// SplitParent shape covers everything *we* read, but
+				// createLeafInParent wants the full official type.
+				leaf = this.app.workspace.createLeafInParent(_parent as unknown as ObsidianWorkspaceSplit, 0);
 				await leaf.openFile(file);
 				container = leaf.parent;
 				firstLeaf = leaf;
@@ -1720,7 +1738,7 @@ export default class PerspectaPlugin extends Plugin {
 	 * 3. Split vertically from A (FIRST leaf) → C
 	 *    This should wrap [A, B] as a unit
 	 */
-	private async restoreSplit(parent: any, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreSplit(parent: SplitParent | null, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.children.length) return existingLeaf;
 
 		if (COORDINATE_DEBUG) {
@@ -2587,10 +2605,13 @@ export default class PerspectaPlugin extends Plugin {
 		Logger.debug(`  Queued tab activation for index ${activeTabIndex}`);
 	}
 
-	// Queue of pending tab activations to process after restore
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// Queue of pending tab activations to process after restore.
+	// `container` is Obsidian's internal WorkspaceParent — there's no public
+	// type for it, but we only ever poke at three optional methods (each
+	// runtime-checked at the use site). Structural type beats `any` here:
+	// it tells the reader exactly what we touch.
 	private pendingTabActivations: Array<{
-		container: any;  // Obsidian's internal WorkspaceParent
+		container: TabActivationContainer;
 		activeTabIndex: number;
 		activeLeaf: WorkspaceLeaf;
 	}> = [];
@@ -2895,8 +2916,10 @@ export default class PerspectaPlugin extends Plugin {
 		win.document.body.appendChild(overlay);
 		overlay.addEventListener('animationend', () => overlay.remove());
 		
-		// Use safe timeout for animation cleanup
-		const cleanup = safeTimeout(() => {
+		// Belt-and-suspenders: animationend handler usually removes the overlay,
+		// but if the page is hidden during the animation the event won't fire.
+		// We don't keep the cleanup fn because we *want* this timer to run.
+		safeTimeout(() => {
 			if (overlay.parentNode) {
 				overlay.remove();
 			}

@@ -8,7 +8,7 @@ import { App, DataAdapter, PluginManifest } from 'obsidian';
 import { WindowArrangementV2, ArrangementCollection, TimestampedArrangement } from '../types';
 import { PerfTimer } from '../utils/perf-timer';
 import { TIMING } from '../utils/constants';
-import { debounceAsync, safeTimeout } from '../utils/async-utils';
+import { debounceAsync } from '../utils/async-utils';
 import { Logger } from '../utils/logger';
 
 const CONTEXTS_FOLDER = 'contexts';
