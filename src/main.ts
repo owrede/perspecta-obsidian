@@ -54,7 +54,7 @@ import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, W
 
 // Import utility modules
 import { TIMING, LIMITS } from './utils/constants';
-import { delay, briefPause, retryAsync, withTimeout, safeTimeout } from './utils/async-utils';
+import { delay, briefPause, retryAsync, withTimeout, safeTimeout, waitForCondition } from './utils/async-utils';
 import { EventManager } from './utils/event-manager';
 
 // Import types
@@ -352,9 +352,10 @@ export default class PerspectaPlugin extends Plugin {
 			if (!file || !this.shiftCmdHeld) return;
 			
 			if (this.filesWithContext.has(file.path)) {
-				// Small delay to let Obsidian finish its navigation, then restore
-				// Use forceLatest=true to skip the arrangement selector modal
-				setTimeout(() => {
+				// Small delay to let Obsidian finish its navigation, then restore.
+				// Use forceLatest=true to skip the arrangement selector modal.
+				// safeTimeout: don't fire after unload.
+				this.safeTimeout(() => {
 					this.restoreContext(file, true);
 				}, 50);
 			}
@@ -1697,8 +1698,9 @@ export default class PerspectaPlugin extends Plugin {
 
 			// Show restore debug modal if enabled
 			if (this.settings.showDebugModalOnRestore) {
-				// Wait a moment for UI to settle before capturing current state
-				setTimeout(() => {
+				// Wait a moment for UI to settle before capturing current state.
+				// safeTimeout: don't fire after unload.
+				this.safeTimeout(() => {
 					const v2Context = this.normalizeToV2(context);
 					this.showRestoreDebugModal(v2Context, targetFile.name);
 				}, 1000);
@@ -1972,11 +1974,12 @@ export default class PerspectaPlugin extends Plugin {
 				}
 			}
 
-			// Process pending tab activations after a delay to ensure windows are fully ready
-			// Use requestAnimationFrame + setTimeout to wait for both rendering and event loop
+			// Process pending tab activations after a delay to ensure windows are fully ready.
+			// rAF waits for layout/paint; safeTimeout waits one more macrotask AND won't fire
+			// if the plugin unloads mid-restore.
 			if (this.pendingTabActivations.length > 0) {
 				requestAnimationFrame(() => {
-					setTimeout(() => {
+					this.safeTimeout(() => {
 						this.processPendingTabActivations();
 					}, 100);
 				});
@@ -2371,8 +2374,8 @@ export default class PerspectaPlugin extends Plugin {
 	private applyScrollToLeaf(leaf: WorkspaceLeaf, scroll: number | undefined): void {
 		if (scroll === undefined || scroll === 0) return;
 
-		// Delay to ensure view is fully rendered
-		setTimeout(() => {
+		// Delay to ensure view is fully rendered. safeTimeout: don't fire after unload.
+		this.safeTimeout(() => {
 			if (applyScrollPosition(leaf.view, scroll)) {
 				Logger.debug(`applyScrollToLeaf: scrolled to ${scroll}`);
 			}
@@ -2381,25 +2384,27 @@ export default class PerspectaPlugin extends Plugin {
 
 	/**
 	 * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
+	 *
+	 * Waits for the target leaves to actually exist before applying positions, with a hard
+	 * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
+	 * dropped scroll position when restoring large arrangements on slow disks.
 	 */
 	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
-		// Build maps of path -> scroll and path -> canvasViewport from the state
 		const scrollMap = new Map<string, number>();
 		const canvasViewportMap = new Map<string, { tx: number; ty: number; zoom: number }>();
 		this.collectViewPositions(state, scrollMap, canvasViewportMap);
 
 		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
+		const targetPaths = new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
+		const expectedCount = targetPaths.size;
+		Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
 
-		// Apply positions after a longer delay to ensure all views in splits are loaded
-		// Re-iterate leaves inside timeout since split views may not exist yet when this is called
-		setTimeout(() => {
+		const apply = () => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
 				const file = leaf.view.file;
 
-				// Restore scroll position for markdown files
 				if (scrollMap.has(file.path)) {
 					const scroll = scrollMap.get(file.path);
 					if (scroll !== undefined && scroll > 0) {
@@ -2409,7 +2414,6 @@ export default class PerspectaPlugin extends Plugin {
 					}
 				}
 
-				// Restore canvas viewport
 				if (canvasViewportMap.has(file.path)) {
 					const viewport = canvasViewportMap.get(file.path);
 					if (viewport) {
@@ -2417,7 +2421,29 @@ export default class PerspectaPlugin extends Plugin {
 					}
 				}
 			});
-		}, 500);
+		};
+
+		// Fire-and-forget async wait — if we don't reach the target count in time
+		// (slow disk, file genuinely missing) we still apply best-effort.
+		(async () => {
+			try {
+				await waitForCondition(() => {
+					if (this.isUnloading) return true; // bail out cleanly
+					let matched = 0;
+					this.app.workspace.iterateAllLeaves((leaf) => {
+						if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
+							matched++;
+						}
+					});
+					return matched >= expectedCount;
+				}, /* timeoutMs */ 2000, /* intervalMs */ 50);
+				Logger.debug('scheduleScrollRestoration: target leaves loaded, applying positions');
+			} catch {
+				Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+			}
+			if (this.isUnloading) return;
+			apply();
+		})();
 	}
 
 	/**
@@ -2434,8 +2460,9 @@ export default class PerspectaPlugin extends Plugin {
 			console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
 		}
 		
-		// Apply after delay to ensure all views are loaded
-		setTimeout(() => {
+		// Apply after delay to ensure all views are loaded.
+		// safeTimeout: don't fire after unload.
+		this.safeTimeout(() => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
 				const file = leaf.view.file;
@@ -3138,8 +3165,9 @@ export default class PerspectaPlugin extends Plugin {
 
 		// If active tab was the first tab (in existingLeaf), we need to switch to it
 		if (activeIsFirstTab) {
-			// Re-activate the first leaf by opening its file again or using setActiveLeaf
-			setTimeout(() => {
+			// Re-activate the first leaf by opening its file again or using setActiveLeaf.
+			// safeTimeout: don't fire after unload.
+			this.safeTimeout(() => {
 				this.app.workspace.setActiveLeaf(existingLeaf, { focus: false });
 				Logger.debug(`  Activated first tab (existingLeaf)`);
 			}, 100);
