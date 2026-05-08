@@ -50,12 +50,11 @@
  * @license MIT
  */
 
-import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, WorkspaceLeaf, Notice, setIcon } from 'obsidian';
+import { App, FileSystemAdapter, Menu, MenuItem, Plugin, TFile, TAbstractFile, WorkspaceLeaf, WorkspaceSplit as ObsidianWorkspaceSplit, Notice, setIcon } from 'obsidian';
 
 // Import utility modules
-import { TIMING, LIMITS } from './utils/constants';
-import { delay, briefPause, retryAsync, withTimeout, safeTimeout, waitForCondition } from './utils/async-utils';
-import { EventManager } from './utils/event-manager';
+import { TIMING } from './utils/constants';
+import { delay, briefPause, safeTimeout } from './utils/async-utils';
 
 // Import types
 import {
@@ -78,7 +77,6 @@ import {
 import {
 	ExtendedWorkspace,
 	ExtendedView,
-	ExtendedApp,
 	WorkspaceSplit,
 	WorkspaceTabContainer,
 	hasFloatingSplit,
@@ -147,7 +145,7 @@ import {
 } from './services/migrations';
 
 // Import UI components
-import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
+import { showArrangementSelector, showConfirmOverwrite, RestoreMode } from './ui/modals';
 import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 import { PerspectaSettingTab } from './ui/settings-tab';
 
@@ -217,6 +215,25 @@ function getPropertiesCollapsed(view: unknown): boolean | undefined {
 interface ProxyContainerChild {
 	view?: { getViewType?: () => string };
 	children?: ProxyContainerChild[];
+}
+
+// Shape of the internal WorkspaceParent we poke at when activating a tab
+// after restore. All fields are optional because Obsidian's API has shifted
+// across versions — we runtime-check each at the use site.
+interface TabActivationContainer {
+	currentTab?: number;
+	updateTabDisplay?: () => void;
+	onResize?: () => void;
+	selectTab?: (leaf: WorkspaceLeaf) => void;
+}
+
+// The parent passed through the restore tree (a WorkspaceSplit-ish object).
+// `restoreSplit` reads/writes `direction` and inspects `constructor.name` for
+// debug logs. The full Obsidian internal interface is bigger; this records
+// only what we actually touch.
+interface SplitParent {
+	direction?: 'horizontal' | 'vertical';
+	constructor?: { name?: string };
 }
 
 // ============================================================================
@@ -1595,8 +1612,7 @@ export default class PerspectaPlugin extends Plugin {
 		return leaves;
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async restoreWorkspaceNode(parent: any, state: WorkspaceNodeState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreWorkspaceNode(parent: SplitParent | null, state: WorkspaceNodeState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state?.type) {
 			// Handle legacy states without explicit type - check for tabs property
 			const legacyState = state as unknown as { tabs?: TabState[] };
@@ -1610,8 +1626,7 @@ export default class PerspectaPlugin extends Plugin {
 			: this.restoreSplit(parent, state as SplitState, existingLeaf);
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async restoreTabGroup(_parent: any, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreTabGroup(_parent: SplitParent | null, state: TabGroupState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.tabs?.length) return existingLeaf;
 
 		// Find the active tab index
@@ -1674,8 +1689,11 @@ export default class PerspectaPlugin extends Plugin {
 				firstLeaf = leaf;
 				isFirstTabOpened = true;
 			} else if (!isFirstTabOpened) {
-				// No existing leaf, create new one
-				leaf = this.app.workspace.createLeafInParent(_parent, 0);
+				// No existing leaf, create new one. Cast back to Obsidian's
+				// public WorkspaceSplit at the API boundary — the local
+				// SplitParent shape covers everything *we* read, but
+				// createLeafInParent wants the full official type.
+				leaf = this.app.workspace.createLeafInParent(_parent as unknown as ObsidianWorkspaceSplit, 0);
 				await leaf.openFile(file);
 				container = leaf.parent;
 				firstLeaf = leaf;
@@ -1720,7 +1738,7 @@ export default class PerspectaPlugin extends Plugin {
 	 * 3. Split vertically from A (FIRST leaf) → C
 	 *    This should wrap [A, B] as a unit
 	 */
-	private async restoreSplit(parent: any, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
+	private async restoreSplit(parent: SplitParent | null, state: SplitState, existingLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf | undefined> {
 		if (!state.children.length) return existingLeaf;
 
 		if (COORDINATE_DEBUG) {
@@ -1905,9 +1923,15 @@ export default class PerspectaPlugin extends Plugin {
 	/**
 	 * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
 	 *
-	 * Waits for the target leaves to actually exist before applying positions, with a hard
-	 * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
-	 * dropped scroll position when restoring large arrangements on slow disks.
+	 * Retries application until every target path's scroll/viewport actually
+	 * sticks (applyScrollPosition / restoreCanvasViewport return true), with
+	 * a 2s timeout cap. Path-existence alone isn't sufficient — a leaf can
+	 * be open with the right path before its CodeMirror editor is mounted
+	 * or its canvas has loaded, in which case the apply silently no-ops.
+	 *
+	 * Replaces the earlier "wait for path-match, then apply once" approach,
+	 * which silently dropped scroll position when restoring large
+	 * arrangements on slow disks.
 	 */
 	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
 		const scrollMap = new Map<string, number>();
@@ -1916,53 +1940,61 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		const targetPaths = new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
-		const expectedCount = targetPaths.size;
-		Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
+		// Track which paths haven't successfully applied yet. Each retry
+		// pass removes paths whose apply succeeded; the loop stops when
+		// the set is empty or the timeout fires.
+		const pendingScroll = new Set(scrollMap.keys());
+		const pendingViewport = new Set(canvasViewportMap.keys());
+		Logger.debug(`scheduleScrollRestoration: ${pendingScroll.size} scroll, ${pendingViewport.size} canvas viewports`);
 
-		const apply = () => {
+		const tryApplyOnce = () => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
-				const file = leaf.view.file;
+				const path = leaf.view.file.path;
 
-				if (scrollMap.has(file.path)) {
-					const scroll = scrollMap.get(file.path);
-					if (scroll !== undefined && scroll > 0) {
-						if (applyScrollPosition(leaf.view, scroll)) {
-							Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-						}
+				if (pendingScroll.has(path)) {
+					const scroll = scrollMap.get(path);
+					if (scroll === undefined || scroll === 0) {
+						pendingScroll.delete(path); // nothing to restore
+					} else if (applyScrollPosition(leaf.view, scroll)) {
+						pendingScroll.delete(path);
+						Logger.debug(`scheduleScrollRestoration: ${leaf.view.file.basename} -> scroll ${scroll}`);
 					}
 				}
 
-				if (canvasViewportMap.has(file.path)) {
-					const viewport = canvasViewportMap.get(file.path);
-					if (viewport) {
-						this.restoreCanvasViewport(leaf, viewport);
+				if (pendingViewport.has(path)) {
+					const viewport = canvasViewportMap.get(path);
+					if (viewport && this.restoreCanvasViewport(leaf, viewport)) {
+						pendingViewport.delete(path);
 					}
 				}
 			});
 		};
 
-		// Fire-and-forget async wait — if we don't reach the target count in time
-		// (slow disk, file genuinely missing) we still apply best-effort.
+		// Retry loop: try every 50ms up to 2s. If anything's still pending
+		// at the end, log it — the file may have failed to open or the
+		// view type may not support scrolling.
 		(async () => {
-			try {
-				await waitForCondition(() => {
-					if (this.isUnloading) return true; // bail out cleanly
-					let matched = 0;
-					this.app.workspace.iterateAllLeaves((leaf) => {
-						if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
-							matched++;
-						}
-					});
-					return matched >= expectedCount;
-				}, /* timeoutMs */ 2000, /* intervalMs */ 50);
-				Logger.debug('scheduleScrollRestoration: target leaves loaded, applying positions');
-			} catch {
-				Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+			const startedAt = Date.now();
+			const TIMEOUT_MS = 2000;
+			const INTERVAL_MS = 50;
+
+			while (Date.now() - startedAt < TIMEOUT_MS) {
+				if (this.isUnloading) return;
+				tryApplyOnce();
+				if (pendingScroll.size === 0 && pendingViewport.size === 0) {
+					Logger.debug(`scheduleScrollRestoration: all positions applied in ${Date.now() - startedAt}ms`);
+					return;
+				}
+				await delay(INTERVAL_MS);
 			}
-			if (this.isUnloading) return;
-			apply();
+
+			if (pendingScroll.size > 0 || pendingViewport.size > 0) {
+				Logger.debug(
+					`scheduleScrollRestoration: timed out with ${pendingScroll.size} scroll + ${pendingViewport.size} viewport pending`,
+					{ scroll: [...pendingScroll], viewport: [...pendingViewport] }
+				);
+			}
 		})();
 	}
 
@@ -2075,9 +2107,9 @@ export default class PerspectaPlugin extends Plugin {
 	/**
 	 * Restore canvas viewport (pan and zoom)
 	 */
-	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): void {
+	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): boolean {
 		// Use type-safe canvas view check
-		if (!isCanvasView(leaf.view)) return;
+		if (!isCanvasView(leaf.view)) return false;
 		const canvas = leaf.view.canvas;
 
 		try {
@@ -2102,8 +2134,10 @@ export default class PerspectaPlugin extends Plugin {
 			}
 
 			Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : 'unknown'} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+			return true;
 		} catch (e) {
 			Logger.debug('Could not restore canvas viewport:', e);
+			return false;
 		}
 	}
 
@@ -2571,10 +2605,13 @@ export default class PerspectaPlugin extends Plugin {
 		Logger.debug(`  Queued tab activation for index ${activeTabIndex}`);
 	}
 
-	// Queue of pending tab activations to process after restore
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// Queue of pending tab activations to process after restore.
+	// `container` is Obsidian's internal WorkspaceParent — there's no public
+	// type for it, but we only ever poke at three optional methods (each
+	// runtime-checked at the use site). Structural type beats `any` here:
+	// it tells the reader exactly what we touch.
 	private pendingTabActivations: Array<{
-		container: any;  // Obsidian's internal WorkspaceParent
+		container: TabActivationContainer;
 		activeTabIndex: number;
 		activeLeaf: WorkspaceLeaf;
 	}> = [];
@@ -2879,8 +2916,10 @@ export default class PerspectaPlugin extends Plugin {
 		win.document.body.appendChild(overlay);
 		overlay.addEventListener('animationend', () => overlay.remove());
 		
-		// Use safe timeout for animation cleanup
-		const cleanup = safeTimeout(() => {
+		// Belt-and-suspenders: animationend handler usually removes the overlay,
+		// but if the page is hidden during the animation the event won't fire.
+		// We don't keep the cleanup fn because we *want* this timer to run.
+		safeTimeout(() => {
 			if (overlay.parentNode) {
 				overlay.remove();
 			}

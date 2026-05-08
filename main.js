@@ -98,16 +98,6 @@ function debounceAsync(fn, delay2) {
     return pendingPromise;
   };
 }
-async function waitForCondition(condition, timeoutMs = 5e3, intervalMs = 50) {
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeoutMs) {
-    if (await condition()) {
-      return;
-    }
-    await delay(intervalMs);
-  }
-  throw new Error(`Condition not met within ${timeoutMs}ms`);
-}
 function safeTimeout(callback, delay2) {
   const timeoutId = setTimeout(callback, delay2);
   return () => {
@@ -1920,7 +1910,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2191,7 +2181,7 @@ async function backupArrangements(cfg) {
   if (!await app.vault.adapter.exists(backupFolder)) {
     await app.vault.createFolder(backupFolder);
   }
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const backupFileName = `arrangements-backup-${timestamp}.json`;
   const backupPath = `${backupFolder}/${backupFileName}`;
@@ -2220,7 +2210,7 @@ async function listBackups(cfg) {
     if (!match)
       continue;
     const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-    const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+    const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
     backups.push({ name: fileName, path: filePath, date });
   }
   backups.sort((a, b) => b.date.getTime() - a.date.getTime());
@@ -2860,6 +2850,16 @@ var import_obsidian7 = require("obsidian");
 
 // src/changelog.ts
 var CHANGELOG = [
+  {
+    version: "0.1.35",
+    date: "2026-05-08",
+    changes: [
+      "Reliability: Scroll and canvas-viewport restoration now retries until each application succeeds (every 50ms, up to 2s). Previously waited for path-match then applied once \u2014 leaves with the right path could exist before their editor or canvas had finished mounting, so positions were silently dropped on slow disks.",
+      "Internal: First test suite. 20 cases covering codec round-trip (the v0.1.31 split-sizes regression has its own test now) and frontmatter-store I/O. Run with `npm test`.",
+      "Internal: minAppVersion bumped from 0.15.0 to 1.4.0 to match what the runtime version-check already enforced.",
+      "Internal: All ESLint warnings resolved (113 \u2192 0 across the session). Replaced two `any`-typed Obsidian internal-API parameters with structural interfaces."
+    ]
+  },
   {
     version: "0.1.34",
     date: "2026-05-08",
@@ -3546,8 +3546,11 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     // Track path corrections during restore (populated by restoreTabGroup and helpers)
     this.pathCorrections = /* @__PURE__ */ new Map();
     this.isRestoring = false;
-    // Queue of pending tab activations to process after restore
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // Queue of pending tab activations to process after restore.
+    // `container` is Obsidian's internal WorkspaceParent — there's no public
+    // type for it, but we only ever poke at three optional methods (each
+    // runtime-checked at the use site). Structural type beats `any` here:
+    // it tells the reader exactly what we touch.
     this.pendingTabActivations = [];
   }
   // Track Cmd+Shift for context restore on link click
@@ -4591,7 +4594,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     });
     return leaves;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreWorkspaceNode(parent, state, existingLeaf) {
     if (!(state == null ? void 0 : state.type)) {
       const legacyState = state;
@@ -4602,7 +4604,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
     return state.type === "tabs" ? this.restoreTabGroup(parent, state, existingLeaf) : this.restoreSplit(parent, state, existingLeaf);
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreTabGroup(_parent, state, existingLeaf) {
     var _a, _b, _c;
     if (!((_a = state.tabs) == null ? void 0 : _a.length))
@@ -4838,9 +4839,15 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   /**
    * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
    *
-   * Waits for the target leaves to actually exist before applying positions, with a hard
-   * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
-   * dropped scroll position when restoring large arrangements on slow disks.
+   * Retries application until every target path's scroll/viewport actually
+   * sticks (applyScrollPosition / restoreCanvasViewport return true), with
+   * a 2s timeout cap. Path-existence alone isn't sufficient — a leaf can
+   * be open with the right path before its CodeMirror editor is mounted
+   * or its canvas has loaded, in which case the apply silently no-ops.
+   *
+   * Replaces the earlier "wait for path-match, then apply once" approach,
+   * which silently dropped scroll position when restoring large
+   * arrangements on slow disks.
    */
   scheduleScrollRestoration(state) {
     const scrollMap = /* @__PURE__ */ new Map();
@@ -4848,56 +4855,51 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     this.collectViewPositions(state, scrollMap, canvasViewportMap);
     if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
-    const targetPaths = /* @__PURE__ */ new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
-    const expectedCount = targetPaths.size;
-    Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
-    const apply = () => {
+    const pendingScroll = new Set(scrollMap.keys());
+    const pendingViewport = new Set(canvasViewportMap.keys());
+    Logger.debug(`scheduleScrollRestoration: ${pendingScroll.size} scroll, ${pendingViewport.size} canvas viewports`);
+    const tryApplyOnce = () => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         if (!hasFile(leaf.view))
           return;
-        const file = leaf.view.file;
-        if (scrollMap.has(file.path)) {
-          const scroll = scrollMap.get(file.path);
-          if (scroll !== void 0 && scroll > 0) {
-            if (applyScrollPosition(leaf.view, scroll)) {
-              Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-            }
+        const path = leaf.view.file.path;
+        if (pendingScroll.has(path)) {
+          const scroll = scrollMap.get(path);
+          if (scroll === void 0 || scroll === 0) {
+            pendingScroll.delete(path);
+          } else if (applyScrollPosition(leaf.view, scroll)) {
+            pendingScroll.delete(path);
+            Logger.debug(`scheduleScrollRestoration: ${leaf.view.file.basename} -> scroll ${scroll}`);
           }
         }
-        if (canvasViewportMap.has(file.path)) {
-          const viewport = canvasViewportMap.get(file.path);
-          if (viewport) {
-            this.restoreCanvasViewport(leaf, viewport);
+        if (pendingViewport.has(path)) {
+          const viewport = canvasViewportMap.get(path);
+          if (viewport && this.restoreCanvasViewport(leaf, viewport)) {
+            pendingViewport.delete(path);
           }
         }
       });
     };
     (async () => {
-      try {
-        await waitForCondition(
-          () => {
-            if (this.isUnloading)
-              return true;
-            let matched = 0;
-            this.app.workspace.iterateAllLeaves((leaf) => {
-              if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
-                matched++;
-              }
-            });
-            return matched >= expectedCount;
-          },
-          /* timeoutMs */
-          2e3,
-          /* intervalMs */
-          50
-        );
-        Logger.debug("scheduleScrollRestoration: target leaves loaded, applying positions");
-      } catch (e) {
-        Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+      const startedAt = Date.now();
+      const TIMEOUT_MS = 2e3;
+      const INTERVAL_MS = 50;
+      while (Date.now() - startedAt < TIMEOUT_MS) {
+        if (this.isUnloading)
+          return;
+        tryApplyOnce();
+        if (pendingScroll.size === 0 && pendingViewport.size === 0) {
+          Logger.debug(`scheduleScrollRestoration: all positions applied in ${Date.now() - startedAt}ms`);
+          return;
+        }
+        await delay(INTERVAL_MS);
       }
-      if (this.isUnloading)
-        return;
-      apply();
+      if (pendingScroll.size > 0 || pendingViewport.size > 0) {
+        Logger.debug(
+          `scheduleScrollRestoration: timed out with ${pendingScroll.size} scroll + ${pendingViewport.size} viewport pending`,
+          { scroll: [...pendingScroll], viewport: [...pendingViewport] }
+        );
+      }
     })();
   }
   /**
@@ -4995,7 +4997,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
    */
   restoreCanvasViewport(leaf, viewport) {
     if (!isCanvasView(leaf.view))
-      return;
+      return false;
     const canvas = leaf.view.canvas;
     try {
       const currentZoom = canvas.tZoom || 1;
@@ -5013,8 +5015,10 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         canvas.requestFrame();
       }
       Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : "unknown"} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+      return true;
     } catch (e) {
       Logger.debug("Could not restore canvas viewport:", e);
+      return false;
     }
   }
   /**
@@ -5625,7 +5629,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     overlay.style.animationDuration = `${duration}s`;
     win.document.body.appendChild(overlay);
     overlay.addEventListener("animationend", () => overlay.remove());
-    const cleanup = safeTimeout(() => {
+    safeTimeout(() => {
       if (overlay.parentNode) {
         overlay.remove();
       }

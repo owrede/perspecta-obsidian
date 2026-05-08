@@ -11,6 +11,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.35',
+		date: '2026-05-08',
+		changes: [
+			'Reliability: Scroll and canvas-viewport restoration now retries until each application succeeds (every 50ms, up to 2s). Previously waited for path-match then applied once — leaves with the right path could exist before their editor or canvas had finished mounting, so positions were silently dropped on slow disks.',
+			'Internal: First test suite. 20 cases covering codec round-trip (the v0.1.31 split-sizes regression has its own test now) and frontmatter-store I/O. Run with `npm test`.',
+			'Internal: minAppVersion bumped from 0.15.0 to 1.4.0 to match what the runtime version-check already enforced.',
+			'Internal: All ESLint warnings resolved (113 → 0 across the session). Replaced two `any`-typed Obsidian internal-API parameters with structural interfaces.',
+		],
+	},
+	{
 		version: '0.1.34',
 		date: '2026-05-08',
 		changes: [

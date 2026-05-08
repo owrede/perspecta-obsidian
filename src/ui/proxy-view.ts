@@ -20,7 +20,6 @@
 import { ItemView, WorkspaceLeaf, TFile, setIcon, MarkdownRenderer, Component, ViewStateResult } from 'obsidian';
 import { TIMING, CSS_CLASSES, EVENTS } from '../utils/constants';
 import { ComponentEventManager } from '../utils/event-manager';
-import { delay, retryAsync, safeTimeout } from '../utils/async-utils';
 
 export const PROXY_VIEW_TYPE = 'perspecta-proxy-view';
 

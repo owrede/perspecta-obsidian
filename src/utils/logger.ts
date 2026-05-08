@@ -125,6 +125,7 @@ export function logWarn(message: string, ...args: unknown[]): void {
  */
 export function logInfo(message: string, ...args: unknown[]): void {
 	if (config.level >= LogLevel.INFO) {
+		// eslint-disable-next-line no-console -- Logger is the chosen console wrapper
 		console.log(`${config.prefix} ${message}`, ...args);
 	}
 }
@@ -138,6 +139,7 @@ export function logInfo(message: string, ...args: unknown[]): void {
  */
 export function logDebug(message: string, ...args: unknown[]): void {
 	if (config.level >= LogLevel.DEBUG) {
+		// eslint-disable-next-line no-console -- Logger is the chosen console wrapper
 		console.log(`${config.prefix} [DEBUG] ${message}`, ...args);
 	}
 }
