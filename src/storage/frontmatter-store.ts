@@ -63,6 +63,22 @@ export async function saveContextToFrontmatter(
 }
 
 /**
+ * Cheap O(1) check (against the metadata cache) for whether a note has a
+ * stored arrangement in its frontmatter. Used by the file-explorer indicator
+ * scan, so it must be honest about *absence* — `undefined` (key missing)
+ * and falsy values both count as "no arrangement".
+ *
+ * Critical: do NOT use `!== null` here. Obsidian's frontmatter cache
+ * returns `undefined` for missing keys, never `null` — so `!== null` is
+ * true for every file with any frontmatter at all, which produces a
+ * false-positive indicator for every markdown file in the vault.
+ */
+export function hasContextInFrontmatter(app: App, file: TFile): boolean {
+	const value = app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY];
+	return Boolean(value);
+}
+
+/**
  * Remove the perspecta-arrangement line from a note's frontmatter, if present.
  * Returns true if the file was modified.
  */

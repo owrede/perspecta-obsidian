@@ -69,7 +69,6 @@ import {
 	WindowArrangement,
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
-	FRONTMATTER_KEY,
 	UID_FRONTMATTER_KEY
 } from './types';
 
@@ -135,6 +134,7 @@ import {
 	getContextFromFrontmatter,
 	saveContextToFrontmatter,
 	removeContextFromFrontmatter,
+	hasContextInFrontmatter,
 } from './storage/frontmatter-store';
 import { backupArrangements, listBackups, restoreFromBackup } from './services/backup';
 import {
@@ -3232,7 +3232,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Check frontmatter
-		const hasContextFrontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] !== null;
+		const hasContextFrontmatter = hasContextInFrontmatter(this.app, file);
 
 		// Check external storage
 		let hasContextExternal = false;
@@ -3295,7 +3295,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Scan for markdown files with context in frontmatter
 		for (const file of mdFiles) {
-			if (this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY]) {
+			if (hasContextInFrontmatter(this.app, file)) {
 				this.filesWithContext.add(file.path);
 			}
 		}
@@ -3383,7 +3383,7 @@ export default class PerspectaPlugin extends Plugin {
 			hasContext = await baseHasContext(this.app, file);
 		} else {
 			// Markdown files: check frontmatter
-			hasContext = this.app.metadataCache.getFileCache(file)?.frontmatter?.[FRONTMATTER_KEY] !== null;
+			hasContext = hasContextInFrontmatter(this.app, file);
 
 			// Also check external storage if enabled
 			if (!hasContext && this.settings.storageMode === 'external') {
