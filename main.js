@@ -1920,7 +1920,7 @@ function createRect(rect, fill, stroke, rx) {
 }
 function formatTimestamp(ts) {
   const date = new Date(ts);
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const isToday = date.toDateString() === now.toDateString();
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -2191,7 +2191,7 @@ async function backupArrangements(cfg) {
   if (!await app.vault.adapter.exists(backupFolder)) {
     await app.vault.createFolder(backupFolder);
   }
-  const now = new Date();
+  const now = /* @__PURE__ */ new Date();
   const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const backupFileName = `arrangements-backup-${timestamp}.json`;
   const backupPath = `${backupFolder}/${backupFileName}`;
@@ -2220,7 +2220,7 @@ async function listBackups(cfg) {
     if (!match)
       continue;
     const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ":" : "-").replace("T", "T");
-    const date = new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
+    const date = /* @__PURE__ */ new Date(dateStr.slice(0, 10) + "T" + dateStr.slice(11).replace(/-/g, ":"));
     backups.push({ name: fileName, path: filePath, date });
   }
   backups.sort((a, b) => b.date.getTime() - a.date.getTime());
