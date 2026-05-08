@@ -2,6 +2,13 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.34] - 2026-05-08
+
+- Internal: Extracted backup operations to `src/services/backup.ts` (199 lines).
+- Internal: Extracted frontmatter storage I/O to `src/storage/frontmatter-store.ts` (110 lines) — companion to the existing external-store.ts.
+- Internal: Extracted migrations + cleanup to `src/services/migrations.ts` (170 lines).
+- Internal: main.ts shrinks 293 lines (3,852 → 3,559) across this and earlier refactors. All extracted modules use dependency injection, so they can be unit-tested without an Obsidian plugin runtime.
+
 ## [0.1.33] - 2026-05-08
 
 - Internal: Logger migration — replaced ~120 raw `console.*` calls across the codebase with the centralized Logger. Production stays quiet; verbose tracing still toggles via Settings → Debug → Enable debug logging. Default Logger level bumped from ERROR to INFO so lifecycle messages remain visible.

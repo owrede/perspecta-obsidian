@@ -2861,6 +2861,16 @@ var import_obsidian7 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.34",
+    date: "2026-05-08",
+    changes: [
+      "Internal: Extracted backup operations to `src/services/backup.ts` (199 lines).",
+      "Internal: Extracted frontmatter storage I/O to `src/storage/frontmatter-store.ts` (110 lines) \u2014 companion to the existing external-store.ts.",
+      "Internal: Extracted migrations + cleanup to `src/services/migrations.ts` (170 lines).",
+      "Internal: main.ts shrinks 293 lines (3,852 \u2192 3,559) across this and earlier refactors. All extracted modules use dependency injection, so they can be unit-tested without an Obsidian plugin runtime."
+    ]
+  },
+  {
     version: "0.1.33",
     date: "2026-05-08",
     changes: [
