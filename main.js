@@ -1372,6 +1372,146 @@ var ExternalContextStore = class {
   }
 };
 
+// src/storage/codec.ts
+function encodeArrangement(arr) {
+  const compact = createCompactArrangement(arr);
+  const json = JSON.stringify(compact);
+  const base64 = encodeBase64(json);
+  return `${FRONTMATTER_KEY}: "${base64}"`;
+}
+function decodeArrangement(encoded) {
+  try {
+    const json = decodeBase64(encoded);
+    const compact = JSON.parse(json);
+    return expandCompactArrangement(compact);
+  } catch (e) {
+    Logger.error("Failed to decode arrangement:", e);
+    return null;
+  }
+}
+function createCompactArrangement(arr) {
+  const compact = {
+    v: arr.v,
+    ts: arr.ts,
+    f: arr.focusedWindow,
+    m: compactWindow(arr.main)
+  };
+  if (arr.popouts.length > 0) {
+    compact.p = arr.popouts.map(compactWindow);
+  }
+  if (arr.leftSidebar) {
+    compact.ls = { c: arr.leftSidebar.collapsed };
+    if (arr.leftSidebar.activeTab)
+      compact.ls.t = arr.leftSidebar.activeTab;
+  }
+  if (arr.rightSidebar) {
+    compact.rs = { c: arr.rightSidebar.collapsed };
+    if (arr.rightSidebar.activeTab)
+      compact.rs.t = arr.rightSidebar.activeTab;
+  }
+  if (arr.sourceScreen) {
+    compact.ar = Math.round(arr.sourceScreen.aspectRatio * 100) / 100;
+  }
+  if (arr.wallpaper) {
+    compact.wp = arr.wallpaper;
+  }
+  return compact;
+}
+function compactWindow(win) {
+  const compact = {
+    r: compactNode(win.root)
+  };
+  if (win.x !== void 0 && win.y !== void 0 && win.width !== void 0 && win.height !== void 0) {
+    compact.g = [win.x, win.y, win.width, win.height];
+  }
+  return compact;
+}
+function compactNode(node) {
+  if (node.type === "tabs") {
+    return node.tabs.map((tab) => {
+      var _a;
+      if (tab.active) {
+        return [tab.path, (_a = tab.uid) != null ? _a : null, 1];
+      }
+      if (tab.uid) {
+        return [tab.path, tab.uid];
+      }
+      return tab.path;
+    });
+  }
+  const split = {
+    d: node.direction === "horizontal" ? "h" : "v",
+    c: node.children.map(compactNode)
+  };
+  if (node.sizes && node.sizes.length > 0) {
+    split.s = node.sizes;
+  }
+  return split;
+}
+function expandCompactArrangement(compact) {
+  var _a;
+  const arr = {
+    v: 2,
+    ts: compact.ts || Date.now(),
+    focusedWindow: (_a = compact.f) != null ? _a : -1,
+    main: expandWindow(compact.m),
+    popouts: (compact.p || []).map(expandWindow)
+  };
+  if (compact.ls) {
+    arr.leftSidebar = { collapsed: compact.ls.c, activeTab: compact.ls.t };
+  }
+  if (compact.rs) {
+    arr.rightSidebar = { collapsed: compact.rs.c, activeTab: compact.rs.t };
+  }
+  if (compact.ar) {
+    arr.sourceScreen = {
+      width: Math.round(1117 * compact.ar),
+      height: 1117,
+      aspectRatio: compact.ar
+    };
+  }
+  if (compact.wp) {
+    arr.wallpaper = compact.wp;
+  }
+  return arr;
+}
+function expandWindow(compact) {
+  const win = {
+    root: expandNode(compact.r)
+  };
+  if (compact.g) {
+    win.x = compact.g[0];
+    win.y = compact.g[1];
+    win.width = compact.g[2];
+    win.height = compact.g[3];
+  }
+  return win;
+}
+function expandNode(compact) {
+  if (Array.isArray(compact)) {
+    const tabs = compact.map((item) => {
+      var _a, _b;
+      if (typeof item === "string") {
+        return { path: item, active: false, name: (_a = item.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "") };
+      }
+      const path = item[0];
+      const uid = item[1] || void 0;
+      const active = item[2] === 1;
+      return { path, uid, active, name: (_b = path.split("/").pop()) == null ? void 0 : _b.replace(/\.md$/, "") };
+    });
+    return { type: "tabs", tabs };
+  }
+  const node = {
+    type: "split",
+    direction: compact.d === "h" ? "horizontal" : "vertical",
+    children: compact.c.map(expandNode)
+  };
+  if (compact.s && compact.s.length > 0) {
+    node.sizes = compact.s;
+  }
+  return node;
+}
+
 // src/ui/modals.ts
 var import_obsidian4 = require("obsidian");
 var SVG_NS = "http://www.w3.org/2000/svg";
@@ -4043,7 +4183,7 @@ ${newFm}
   updateFrontmatter(content, arrangement) {
     const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
     const match = content.match(frontmatterRegex);
-    const encoded = this.encodeArrangement(arrangement);
+    const encoded = encodeArrangement(arrangement);
     if (match) {
       let fm = match[1].replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"/g, "").trim();
       fm = fm ? fm + "\n" + encoded : encoded;
@@ -4055,148 +4195,6 @@ ${fm}
 ${encoded}
 ---
 ${content}`;
-  }
-  // Encode arrangement as compact base64 JSON blob
-  encodeArrangement(arr) {
-    const compact = this.createCompactArrangement(arr);
-    const json = JSON.stringify(compact);
-    const base64 = encodeBase64(json);
-    return `${FRONTMATTER_KEY}: "${base64}"`;
-  }
-  // Create compact arrangement with minimal data
-  createCompactArrangement(arr) {
-    const compact = {
-      v: arr.v,
-      ts: arr.ts,
-      f: arr.focusedWindow,
-      m: this.compactWindow(arr.main)
-    };
-    if (arr.popouts.length > 0) {
-      compact.p = arr.popouts.map((p) => this.compactWindow(p));
-    }
-    if (arr.leftSidebar) {
-      compact.ls = { c: arr.leftSidebar.collapsed };
-      if (arr.leftSidebar.activeTab)
-        compact.ls.t = arr.leftSidebar.activeTab;
-    }
-    if (arr.rightSidebar) {
-      compact.rs = { c: arr.rightSidebar.collapsed };
-      if (arr.rightSidebar.activeTab)
-        compact.rs.t = arr.rightSidebar.activeTab;
-    }
-    if (arr.sourceScreen) {
-      compact.ar = Math.round(arr.sourceScreen.aspectRatio * 100) / 100;
-    }
-    if (arr.wallpaper) {
-      compact.wp = arr.wallpaper;
-    }
-    return compact;
-  }
-  compactWindow(win) {
-    const compact = {
-      r: this.compactNode(win.root)
-    };
-    if (win.x !== void 0 && win.y !== void 0 && win.width !== void 0 && win.height !== void 0) {
-      compact.g = [win.x, win.y, win.width, win.height];
-    }
-    return compact;
-  }
-  compactNode(node) {
-    if (node.type === "tabs") {
-      return node.tabs.map((tab) => {
-        var _a;
-        if (tab.active) {
-          return [tab.path, (_a = tab.uid) != null ? _a : null, 1];
-        }
-        if (tab.uid) {
-          return [tab.path, tab.uid];
-        }
-        return tab.path;
-      });
-    }
-    const split = {
-      d: node.direction === "horizontal" ? "h" : "v",
-      c: node.children.map((child) => this.compactNode(child))
-    };
-    if (node.sizes && node.sizes.length > 0) {
-      split.s = node.sizes;
-    }
-    return split;
-  }
-  // Decode base64 JSON blob back to WindowArrangementV2
-  decodeArrangement(encoded) {
-    try {
-      const json = decodeBase64(encoded);
-      const compact = JSON.parse(json);
-      return this.expandCompactArrangement(compact);
-    } catch (e) {
-      Logger.error("Failed to decode arrangement:", e);
-      return null;
-    }
-  }
-  expandCompactArrangement(compact) {
-    var _a;
-    const arr = {
-      v: 2,
-      ts: compact.ts || Date.now(),
-      focusedWindow: (_a = compact.f) != null ? _a : -1,
-      main: this.expandWindow(compact.m),
-      popouts: (compact.p || []).map((p) => this.expandWindow(p))
-    };
-    if (compact.ls) {
-      arr.leftSidebar = { collapsed: compact.ls.c, activeTab: compact.ls.t };
-    }
-    if (compact.rs) {
-      arr.rightSidebar = { collapsed: compact.rs.c, activeTab: compact.rs.t };
-    }
-    if (compact.ar) {
-      arr.sourceScreen = {
-        width: Math.round(1117 * compact.ar),
-        // Use reference height
-        height: 1117,
-        aspectRatio: compact.ar
-      };
-    }
-    if (compact.wp) {
-      arr.wallpaper = compact.wp;
-    }
-    return arr;
-  }
-  expandWindow(compact) {
-    const win = {
-      root: this.expandNode(compact.r)
-    };
-    if (compact.g) {
-      win.x = compact.g[0];
-      win.y = compact.g[1];
-      win.width = compact.g[2];
-      win.height = compact.g[3];
-    }
-    return win;
-  }
-  expandNode(compact) {
-    if (Array.isArray(compact)) {
-      const tabs = compact.map((item) => {
-        var _a, _b;
-        if (typeof item === "string") {
-          return { path: item, active: false, name: (_a = item.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "") };
-        }
-        const path = item[0];
-        const uid = item[1] || void 0;
-        const active = item[2] === 1;
-        return { path, uid, active, name: (_b = path.split("/").pop()) == null ? void 0 : _b.replace(/\.md$/, "") };
-      });
-      return { type: "tabs", tabs };
-    }
-    const node = {
-      type: "split",
-      direction: compact.d === "h" ? "horizontal" : "vertical",
-      children: compact.c.map((child) => this.expandNode(child))
-    };
-    if (compact.s && compact.s.length > 0) {
-      node.sizes = compact.s;
-    }
-    return node;
   }
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
@@ -4311,7 +4309,7 @@ ${content}`;
     if (!rawValue)
       return null;
     if (typeof rawValue === "string") {
-      return this.decodeArrangement(rawValue);
+      return decodeArrangement(rawValue);
     } else {
       return rawValue;
     }

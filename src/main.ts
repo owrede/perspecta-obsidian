@@ -72,12 +72,7 @@ import {
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
 	FRONTMATTER_KEY,
-	UID_FRONTMATTER_KEY,
-	CompactArrangement,
-	CompactWindow,
-	CompactNode,
-	CompactSplit,
-	CompactTab
+	UID_FRONTMATTER_KEY
 } from './types';
 
 // Import internal API type definitions
@@ -119,7 +114,6 @@ import {
 import { getWallpaper, setWallpaper, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
-import { encodeBase64, decodeBase64 } from './utils/base64';
 
 // Import storage
 import {
@@ -140,6 +134,7 @@ import {
 	baseHasContext
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
+import { encodeArrangement, decodeArrangement } from './storage/codec';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
@@ -1460,7 +1455,7 @@ export default class PerspectaPlugin extends Plugin {
 	private updateFrontmatter(content: string, arrangement: WindowArrangementV2): string {
 		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
 		const match = content.match(frontmatterRegex);
-		const encoded = this.encodeArrangement(arrangement);
+		const encoded = encodeArrangement(arrangement);
 
 		if (match) {
 			// Remove old arrangement (both old multi-line YAML and new single-line format)
@@ -1474,178 +1469,6 @@ export default class PerspectaPlugin extends Plugin {
 		return `---\n${encoded}\n---\n${content}`;
 	}
 
-	// Encode arrangement as compact base64 JSON blob
-	private encodeArrangement(arr: WindowArrangementV2): string {
-		// Create minimal JSON structure - omit defaults and use short keys
-		const compact = this.createCompactArrangement(arr);
-		const json = JSON.stringify(compact);
-		const base64 = encodeBase64(json);
-		return `${FRONTMATTER_KEY}: "${base64}"`;
-	}
-
-	// Create compact arrangement with minimal data
-	private createCompactArrangement(arr: WindowArrangementV2): CompactArrangement {
-		const compact: CompactArrangement = {
-			v: arr.v,
-			ts: arr.ts,
-			f: arr.focusedWindow,
-			m: this.compactWindow(arr.main)
-		};
-
-		if (arr.popouts.length > 0) {
-			compact.p = arr.popouts.map(p => this.compactWindow(p));
-		}
-
-		if (arr.leftSidebar) {
-			compact.ls = { c: arr.leftSidebar.collapsed };
-			if (arr.leftSidebar.activeTab) compact.ls.t = arr.leftSidebar.activeTab;
-		}
-
-		if (arr.rightSidebar) {
-			compact.rs = { c: arr.rightSidebar.collapsed };
-			if (arr.rightSidebar.activeTab) compact.rs.t = arr.rightSidebar.activeTab;
-		}
-
-		if (arr.sourceScreen) {
-			// Just store aspect ratio - that's all we really need
-			compact.ar = Math.round(arr.sourceScreen.aspectRatio * 100) / 100;
-		}
-
-		if (arr.wallpaper) {
-			compact.wp = arr.wallpaper;
-		}
-
-		return compact;
-	}
-
-	private compactWindow(win: WindowStateV2): CompactWindow {
-		const compact: CompactWindow = {
-			r: this.compactNode(win.root)
-		};
-
-		// Store geometry as array [x, y, w, h] if present
-		if (win.x !== undefined && win.y !== undefined && win.width !== undefined && win.height !== undefined) {
-			compact.g = [win.x, win.y, win.width, win.height];
-		}
-
-		return compact;
-	}
-
-	private compactNode(node: WorkspaceNodeState): CompactNode {
-		if (node.type === 'tabs') {
-			// Compact tab format: string (path only) or [path, uid|null, 1?] (with extras)
-			return node.tabs.map((tab): CompactTab => {
-				if (tab.active) {
-					// Need active marker at index 2 → uid (or null placeholder) at index 1
-					return [tab.path, tab.uid ?? null, 1];
-				}
-				if (tab.uid) {
-					return [tab.path, tab.uid];
-				}
-				return tab.path;
-			});
-		}
-
-		// Split format: { d, c, s? }
-		const split: CompactSplit = {
-			d: node.direction === 'horizontal' ? 'h' : 'v',
-			c: node.children.map(child => this.compactNode(child))
-		};
-		// Preserve split pane sizes (e.g., 25%/75%) so frontmatter-mode restore
-		// doesn't fall back to the default 50/50 layout. Older arrangements
-		// without `s` still decode (sizes become undefined).
-		if (node.sizes && node.sizes.length > 0) {
-			split.s = node.sizes;
-		}
-		return split;
-	}
-
-	// Decode base64 JSON blob back to WindowArrangementV2
-	private decodeArrangement(encoded: string): WindowArrangementV2 | null {
-		try {
-			const json = decodeBase64(encoded);
-			const compact = JSON.parse(json) as CompactArrangement;
-			return this.expandCompactArrangement(compact);
-		} catch (e) {
-			Logger.error('Failed to decode arrangement:', e);
-			return null;
-		}
-	}
-
-	private expandCompactArrangement(compact: CompactArrangement): WindowArrangementV2 {
-		const arr: WindowArrangementV2 = {
-			v: 2,
-			ts: compact.ts || Date.now(),
-			focusedWindow: compact.f ?? -1,
-			main: this.expandWindow(compact.m),
-			popouts: (compact.p || []).map(p => this.expandWindow(p))
-		};
-
-		if (compact.ls) {
-			arr.leftSidebar = { collapsed: compact.ls.c, activeTab: compact.ls.t };
-		}
-
-		if (compact.rs) {
-			arr.rightSidebar = { collapsed: compact.rs.c, activeTab: compact.rs.t };
-		}
-
-		if (compact.ar) {
-			// Reconstruct screen info from aspect ratio (we don't need exact dimensions)
-			arr.sourceScreen = {
-				width: Math.round(1117 * compact.ar),  // Use reference height
-				height: 1117,
-				aspectRatio: compact.ar
-			};
-		}
-
-		if (compact.wp) {
-			arr.wallpaper = compact.wp;
-		}
-
-		return arr;
-	}
-
-	private expandWindow(compact: CompactWindow): WindowStateV2 {
-		const win: WindowStateV2 = {
-			root: this.expandNode(compact.r)
-		};
-
-		if (compact.g) {
-			win.x = compact.g[0];
-			win.y = compact.g[1];
-			win.width = compact.g[2];
-			win.height = compact.g[3];
-		}
-
-		return win;
-	}
-
-	private expandNode(compact: CompactNode): WorkspaceNodeState {
-		// Array = tabs, Object with d/c = split
-		if (Array.isArray(compact)) {
-			const tabs: TabState[] = compact.map(item => {
-				if (typeof item === 'string') {
-					return { path: item, active: false, name: item.split('/').pop()?.replace(/\.md$/, '') };
-				}
-				// [path, uid|null, active?]
-				const path = item[0];
-				const uid = item[1] || undefined;
-				const active = item[2] === 1;
-				return { path, uid, active, name: path.split('/').pop()?.replace(/\.md$/, '') };
-			});
-			return { type: 'tabs', tabs };
-		}
-
-		const node: SplitState = {
-			type: 'split',
-			direction: compact.d === 'h' ? 'horizontal' : 'vertical',
-			children: compact.c.map(child => this.expandNode(child))
-		};
-		if (compact.s && compact.s.length > 0) {
-			node.sizes = compact.s;
-		}
-		return node;
-	}
 
 	// ============================================================================
 	// Context Restore (Optimized)
@@ -1812,7 +1635,7 @@ export default class PerspectaPlugin extends Plugin {
 		// Check if it's the new base64 format (string) or old YAML format (object)
 		if (typeof rawValue === 'string') {
 			// New compact format - decode from base64
-			return this.decodeArrangement(rawValue);
+			return decodeArrangement(rawValue);
 		} else {
 			// Old YAML format - return as-is (backward compatibility)
 			return rawValue as WindowArrangement;
