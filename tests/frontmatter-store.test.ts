@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	getContextFromFrontmatter,
-	saveContextToFrontmatter,
+	hasContextInFrontmatter,
 	removeContextFromFrontmatter,
+	saveContextToFrontmatter,
 } from '../src/storage/frontmatter-store';
 import { encodeArrangement } from '../src/storage/codec';
 import { WindowArrangementV2 } from '../src/types';
@@ -151,6 +152,62 @@ describe('frontmatter-store', () => {
 			const result = getContextFromFrontmatter(app as never, file);
 
 			expect(result).toEqual(legacy);
+		});
+	});
+
+	// Regression suite for the v0.1.36 indicator-false-positive bug.
+	// The two indicator-update paths in main.ts used `!== null` against the
+	// frontmatter cache value — but the cache returns `undefined` for missing
+	// keys, never `null`, so the check was true for every markdown file
+	// in the vault. The target icon appeared on every note.
+	describe('hasContextInFrontmatter (v0.1.36 indicator bug regression)', () => {
+		it('returns false when the file has no frontmatter at all', () => {
+			const app = makeMockApp('plain body', {});
+			// Simulate "no frontmatter cache entry" by overriding metadataCache.
+			app.metadataCache.getFileCache = vi.fn(() => null);
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(false);
+		});
+
+		it('returns false when frontmatter exists but lacks perspecta-arrangement', () => {
+			// This is the case that produced the original false positive.
+			// The cache value is `undefined` (key absent), and the buggy
+			// `!== null` check treated that as truthy.
+			const app = makeMockApp('', { title: 'Foo', tags: ['a'] });
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(false);
+		});
+
+		it('returns false when the value is explicitly null', () => {
+			const app = makeMockApp('', { 'perspecta-arrangement': null });
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(false);
+		});
+
+		it('returns false when the value is an empty string', () => {
+			// Defence in depth: an empty arrangement string is no arrangement.
+			const app = makeMockApp('', { 'perspecta-arrangement': '' });
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(false);
+		});
+
+		it('returns true for the actual base64 arrangement string', () => {
+			const app = makeMockApp('', { 'perspecta-arrangement': 'eyJ2IjoyfQ==' });
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(true);
+		});
+
+		it('returns true for a legacy YAML-object arrangement (truthy non-string)', () => {
+			// Pre-base64 format stored the object directly. Should still count.
+			const app = makeMockApp('', { 'perspecta-arrangement': { v: 1, ts: 0 } });
+			const file = { path: 'a.md' } as never;
+
+			expect(hasContextInFrontmatter(app as never, file)).toBe(true);
 		});
 	});
 });

@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.36',
+		date: '2026-05-08',
+		changes: [
+			'Fix: The "saved context" target icon no longer appears on every markdown file. The check used `!== null` against the frontmatter cache, but Obsidian returns `undefined` for missing keys (never `null`) — so the indicator fired for every note in the vault. Now uses a centralised hasContextInFrontmatter() helper.',
+			'Internal: Added 6 regression tests for the indicator-presence check, covering the false-positive cases that produced the original bug.',
+		],
+	},
+	{
 		version: '0.1.35',
 		date: '2026-05-08',
 		changes: [

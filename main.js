@@ -1532,6 +1532,11 @@ async function saveContextToFrontmatter(app, file, arrangement) {
     Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
   }
 }
+function hasContextInFrontmatter(app, file) {
+  var _a, _b;
+  const value = (_b = (_a = app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY];
+  return Boolean(value);
+}
 async function removeContextFromFrontmatter(app, file) {
   const content = await app.vault.read(file);
   const match = content.match(FRONTMATTER_REGEX);
@@ -2850,6 +2855,14 @@ var import_obsidian7 = require("obsidian");
 
 // src/changelog.ts
 var CHANGELOG = [
+  {
+    version: "0.1.36",
+    date: "2026-05-08",
+    changes: [
+      'Fix: The "saved context" target icon no longer appears on every markdown file. The check used `!== null` against the frontmatter cache, but Obsidian returns `undefined` for missing keys (never `null`) \u2014 so the indicator fired for every note in the vault. Now uses a centralised hasContextInFrontmatter() helper.',
+      "Internal: Added 6 regression tests for the indicator-presence check, covering the false-positive cases that produced the original bug."
+    ]
+  },
   {
     version: "0.1.35",
     date: "2026-05-08",
@@ -5881,7 +5894,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }));
   }
   updateContextIndicator(file) {
-    var _a, _b;
     PerfTimer.begin("updateContextIndicator");
     const allDocs = this.getAllWindowDocuments();
     for (const doc of allDocs) {
@@ -5892,7 +5904,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       PerfTimer.end("updateContextIndicator");
       return;
     }
-    const hasContextFrontmatter = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) !== null;
+    const hasContextFrontmatter = hasContextInFrontmatter(this.app, file);
     let hasContextExternal = false;
     if (this.settings.storageMode === "external") {
       const uid = getUidFromCache(this.app, file);
@@ -5940,12 +5952,11 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   // File Explorer Indicators
   // ============================================================================
   async setupFileExplorerIndicators() {
-    var _a, _b;
     PerfTimer.begin("setupFileExplorerIndicators");
     const mdFiles = this.app.vault.getMarkdownFiles();
     PerfTimer.mark(`getMarkdownFiles (${mdFiles.length} files)`);
     for (const file of mdFiles) {
-      if ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) {
+      if (hasContextInFrontmatter(this.app, file)) {
         this.filesWithContext.add(file.path);
       }
     }
@@ -6010,14 +6021,13 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     PerfTimer.end("setupFileExplorerIndicators");
   }
   async updateFileExplorerIndicator(file) {
-    var _a, _b;
     let hasContext = false;
     if (file.extension === "canvas") {
       hasContext = await canvasHasContext(this.app, file);
     } else if (file.extension === "base") {
       hasContext = await baseHasContext(this.app, file);
     } else {
-      hasContext = ((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[FRONTMATTER_KEY]) !== null;
+      hasContext = hasContextInFrontmatter(this.app, file);
       if (!hasContext && this.settings.storageMode === "external") {
         const uid = getUidFromCache(this.app, file);
         if (uid && this.externalStore.has(uid)) {
