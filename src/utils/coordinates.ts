@@ -6,6 +6,7 @@
 // to the actual screen dimensions on restore.
 
 import { ScreenInfo, WindowStateV2 } from '../types';
+import { Logger } from './logger';
 
 // ============================================================================
 // Geometry Validation
@@ -40,24 +41,24 @@ export function validateGeometry(
 	
 	// Check all values are valid numbers
 	if (!isValidNumber(x) || !isValidNumber(y) || !isValidNumber(width) || !isValidNumber(height)) {
-		console.warn('[Perspecta] Invalid geometry: non-finite values detected', geometry);
+		Logger.warn('Invalid geometry: non-finite values detected', geometry);
 		return null;
 	}
 	
 	// Check dimensions are reasonable
 	if (width < MIN_WINDOW_SIZE || height < MIN_WINDOW_SIZE) {
-		console.warn('[Perspecta] Invalid geometry: dimensions too small', geometry);
+		Logger.warn('Invalid geometry: dimensions too small', geometry);
 		return null;
 	}
 	
 	if (width > MAX_WINDOW_SIZE || height > MAX_WINDOW_SIZE) {
-		console.warn('[Perspecta] Invalid geometry: dimensions too large', geometry);
+		Logger.warn('Invalid geometry: dimensions too large', geometry);
 		return null;
 	}
 	
 	// Check coordinates are reasonable
 	if (x < MIN_COORDINATE || x > MAX_COORDINATE || y < MIN_COORDINATE || y > MAX_COORDINATE) {
-		console.warn('[Perspecta] Invalid geometry: coordinates out of bounds', geometry);
+		Logger.warn('Invalid geometry: coordinates out of bounds', geometry);
 		return null;
 	}
 	
@@ -272,7 +273,7 @@ export function physicalToVirtual(physical: { x: number; y: number; width: numbe
 	};
 
 	if (coordinateDebug) {
-		console.log(`[Perspecta] physicalToVirtual (non-linear):`, {
+		Logger.debug(`physicalToVirtual (non-linear):`, {
 			physical,
 			screen,
 			virtualRef: VIRTUAL_SCREEN,
@@ -299,7 +300,7 @@ export function virtualToPhysical(
 	
 	// Guard against invalid screen values (could cause division issues)
 	if (screen.width <= 0 || screen.height <= 0) {
-		console.warn('[Perspecta] Invalid screen dimensions, using defaults');
+		Logger.warn('Invalid screen dimensions, using defaults');
 		return { x: 100, y: 100, width: 800, height: 600 };
 	}
 	
@@ -344,7 +345,7 @@ export function virtualToPhysical(
 	const result = { x, y, width, height };
 
 	if (coordinateDebug) {
-		console.log(`[Perspecta] virtualToPhysical (non-linear):`, {
+		Logger.debug(`virtualToPhysical (non-linear):`, {
 			virtual: safeVirtual,
 			screen,
 			virtualRef: VIRTUAL_SCREEN,

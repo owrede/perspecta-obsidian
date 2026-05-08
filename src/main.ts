@@ -72,12 +72,7 @@ import {
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
 	FRONTMATTER_KEY,
-	UID_FRONTMATTER_KEY,
-	CompactArrangement,
-	CompactWindow,
-	CompactNode,
-	CompactSplit,
-	CompactTab
+	UID_FRONTMATTER_KEY
 } from './types';
 
 // Import internal API type definitions
@@ -119,7 +114,6 @@ import {
 import { getWallpaper, setWallpaper, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
-import { encodeBase64, decodeBase64 } from './utils/base64';
 
 // Import storage
 import {
@@ -140,6 +134,7 @@ import {
 	baseHasContext
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
+import { encodeArrangement, decodeArrangement } from './storage/codec';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
@@ -236,9 +231,9 @@ export default class PerspectaPlugin extends Plugin {
 		try {
 			const stat = await this.app.vault.adapter.stat(`${this.manifest.dir}/main.js`);
 			const ts = stat?.mtime ? new Date(stat.mtime).toLocaleString() : 'unknown';
-			console.log(`[Perspecta] Loaded v${this.manifest.version} (main.js: ${ts})`);
+			Logger.info(`Loaded v${this.manifest.version} (main.js: ${ts})`);
 		} catch {
-			console.log(`[Perspecta] Loaded v${this.manifest.version}`);
+			Logger.info(`Loaded v${this.manifest.version}`);
 		}
 
 		// Check Obsidian version compatibility
@@ -456,7 +451,7 @@ export default class PerspectaPlugin extends Plugin {
 				// setTimeout(() => {
 				// 	const delay = performance.now() - closeTime;
 				// 	if (delay > 100) {
-				// 		console.warn(`[Perspecta] ⚠ Main thread was blocked for ${delay.toFixed(0)}ms after window close`);
+				// 		Logger.warn(`⚠ Main thread was blocked for ${delay.toFixed(0)}ms after window close`);
 				// 	}
 				// }, 0);
 			})
@@ -566,7 +561,7 @@ export default class PerspectaPlugin extends Plugin {
 		const virtual = physicalToVirtual(physical);
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+			Logger.debug(`captureWindowState:`, { physical, virtual });
 		}
 
 		return {
@@ -591,14 +586,14 @@ export default class PerspectaPlugin extends Plugin {
 
 			// Skip if we've already captured this window
 			if (seenWindows.has(win)) {
-				console.log('[Perspecta] Skipping duplicate window in capturePopoutStates');
+				Logger.debug('Skipping duplicate window in capturePopoutStates');
 				continue;
 			}
 			seenWindows.add(win);
 
 			if (COORDINATE_DEBUG) {
 				const firstChild = container?.children?.[0] as WorkspaceSplit | WorkspaceTabContainer | undefined;
-				console.log(`[Perspecta] capturePopoutStates container:`, {
+				Logger.debug(`capturePopoutStates container:`, {
 					containerType: container?.constructor?.name,
 					containerDirection: container?.direction,
 					containerChildren: container?.children?.length,
@@ -684,7 +679,7 @@ export default class PerspectaPlugin extends Plugin {
 			if (children.length === 0) return { type: 'tabs', tabs: [] };
 
 			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
+				Logger.debug(`captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
 			}
 
 			return { type: 'split', direction: node.direction, children, sizes };
@@ -704,7 +699,7 @@ export default class PerspectaPlugin extends Plugin {
 		const currentTabIndex = getCurrentTabIndex(tabContainer);
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
+			Logger.debug(`captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
 		}
 
 		for (let i = 0; i < children.length; i++) {
@@ -736,7 +731,7 @@ export default class PerspectaPlugin extends Plugin {
 
 				const isActive = i === currentTabIndex;
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ''}`);
+					Logger.debug(`  tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ''}`);
 				}
 
 				tabs.push({
@@ -816,7 +811,7 @@ export default class PerspectaPlugin extends Plugin {
 		});
 		const elapsed = performance.now() - start;
 		if (elapsed > 20) {
-			console.warn(`[Perspecta] ⚠ SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
+			Logger.warn(`⚠ SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
 		}
 		return windows;
 	}
@@ -881,9 +876,7 @@ export default class PerspectaPlugin extends Plugin {
 		} catch {
 			// Remote not available
 		}
-		if (this.settings.enableDebugLogging) {
-			console.log('[Perspecta] Could not re-open DevTools - Electron remote not available');
-		}
+		Logger.debug('Could not re-open DevTools - Electron remote not available');
 	}
 
 	// ============================================================================
@@ -940,7 +933,7 @@ export default class PerspectaPlugin extends Plugin {
 					PerfTimer.mark('captureWallpaper');
 				}
 			} catch (e) {
-				console.log('[Perspecta] Could not capture wallpaper:', e);
+				Logger.debug('Could not capture wallpaper:', e);
 			}
 		}
 
@@ -1096,7 +1089,7 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		} catch (e) {
 			// Silently fail - hiding properties is non-critical
-			console.log('[Perspecta] Could not hide internal properties:', e);
+			Logger.debug('Could not hide internal properties:', e);
 		}
 	}
 
@@ -1111,7 +1104,7 @@ export default class PerspectaPlugin extends Plugin {
 					cleaned++;
 				}
 			} catch (e) {
-				console.warn(`[Perspecta] Failed to cleanup ${file.path}:`, e);
+				Logger.warn(`Failed to cleanup ${file.path}:`, e);
 			}
 		}
 
@@ -1150,7 +1143,7 @@ export default class PerspectaPlugin extends Plugin {
 
 				migrated++;
 			} catch (e) {
-				console.error(`[Perspecta] Failed to migrate ${file.path}:`, e);
+				Logger.error(`Failed to migrate ${file.path}:`, e);
 				errors++;
 			}
 		}
@@ -1195,7 +1188,7 @@ export default class PerspectaPlugin extends Plugin {
 
 				migrated++;
 			} catch (e) {
-				console.error(`[Perspecta] Failed to migrate ${file.path}:`, e);
+				Logger.error(`Failed to migrate ${file.path}:`, e);
 				errors++;
 			}
 		}
@@ -1397,10 +1390,10 @@ export default class PerspectaPlugin extends Plugin {
 			try {
 				await addUidToFile(this.app, file, uid);
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta] Added UID to ${file.path}: ${uid}`);
+					Logger.debug(`Added UID to ${file.path}: ${uid}`);
 				}
 			} catch (e) {
-				console.warn(`[Perspecta] Failed to add UID to ${file.path}:`, e);
+				Logger.warn(`Failed to add UID to ${file.path}:`, e);
 			}
 		}
 
@@ -1443,26 +1436,26 @@ export default class PerspectaPlugin extends Plugin {
 		const readStart = performance.now();
 		const content = await this.app.vault.read(file);
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]   ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
+			Logger.debug(`  ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
 		}
 
 		const fmStart = performance.now();
 		const newContent = this.updateFrontmatter(content, arrangement);
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]   ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
+			Logger.debug(`  ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
 		}
 
 		const writeStart = performance.now();
 		await this.app.vault.modify(file, newContent);
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]   ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
+			Logger.debug(`  ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
 		}
 	}
 
 	private updateFrontmatter(content: string, arrangement: WindowArrangementV2): string {
 		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
 		const match = content.match(frontmatterRegex);
-		const encoded = this.encodeArrangement(arrangement);
+		const encoded = encodeArrangement(arrangement);
 
 		if (match) {
 			// Remove old arrangement (both old multi-line YAML and new single-line format)
@@ -1476,178 +1469,6 @@ export default class PerspectaPlugin extends Plugin {
 		return `---\n${encoded}\n---\n${content}`;
 	}
 
-	// Encode arrangement as compact base64 JSON blob
-	private encodeArrangement(arr: WindowArrangementV2): string {
-		// Create minimal JSON structure - omit defaults and use short keys
-		const compact = this.createCompactArrangement(arr);
-		const json = JSON.stringify(compact);
-		const base64 = encodeBase64(json);
-		return `${FRONTMATTER_KEY}: "${base64}"`;
-	}
-
-	// Create compact arrangement with minimal data
-	private createCompactArrangement(arr: WindowArrangementV2): CompactArrangement {
-		const compact: CompactArrangement = {
-			v: arr.v,
-			ts: arr.ts,
-			f: arr.focusedWindow,
-			m: this.compactWindow(arr.main)
-		};
-
-		if (arr.popouts.length > 0) {
-			compact.p = arr.popouts.map(p => this.compactWindow(p));
-		}
-
-		if (arr.leftSidebar) {
-			compact.ls = { c: arr.leftSidebar.collapsed };
-			if (arr.leftSidebar.activeTab) compact.ls.t = arr.leftSidebar.activeTab;
-		}
-
-		if (arr.rightSidebar) {
-			compact.rs = { c: arr.rightSidebar.collapsed };
-			if (arr.rightSidebar.activeTab) compact.rs.t = arr.rightSidebar.activeTab;
-		}
-
-		if (arr.sourceScreen) {
-			// Just store aspect ratio - that's all we really need
-			compact.ar = Math.round(arr.sourceScreen.aspectRatio * 100) / 100;
-		}
-
-		if (arr.wallpaper) {
-			compact.wp = arr.wallpaper;
-		}
-
-		return compact;
-	}
-
-	private compactWindow(win: WindowStateV2): CompactWindow {
-		const compact: CompactWindow = {
-			r: this.compactNode(win.root)
-		};
-
-		// Store geometry as array [x, y, w, h] if present
-		if (win.x !== undefined && win.y !== undefined && win.width !== undefined && win.height !== undefined) {
-			compact.g = [win.x, win.y, win.width, win.height];
-		}
-
-		return compact;
-	}
-
-	private compactNode(node: WorkspaceNodeState): CompactNode {
-		if (node.type === 'tabs') {
-			// Compact tab format: string (path only) or [path, uid|null, 1?] (with extras)
-			return node.tabs.map((tab): CompactTab => {
-				if (tab.active) {
-					// Need active marker at index 2 → uid (or null placeholder) at index 1
-					return [tab.path, tab.uid ?? null, 1];
-				}
-				if (tab.uid) {
-					return [tab.path, tab.uid];
-				}
-				return tab.path;
-			});
-		}
-
-		// Split format: { d, c, s? }
-		const split: CompactSplit = {
-			d: node.direction === 'horizontal' ? 'h' : 'v',
-			c: node.children.map(child => this.compactNode(child))
-		};
-		// Preserve split pane sizes (e.g., 25%/75%) so frontmatter-mode restore
-		// doesn't fall back to the default 50/50 layout. Older arrangements
-		// without `s` still decode (sizes become undefined).
-		if (node.sizes && node.sizes.length > 0) {
-			split.s = node.sizes;
-		}
-		return split;
-	}
-
-	// Decode base64 JSON blob back to WindowArrangementV2
-	private decodeArrangement(encoded: string): WindowArrangementV2 | null {
-		try {
-			const json = decodeBase64(encoded);
-			const compact = JSON.parse(json) as CompactArrangement;
-			return this.expandCompactArrangement(compact);
-		} catch (e) {
-			console.error('[Perspecta] Failed to decode arrangement:', e);
-			return null;
-		}
-	}
-
-	private expandCompactArrangement(compact: CompactArrangement): WindowArrangementV2 {
-		const arr: WindowArrangementV2 = {
-			v: 2,
-			ts: compact.ts || Date.now(),
-			focusedWindow: compact.f ?? -1,
-			main: this.expandWindow(compact.m),
-			popouts: (compact.p || []).map(p => this.expandWindow(p))
-		};
-
-		if (compact.ls) {
-			arr.leftSidebar = { collapsed: compact.ls.c, activeTab: compact.ls.t };
-		}
-
-		if (compact.rs) {
-			arr.rightSidebar = { collapsed: compact.rs.c, activeTab: compact.rs.t };
-		}
-
-		if (compact.ar) {
-			// Reconstruct screen info from aspect ratio (we don't need exact dimensions)
-			arr.sourceScreen = {
-				width: Math.round(1117 * compact.ar),  // Use reference height
-				height: 1117,
-				aspectRatio: compact.ar
-			};
-		}
-
-		if (compact.wp) {
-			arr.wallpaper = compact.wp;
-		}
-
-		return arr;
-	}
-
-	private expandWindow(compact: CompactWindow): WindowStateV2 {
-		const win: WindowStateV2 = {
-			root: this.expandNode(compact.r)
-		};
-
-		if (compact.g) {
-			win.x = compact.g[0];
-			win.y = compact.g[1];
-			win.width = compact.g[2];
-			win.height = compact.g[3];
-		}
-
-		return win;
-	}
-
-	private expandNode(compact: CompactNode): WorkspaceNodeState {
-		// Array = tabs, Object with d/c = split
-		if (Array.isArray(compact)) {
-			const tabs: TabState[] = compact.map(item => {
-				if (typeof item === 'string') {
-					return { path: item, active: false, name: item.split('/').pop()?.replace(/\.md$/, '') };
-				}
-				// [path, uid|null, active?]
-				const path = item[0];
-				const uid = item[1] || undefined;
-				const active = item[2] === 1;
-				return { path, uid, active, name: path.split('/').pop()?.replace(/\.md$/, '') };
-			});
-			return { type: 'tabs', tabs };
-		}
-
-		const node: SplitState = {
-			type: 'split',
-			direction: compact.d === 'h' ? 'horizontal' : 'vertical',
-			children: compact.c.map(child => this.expandNode(child))
-		};
-		if (compact.s && compact.s.length > 0) {
-			node.sizes = compact.s;
-		}
-		return node;
-	}
 
 	// ============================================================================
 	// Context Restore (Optimized)
@@ -1660,7 +1481,7 @@ export default class PerspectaPlugin extends Plugin {
 	async restoreContext(file?: TFile, forceLatest = false) {
 		// Prevent concurrent restores which can cause duplicate windows
 		if (this.isRestoring) {
-			console.log('[Perspecta] Skipping restoreContext - already restoring');
+			Logger.debug('Skipping restoreContext - already restoring');
 			return;
 		}
 		this.isRestoring = true;
@@ -1717,7 +1538,7 @@ export default class PerspectaPlugin extends Plugin {
 			if (PerfTimer.isEnabled()) {
 				requestIdleCallback(() => {
 					const totalTime = performance.now() - fullStart;
-					console.log(`[Perspecta] 🏁 Full restore (including render): ${totalTime.toFixed(0)}ms`);
+					Logger.debug(`🏁 Full restore (including render): ${totalTime.toFixed(0)}ms`);
 				}, { timeout: 5000 });
 			}
 		} finally {
@@ -1814,7 +1635,7 @@ export default class PerspectaPlugin extends Plugin {
 		// Check if it's the new base64 format (string) or old YAML format (object)
 		if (typeof rawValue === 'string') {
 			// New compact format - decode from base64
-			return this.decodeArrangement(rawValue);
+			return decodeArrangement(rawValue);
 		} else {
 			// Old YAML format - return as-is (backward compatibility)
 			return rawValue as WindowArrangement;
@@ -1855,9 +1676,9 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] Updated context with ${this.pathCorrections.size} corrected paths:`);
+			Logger.debug(`Updated context with ${this.pathCorrections.size} corrected paths:`);
 			this.pathCorrections.forEach((correction, oldPath) => {
-				console.log(`  ${oldPath} → ${correction.newPath}`);
+				Logger.debug(`  ${oldPath} → ${correction.newPath}`);
 			});
 		}
 	}
@@ -1869,7 +1690,7 @@ export default class PerspectaPlugin extends Plugin {
 			// Check if DevTools is open before restore (so we can re-open it after)
 			const devToolsWasOpen = this.isDevToolsOpen();
 			if (devToolsWasOpen && this.settings.enableDebugLogging) {
-				console.log('[Perspecta] DevTools detected as open, will re-open after restore');
+				Logger.debug('DevTools detected as open, will re-open after restore');
 			}
 
 			const v2 = this.normalizeToV2(arrangement);
@@ -1883,7 +1704,7 @@ export default class PerspectaPlugin extends Plugin {
 				const windowCount = 1 + v2.popouts.length;
 				tiledPositions = calculateTiledLayout(windowCount, v2.main);
 				if (COORDINATE_DEBUG) {
-					console.log(`[Perspecta] Using tiled layout due to aspect ratio mismatch:`, {
+					Logger.debug(`Using tiled layout due to aspect ratio mismatch:`, {
 						sourceAspect: v2.sourceScreen?.aspectRatio?.toFixed(2),
 						targetAspect: (getPhysicalScreen().width / getPhysicalScreen().height).toFixed(2),
 						windowCount,
@@ -1898,9 +1719,7 @@ export default class PerspectaPlugin extends Plugin {
 			const popoutWindows = this.getPopoutWindowObjects();
 			PerfTimer.mark('getPopoutWindowObjects');
 
-			if (this.settings.enableDebugLogging) {
-				console.log(`[Perspecta] Found ${popoutWindows.length} popout windows to close`);
-			}
+			Logger.debug(`Found ${popoutWindows.length} popout windows to close`);
 
 			for (const win of popoutWindows) {
 				this.closePopoutWindow(win);
@@ -1996,10 +1815,10 @@ export default class PerspectaPlugin extends Plugin {
 					if (result.success) {
 						PerfTimer.mark('restoreWallpaper');
 					} else {
-						console.log('[Perspecta] Could not restore wallpaper:', result.error);
+						Logger.debug('Could not restore wallpaper:', result.error);
 					}
 				}).catch(e => {
-					console.log('[Perspecta] Wallpaper restoration failed:', e);
+					Logger.debug('Wallpaper restoration failed:', e);
 				});
 			}
 
@@ -2011,9 +1830,7 @@ export default class PerspectaPlugin extends Plugin {
 			PerfTimer.mark('scheduleScrollRestoration');
 
 			// Schedule properties collapse/expand restoration for all leaves
-			if (this.settings.enableDebugLogging) {
-				console.log('[Perspecta] Scheduling properties restoration');
-			}
+			Logger.debug('Scheduling properties restoration');
 			this.schedulePropertiesRestoration(v2.main.root);
 			for (const popout of v2.popouts) {
 				this.schedulePropertiesRestoration(popout.root);
@@ -2108,8 +1925,8 @@ export default class PerspectaPlugin extends Plugin {
 		});
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] restoreTabGroup: ${state.tabs.length} tabs, active at index ${activeTabIdx}`);
-			console.log(`[Perspecta]   Opening order: ${reorderedTabs.map(r => r.tab.name || r.tab.path).join(' → ')}`);
+			Logger.debug(`restoreTabGroup: ${state.tabs.length} tabs, active at index ${activeTabIdx}`);
+			Logger.debug(`  Opening order: ${reorderedTabs.map(r => r.tab.name || r.tab.path).join(' → ')}`);
 		}
 
 		let firstLeaf: WorkspaceLeaf | undefined;
@@ -2125,7 +1942,7 @@ export default class PerspectaPlugin extends Plugin {
 			const { file, method } = resolveFile(this.app, tab);
 			if (!file) {
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   ✗ File not found: ${tab.path} (tried path, uid: ${tab.uid || 'none'}, name: ${tab.name || 'none'})`);
+					Logger.debug(`  ✗ File not found: ${tab.path} (tried path, uid: ${tab.uid || 'none'}, name: ${tab.name || 'none'})`);
 				}
 				continue;
 			}
@@ -2137,7 +1954,7 @@ export default class PerspectaPlugin extends Plugin {
 					newName: file.basename
 				});
 				if (PerfTimer.isEnabled()) {
-					console.log(`[Perspecta]   ↪ Resolved ${tab.path} → ${file.path} (via ${method})`);
+					Logger.debug(`  ↪ Resolved ${tab.path} → ${file.path} (via ${method})`);
 				}
 			}
 
@@ -2167,7 +1984,7 @@ export default class PerspectaPlugin extends Plugin {
 			if (PerfTimer.isEnabled()) {
 				const flag = elapsed > 50 ? '⚠ SLOW' : '✓';
 				const methodSuffix = method !== 'path' ? ` [${method}]` : '';
-				console.log(`[Perspecta]   ${flag} openFile[${originalIndex}]: ${file.basename} - ${elapsed.toFixed(1)}ms${methodSuffix}${tab.active ? ' [ACTIVE]' : ''}`);
+				Logger.debug(`  ${flag} openFile[${originalIndex}]: ${file.basename} - ${elapsed.toFixed(1)}ms${methodSuffix}${tab.active ? ' [ACTIVE]' : ''}`);
 			}
 		}
 
@@ -2200,7 +2017,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (!state.children.length) return existingLeaf;
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreSplit START: direction=${state.direction}, children=${state.children.length}, parent:`, {
+			Logger.debug(`restoreSplit START: direction=${state.direction}, children=${state.children.length}, parent:`, {
 				type: parent?.constructor?.name,
 				direction: parent?.direction
 			});
@@ -2210,7 +2027,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (parent && parent.direction !== state.direction) {
 			parent.direction = state.direction;
 			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] restoreSplit: changed parent direction to ${state.direction}`);
+				Logger.debug(`restoreSplit: changed parent direction to ${state.direction}`);
 			}
 		}
 
@@ -2285,16 +2102,14 @@ export default class PerspectaPlugin extends Plugin {
 
 		// Apply saved sizes to the split children
 		if (state.sizes && state.sizes.length > 0 && firstLeaf) {
-			if (this.settings.enableDebugLogging) {
-				console.log(`[Perspecta] restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
-			}
+			Logger.debug(`restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
 			await this.applySplitSizes(firstLeaf, state.sizes);
-		} else if (this.settings.enableDebugLogging) {
-			console.log(`[Perspecta] restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
+		} else {
+			Logger.debug(`restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
 		}
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreSplit END: direction=${state.direction}`);
+			Logger.debug(`restoreSplit END: direction=${state.direction}`);
 		}
 
 		return firstLeaf;
@@ -2318,16 +2133,14 @@ export default class PerspectaPlugin extends Plugin {
 		let attempts = 0;
 		const maxAttempts = 10;
 
-		if (this.settings.enableDebugLogging) {
-			console.log(`[Perspecta] applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
-		}
+		Logger.debug(`applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
 
 		while (current && attempts < maxAttempts) {
-			if (this.settings.enableDebugLogging) {
+			if (Logger.isDebugEnabled()) {
 				const isSplitNode = isSplit(current);
 				const childCount = (current as WorkspaceSplit).children?.length ?? 0;
 				const direction = (current as WorkspaceSplit).direction ?? 'none';
-				console.log(`[Perspecta] applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
+				Logger.debug(`applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
 			}
 
 			if (isSplit(current) && current.children?.length === sizes.length && current.direction) {
@@ -2456,10 +2269,10 @@ export default class PerspectaPlugin extends Plugin {
 			return;
 		}
 
-		if (this.settings.enableDebugLogging) {
-			console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
+		if (Logger.isDebugEnabled()) {
+			Logger.debug(`Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
 		}
-		
+
 		// Apply after delay to ensure all views are loaded.
 		// safeTimeout: don't fire after unload.
 		this.safeTimeout(() => {
@@ -2470,9 +2283,7 @@ export default class PerspectaPlugin extends Plugin {
 				if (propsMap.has(file.path)) {
 					const collapsed = propsMap.get(file.path);
 					if (collapsed !== undefined) {
-						if (this.settings.enableDebugLogging) {
-							console.log(`[Perspecta] Restoring properties for ${file.path}: ${collapsed ? 'collapsed' : 'expanded'}`);
-						}
+						Logger.debug(`Restoring properties for ${file.path}: ${collapsed ? 'collapsed' : 'expanded'}`);
 						this.setPropertiesCollapsed(leaf.view, collapsed);
 					}
 				}
@@ -2503,9 +2314,7 @@ export default class PerspectaPlugin extends Plugin {
 	private setPropertiesCollapsed(view: unknown, collapsed: boolean): void {
 		const containerEl = (view as { containerEl?: HTMLElement })?.containerEl;
 		if (!containerEl) {
-			if (this.settings.enableDebugLogging) {
-				console.log('[Perspecta] Properties restoration: no container element found');
-			}
+			Logger.debug('Properties restoration: no container element found');
 			return;
 		}
 
@@ -2523,15 +2332,13 @@ export default class PerspectaPlugin extends Plugin {
 			if (toggle) {
 				try {
 					toggle.click();
-					if (this.settings.enableDebugLogging) {
+					if (Logger.isDebugEnabled()) {
 						const filePath = (view as { file?: { path: string } }).file?.path || 'unknown';
-						console.log(`[Perspecta] Properties ${collapsed ? 'collapsed' : 'expanded'} for ${filePath}`);
+						Logger.debug(`Properties ${collapsed ? 'collapsed' : 'expanded'} for ${filePath}`);
 					}
 					return;
 				} catch (e) {
-					if (this.settings.enableDebugLogging) {
-						console.log('[Perspecta] Properties restoration: click failed', e);
-					}
+					Logger.debug('Properties restoration: click failed', e);
 				}
 			}
 		}
@@ -2603,7 +2410,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] buildNestedSplit: direction=${state.direction}, children=${state.children.length}`);
+			Logger.debug(`buildNestedSplit: direction=${state.direction}, children=${state.children.length}`);
 		}
 
 		let firstLeaf: WorkspaceLeaf = startLeaf;
@@ -2716,13 +2523,13 @@ export default class PerspectaPlugin extends Plugin {
 		const openPopoutStart = performance.now();
 		const popoutLeaf = this.app.workspace.openPopoutLeaf();
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]     ✓ openPopoutLeaf: ${(performance.now() - openPopoutStart).toFixed(1)}ms`);
+			Logger.debug(`    ✓ openPopoutLeaf: ${(performance.now() - openPopoutStart).toFixed(1)}ms`);
 		}
 
 		const openFileStart = performance.now();
 		await popoutLeaf.openFile(file);
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]     ✓ openFile (popout first): ${(performance.now() - openFileStart).toFixed(1)}ms`);
+			Logger.debug(`    ✓ openFile (popout first): ${(performance.now() - openFileStart).toFixed(1)}ms`);
 		}
 
 		const win = popoutLeaf.view?.containerEl?.win;
@@ -2816,7 +2623,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta]     ✓ restoreProxyWindow: ${file.basename}`);
+			Logger.debug(`    ✓ restoreProxyWindow: ${file.basename}`);
 		}
 	}
 
@@ -2827,7 +2634,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (!state.children.length) return;
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreSplitOuterFirst: direction=${state.direction}, children=${state.children.length}`);
+			Logger.debug(`restoreSplitOuterFirst: direction=${state.direction}, children=${state.children.length}`);
 		}
 
 		// Step 1: Create all leaf placeholders at THIS level first
@@ -2924,7 +2731,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreNestedSplitInPlace: direction=${state.direction}, children=${state.children.length}`);
+			Logger.debug(`restoreNestedSplitInPlace: direction=${state.direction}, children=${state.children.length}`);
 		}
 
 		// The leafSlot already has the first child's first file
@@ -3072,7 +2879,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (this.pendingTabActivations.length === 0) return;
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] Processing ${this.pendingTabActivations.length} pending tab activations`);
+			Logger.debug(`Processing ${this.pendingTabActivations.length} pending tab activations`);
 		}
 
 		for (const { container, activeTabIndex, activeLeaf } of this.pendingTabActivations) {
@@ -3100,7 +2907,7 @@ export default class PerspectaPlugin extends Plugin {
 			}
 
 			if (PerfTimer.isEnabled()) {
-				console.log(`[Perspecta]   Activated tab at index ${activeTabIndex}`);
+				Logger.debug(`  Activated tab at index ${activeTabIndex}`);
 			}
 		}
 
@@ -3266,7 +3073,7 @@ export default class PerspectaPlugin extends Plugin {
 
 	private restoreWindowGeometry(win: Window, state: WindowStateV2, sourceScreen?: ScreenInfo) {
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreWindowGeometry called`, {
+			Logger.debug(`restoreWindowGeometry called`, {
 				hasCoords: state.x !== undefined && state.y !== undefined,
 				hasSize: state.width !== undefined && state.height !== undefined,
 				state: { x: state.x, y: state.y, width: state.width, height: state.height },
@@ -3277,7 +3084,7 @@ export default class PerspectaPlugin extends Plugin {
 		if (state.width === undefined || state.height === undefined ||
 			state.x === undefined || state.y === undefined) {
 			if (COORDINATE_DEBUG) {
-				console.log(`[Perspecta] restoreWindowGeometry: missing coordinates, skipping`);
+				Logger.debug(`restoreWindowGeometry: missing coordinates, skipping`);
 			}
 			return;
 		}
@@ -3291,7 +3098,7 @@ export default class PerspectaPlugin extends Plugin {
 		}, sourceScreen);
 
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreWindowGeometry: applying`, physical);
+			Logger.debug('restoreWindowGeometry: applying', physical);
 		}
 
 		try { win.resizeTo(physical.width, physical.height); } catch { /* ignore */ }
@@ -3301,7 +3108,7 @@ export default class PerspectaPlugin extends Plugin {
 	// Apply geometry directly without virtual-to-physical conversion (used for tiled layouts)
 	private restoreWindowGeometryDirect(win: Window, geometry: { x: number; y: number; width: number; height: number }) {
 		if (COORDINATE_DEBUG) {
-			console.log(`[Perspecta] restoreWindowGeometryDirect: applying`, geometry);
+			Logger.debug('restoreWindowGeometryDirect: applying', geometry);
 		}
 
 		try { win.resizeTo(geometry.width, geometry.height); } catch { /* ignore */ }
@@ -3974,8 +3781,8 @@ export default class PerspectaPlugin extends Plugin {
 			}
 
 			if (isOlder) {
-				console.warn(
-					`[Perspecta] Obsidian version ${currentVersion} detected. ` +
+				Logger.warn(
+					`Obsidian version ${currentVersion} detected. ` +
 					`Some features may not work correctly. ` +
 					`Recommended version: ${MIN_RECOMMENDED_VERSION} or later.`
 				);
@@ -4006,7 +3813,7 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.setEnabled(debugEnabled);
 		COORDINATE_DEBUG = debugEnabled;
 		setCoordinateDebug(debugEnabled);  // Also update in coordinates module
-		Logger.setLevel(debugEnabled ? LogLevel.DEBUG : LogLevel.ERROR);
+		Logger.setLevel(debugEnabled ? LogLevel.DEBUG : LogLevel.INFO);
 	}
 
 	/**

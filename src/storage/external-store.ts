@@ -9,6 +9,7 @@ import { WindowArrangementV2, ArrangementCollection, TimestampedArrangement } fr
 import { PerfTimer } from '../utils/perf-timer';
 import { TIMING } from '../utils/constants';
 import { debounceAsync, safeTimeout } from '../utils/async-utils';
+import { Logger } from '../utils/logger';
 
 const CONTEXTS_FOLDER = 'contexts';
 
@@ -84,17 +85,17 @@ export class ExternalContextStore {
 							}
 						}
 					} catch (e) {
-						console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
+						Logger.warn(`Failed to load context file: ${file}`, e);
 					}
 				}
 			}
 
 			this.initialized = true;
 			if (PerfTimer.isEnabled()) {
-				console.log(`[Perspecta] External store initialized with ${this.cache.size} contexts`);
+				Logger.info(`External store initialized with ${this.cache.size} contexts`);
 			}
 		} catch (e) {
-			console.error('[Perspecta] Failed to initialize external store:', e);
+			Logger.error('Failed to initialize external store:', e);
 		}
 	}
 
@@ -189,7 +190,7 @@ export class ExternalContextStore {
 				await this.adapter.remove(filePath);
 			}
 		} catch (e) {
-			console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
+			Logger.warn(`Failed to delete context file: ${filePath}`, e);
 		}
 	}
 
@@ -226,7 +227,7 @@ export class ExternalContextStore {
 		
 		// Use debounced flush for better performance
 		this.debouncedFlush().catch(error => {
-			console.error('[Perspecta] Failed to flush dirty data:', error);
+			Logger.error('Failed to flush dirty data:', error);
 		});
 	}
 
@@ -251,7 +252,7 @@ export class ExternalContextStore {
 					const json = JSON.stringify(collection);
 					await this.adapter.write(filePath, json);
 				} catch (e) {
-					console.error(`[Perspecta] Failed to save context: ${uid}`, e);
+					Logger.error(`Failed to save context: ${uid}`, e);
 					this.dirty.add(uid);
 				}
 			} else {
@@ -261,13 +262,13 @@ export class ExternalContextStore {
 						await this.adapter.remove(filePath);
 					}
 				} catch (e) {
-					console.warn(`[Perspecta] Failed to delete empty context file: ${filePath}`, e);
+					Logger.warn(`Failed to delete empty context file: ${filePath}`, e);
 				}
 			}
 		}
 
 		if (PerfTimer.isEnabled()) {
-			console.log(`[Perspecta] Saved ${toSave.length} context(s) to disk`);
+			Logger.info(`Saved ${toSave.length} context(s) to disk`);
 		}
 	}
 

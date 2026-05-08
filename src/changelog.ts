@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.33',
+		date: '2026-05-08',
+		changes: [
+			'Internal: Logger migration — replaced ~120 raw `console.*` calls across the codebase with the centralized Logger. Production stays quiet; verbose tracing still toggles via Settings → Debug → Enable debug logging. Default Logger level bumped from ERROR to INFO so lifecycle messages remain visible.',
+			'Internal: Extracted compact arrangement codec to `src/storage/codec.ts` (177 lines out of main.ts). Codec is now a pure-function module that can be unit-tested in isolation — exactly the kind of seam that would have caught the v0.1.31 split-sizes bug before release.',
+			'Internal: main.ts shrinks from 4,029 → 3,852 lines.',
+		],
+	},
+	{
 		version: '0.1.32',
 		date: '2026-05-08',
 		changes: [
