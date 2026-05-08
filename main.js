@@ -2289,6 +2289,103 @@ async function restoreFromBackup(cfg, backupPath, mode) {
   return { restored, errors };
 }
 
+// src/services/migrations.ts
+async function cleanupOldUidProperties(app) {
+  const files = app.vault.getMarkdownFiles();
+  let cleaned = 0;
+  for (const file of files) {
+    try {
+      if (await cleanupOldUid(app, file)) {
+        cleaned++;
+      }
+    } catch (e) {
+      Logger.warn(`Failed to cleanup ${file.path}:`, e);
+    }
+  }
+  return cleaned;
+}
+async function migrateToExternalStorage(cfg) {
+  const { app, externalStore, onAfterMigrate } = cfg;
+  const files = app.vault.getMarkdownFiles();
+  let migrated = 0;
+  let errors = 0;
+  await externalStore.ensureInitialized();
+  for (const file of files) {
+    try {
+      const context = getContextFromFrontmatter(app, file);
+      if (!context)
+        continue;
+      let uid = getUidFromCache(app, file);
+      if (!uid) {
+        uid = generateUid();
+        await addUidToFile(app, file, uid);
+        await briefPause();
+      }
+      const v2 = normalizeToV2(context);
+      externalStore.set(uid, v2);
+      await removeContextFromFrontmatter(app, file);
+      migrated++;
+    } catch (e) {
+      Logger.error(`Failed to migrate ${file.path}:`, e);
+      errors++;
+    }
+  }
+  await externalStore.flushDirty();
+  await onAfterMigrate("external");
+  return { migrated, errors };
+}
+async function migrateToFrontmatter(cfg) {
+  const { app, externalStore, onAfterMigrate } = cfg;
+  const files = app.vault.getMarkdownFiles();
+  let migrated = 0;
+  let errors = 0;
+  await externalStore.ensureInitialized();
+  for (const file of files) {
+    try {
+      const uid = getUidFromCache(app, file);
+      if (!uid)
+        continue;
+      const context = externalStore.getLatest(uid);
+      if (!context)
+        continue;
+      await saveContextToFrontmatter(app, file, context);
+      await externalStore.delete(uid);
+      migrated++;
+    } catch (e) {
+      Logger.error(`Failed to migrate ${file.path}:`, e);
+      errors++;
+    }
+  }
+  await onAfterMigrate("frontmatter");
+  return { migrated, errors };
+}
+function normalizeToV2(arr) {
+  if (arr.v === 2)
+    return arr;
+  const v1 = arr;
+  return {
+    v: 2,
+    ts: v1.ts,
+    focusedWindow: v1.focusedWindow,
+    main: {
+      root: { type: "tabs", tabs: v1.main.tabs },
+      x: v1.main.x,
+      y: v1.main.y,
+      width: v1.main.width,
+      height: v1.main.height
+    },
+    popouts: v1.popouts.map((p) => ({
+      root: { type: "tabs", tabs: p.tabs },
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height
+    })),
+    leftSidebar: v1.leftSidebar,
+    rightSidebar: v1.rightSidebar
+  };
+}
+
 // src/ui/proxy-view.ts
 var import_obsidian6 = require("obsidian");
 
@@ -4099,81 +4196,34 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       Logger.debug("Could not hide internal properties:", e);
     }
   }
-  // Clean up old 'uid' properties from all files that have perspecta-uid
+  // Migration ops live in src/services/migrations.ts; thin shims keep the
+  // settings-tab callsites unchanged.
   async cleanupOldUidProperties() {
-    const files = this.app.vault.getMarkdownFiles();
-    let cleaned = 0;
-    for (const file of files) {
-      try {
-        if (await cleanupOldUid(this.app, file)) {
-          cleaned++;
-        }
-      } catch (e) {
-        Logger.warn(`Failed to cleanup ${file.path}:`, e);
-      }
-    }
-    return cleaned;
+    return cleanupOldUidProperties(this.app);
   }
-  // Migrate all contexts from frontmatter to external storage
   async migrateToExternalStorage() {
-    const files = this.app.vault.getMarkdownFiles();
-    let migrated = 0;
-    let errors = 0;
-    await this.externalStore.ensureInitialized();
-    for (const file of files) {
-      try {
-        const context = getContextFromFrontmatter(this.app, file);
-        if (!context)
-          continue;
-        let uid = getUidFromCache(this.app, file);
-        if (!uid) {
-          uid = generateUid();
-          await addUidToFile(this.app, file, uid);
-          await briefPause();
-        }
-        const v2 = this.normalizeToV2(context);
-        this.externalStore.set(uid, v2);
-        await removeContextFromFrontmatter(this.app, file);
-        migrated++;
-      } catch (e) {
-        Logger.error(`Failed to migrate ${file.path}:`, e);
-        errors++;
+    return migrateToExternalStorage({
+      app: this.app,
+      externalStore: this.externalStore,
+      onAfterMigrate: async (newMode) => {
+        this.settings.storageMode = newMode;
+        await this.saveSettings();
+        this.filesWithContext.clear();
+        await this.setupFileExplorerIndicators();
       }
-    }
-    await this.externalStore.flushDirty();
-    this.settings.storageMode = "external";
-    await this.saveSettings();
-    this.filesWithContext.clear();
-    await this.setupFileExplorerIndicators();
-    return { migrated, errors };
+    });
   }
-  // Migrate all contexts from external storage to frontmatter
   async migrateToFrontmatter() {
-    const files = this.app.vault.getMarkdownFiles();
-    let migrated = 0;
-    let errors = 0;
-    await this.externalStore.ensureInitialized();
-    for (const file of files) {
-      try {
-        const uid = getUidFromCache(this.app, file);
-        if (!uid)
-          continue;
-        const context = this.externalStore.getLatest(uid);
-        if (!context)
-          continue;
-        await saveContextToFrontmatter(this.app, file, context);
-        await this.externalStore.delete(uid);
-        migrated++;
-      } catch (e) {
-        Logger.error(`Failed to migrate ${file.path}:`, e);
-        errors++;
+    return migrateToFrontmatter({
+      app: this.app,
+      externalStore: this.externalStore,
+      onAfterMigrate: async (newMode) => {
+        this.settings.storageMode = newMode;
+        await this.saveSettings();
+        this.filesWithContext.clear();
+        await this.setupFileExplorerIndicators();
       }
-    }
-    this.settings.storageMode = "frontmatter";
-    await this.saveSettings();
-    this.filesWithContext.clear();
-    await this.setupFileExplorerIndicators();
-    return { migrated, errors };
+    });
   }
   // Backup operations live in src/services/backup.ts; thin shims keep the
   // settings-tab callsites unchanged.
@@ -4284,7 +4334,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       PerfTimer.mark("applyArrangement");
       if (this.settings.showDebugModalOnRestore) {
         this.safeTimeout(() => {
-          const v2Context = this.normalizeToV2(context);
+          const v2Context = normalizeToV2(context);
           this.showRestoreDebugModal(v2Context, targetFile.name);
         }, 1e3);
       }
@@ -4364,7 +4414,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     const correctedContext = this.captureWindowArrangement();
     correctedContext.ts = originalContext.ts;
     correctedContext.focusedWindow = originalContext.focusedWindow;
-    const v2Original = this.normalizeToV2(originalContext);
+    const v2Original = normalizeToV2(originalContext);
     if (v2Original.sourceScreen) {
       correctedContext.sourceScreen = v2Original.sourceScreen;
     }
@@ -4395,7 +4445,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       if (devToolsWasOpen && this.settings.enableDebugLogging) {
         Logger.debug("DevTools detected as open, will re-open after restore");
       }
-      const v2 = this.normalizeToV2(arrangement);
+      const v2 = normalizeToV2(arrangement);
       PerfTimer.mark("normalizeToV2");
       const useTiling = needsTiling(v2.sourceScreen);
       let tiledPositions = [];
@@ -4530,20 +4580,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       }
     });
     return leaves;
-  }
-  normalizeToV2(arr) {
-    if (arr.v === 2)
-      return arr;
-    const v1 = arr;
-    return {
-      v: 2,
-      ts: v1.ts,
-      focusedWindow: v1.focusedWindow,
-      main: { root: { type: "tabs", tabs: v1.main.tabs }, x: v1.main.x, y: v1.main.y, width: v1.main.width, height: v1.main.height },
-      popouts: v1.popouts.map((p) => ({ root: { type: "tabs", tabs: p.tabs }, x: p.x, y: p.y, width: p.width, height: p.height })),
-      leftSidebar: v1.leftSidebar,
-      rightSidebar: v1.rightSidebar
-    };
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restoreWorkspaceNode(parent, state, existingLeaf) {
@@ -5623,7 +5659,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
     const activeLeaf = this.app.workspace.activeLeaf;
     const targetWindow = (_c = (_b = (_a = activeLeaf == null ? void 0 : activeLeaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win) != null ? _c : window;
-    const v2 = this.normalizeToV2(context);
+    const v2 = normalizeToV2(context);
     this.showContextDetailsModal(v2, file.name, targetWindow);
   }
   showContextDetailsModal(context, fileName, targetWindow) {

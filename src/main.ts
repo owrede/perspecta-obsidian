@@ -66,7 +66,6 @@ import {
 	WindowStateV2,
 	SidebarState,
 	ScreenInfo,
-	WindowArrangementV1,
 	WindowArrangementV2,
 	WindowArrangement,
 	PerspectaSettings,
@@ -112,7 +111,7 @@ import {
 	calculateTiledLayout
 } from './utils/coordinates';
 import { getWallpaper, setWallpaper, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
-import { generateUid, getUidFromCache, addUidToFile, cleanupOldUid } from './utils/uid';
+import { generateUid, getUidFromCache, addUidToFile } from './utils/uid';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
 
 // Import storage
@@ -140,6 +139,12 @@ import {
 	removeContextFromFrontmatter,
 } from './storage/frontmatter-store';
 import { backupArrangements, listBackups, restoreFromBackup } from './services/backup';
+import {
+	cleanupOldUidProperties as cleanupOldUidPropertiesOp,
+	migrateToExternalStorage as migrateToExternalStorageOp,
+	migrateToFrontmatter as migrateToFrontmatterOp,
+	normalizeToV2,
+} from './services/migrations';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
@@ -1070,115 +1075,36 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
-	// Clean up old 'uid' properties from all files that have perspecta-uid
+	// Migration ops live in src/services/migrations.ts; thin shims keep the
+	// settings-tab callsites unchanged.
 	async cleanupOldUidProperties(): Promise<number> {
-		const files = this.app.vault.getMarkdownFiles();
-		let cleaned = 0;
-
-		for (const file of files) {
-			try {
-				if (await cleanupOldUid(this.app, file)) {
-					cleaned++;
-				}
-			} catch (e) {
-				Logger.warn(`Failed to cleanup ${file.path}:`, e);
-			}
-		}
-
-		return cleaned;
+		return cleanupOldUidPropertiesOp(this.app);
 	}
 
-	// Migrate all contexts from frontmatter to external storage
 	async migrateToExternalStorage(): Promise<{ migrated: number; errors: number }> {
-		const files = this.app.vault.getMarkdownFiles();
-		let migrated = 0;
-		let errors = 0;
-
-		// Initialize external store
-		await this.externalStore.ensureInitialized();
-
-		for (const file of files) {
-			try {
-				// Check if file has context in frontmatter
-				const context = getContextFromFrontmatter(this.app, file);
-				if (!context) continue;
-
-				// Ensure file has a UID
-				let uid = getUidFromCache(this.app, file);
-				if (!uid) {
-					uid = generateUid();
-					await addUidToFile(this.app, file, uid);
-					await briefPause(); // Brief pause for cache
-				}
-
-				// Save to external store
-				const v2 = this.normalizeToV2(context);
-				this.externalStore.set(uid, v2);
-
-				// Remove from frontmatter
-				await removeContextFromFrontmatter(this.app, file);
-
-				migrated++;
-			} catch (e) {
-				Logger.error(`Failed to migrate ${file.path}:`, e);
-				errors++;
-			}
-		}
-
-		// Flush to disk
-		await this.externalStore.flushDirty();
-
-		// Update settings
-		this.settings.storageMode = 'external';
-		await this.saveSettings();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { migrated, errors };
+		return migrateToExternalStorageOp({
+			app: this.app,
+			externalStore: this.externalStore,
+			onAfterMigrate: async (newMode) => {
+				this.settings.storageMode = newMode;
+				await this.saveSettings();
+				this.filesWithContext.clear();
+				await this.setupFileExplorerIndicators();
+			},
+		});
 	}
 
-	// Migrate all contexts from external storage to frontmatter
 	async migrateToFrontmatter(): Promise<{ migrated: number; errors: number }> {
-		const files = this.app.vault.getMarkdownFiles();
-		let migrated = 0;
-		let errors = 0;
-
-		// Initialize external store to load all contexts
-		await this.externalStore.ensureInitialized();
-
-		for (const file of files) {
-			try {
-				// Check if file has a UID with stored context
-				const uid = getUidFromCache(this.app, file);
-				if (!uid) continue;
-
-				const context = this.externalStore.getLatest(uid);
-				if (!context) continue;
-
-				// Save to frontmatter
-				await saveContextToFrontmatter(this.app, file, context);
-
-				// Delete from external store
-				await this.externalStore.delete(uid);
-
-				migrated++;
-			} catch (e) {
-				Logger.error(`Failed to migrate ${file.path}:`, e);
-				errors++;
-			}
-		}
-
-		// Update settings
-		this.settings.storageMode = 'frontmatter';
-		await this.saveSettings();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { migrated, errors };
+		return migrateToFrontmatterOp({
+			app: this.app,
+			externalStore: this.externalStore,
+			onAfterMigrate: async (newMode) => {
+				this.settings.storageMode = newMode;
+				await this.saveSettings();
+				this.filesWithContext.clear();
+				await this.setupFileExplorerIndicators();
+			},
+		});
 	}
 
 	// Backup operations live in src/services/backup.ts; thin shims keep the
@@ -1330,7 +1256,7 @@ export default class PerspectaPlugin extends Plugin {
 				// Wait a moment for UI to settle before capturing current state.
 				// safeTimeout: don't fire after unload.
 				this.safeTimeout(() => {
-					const v2Context = this.normalizeToV2(context);
+					const v2Context = normalizeToV2(context);
 					this.showRestoreDebugModal(v2Context, targetFile.name);
 				}, 1000);
 			}
@@ -1446,7 +1372,7 @@ export default class PerspectaPlugin extends Plugin {
 		correctedContext.focusedWindow = originalContext.focusedWindow;
 
 		// Preserve source screen info if it existed
-		const v2Original = this.normalizeToV2(originalContext);
+		const v2Original = normalizeToV2(originalContext);
 		if (v2Original.sourceScreen) {
 			correctedContext.sourceScreen = v2Original.sourceScreen;
 		}
@@ -1485,7 +1411,7 @@ export default class PerspectaPlugin extends Plugin {
 				Logger.debug('DevTools detected as open, will re-open after restore');
 			}
 
-			const v2 = this.normalizeToV2(arrangement);
+			const v2 = normalizeToV2(arrangement);
 			PerfTimer.mark('normalizeToV2');
 
 			// Check if we need to tile windows due to aspect ratio mismatch
@@ -1667,17 +1593,6 @@ export default class PerspectaPlugin extends Plugin {
 			}
 		});
 		return leaves;
-	}
-
-	private normalizeToV2(arr: WindowArrangement): WindowArrangementV2 {
-		if (arr.v === 2) return arr as WindowArrangementV2;
-		const v1 = arr as WindowArrangementV1;
-		return {
-			v: 2, ts: v1.ts, focusedWindow: v1.focusedWindow,
-			main: { root: { type: 'tabs', tabs: v1.main.tabs }, x: v1.main.x, y: v1.main.y, width: v1.main.width, height: v1.main.height },
-			popouts: v1.popouts.map(p => ({ root: { type: 'tabs', tabs: p.tabs }, x: p.x, y: p.y, width: p.width, height: p.height })),
-			leftSidebar: v1.leftSidebar, rightSidebar: v1.rightSidebar
-		};
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3016,7 +2931,7 @@ export default class PerspectaPlugin extends Plugin {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		const targetWindow = activeLeaf?.view?.containerEl?.win ?? window;
 
-		const v2 = this.normalizeToV2(context);
+		const v2 = normalizeToV2(context);
 		this.showContextDetailsModal(v2, file.name, targetWindow);
 	}
 
