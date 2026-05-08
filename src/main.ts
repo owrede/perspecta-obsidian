@@ -135,6 +135,7 @@ import {
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
 import { encodeArrangement, decodeArrangement } from './storage/codec';
+import { backupArrangements, listBackups, restoreFromBackup } from './services/backup';
 
 // Import UI components
 import { showArrangementSelector, showConfirmOverwrite, showRestoreModeSelector, RestoreMode } from './ui/modals';
@@ -1204,173 +1205,41 @@ export default class PerspectaPlugin extends Plugin {
 		return { migrated, errors };
 	}
 
-	// Get the backup folder path
-	private getBackupFolderPath(): string {
-		const basePath = this.settings.perspectaFolderPath.replace(/\/+$/, ''); // Remove trailing slashes
-		return `${basePath}/backups`;
-	}
-
-	// Backup all arrangements to the perspecta folder
+	// Backup operations live in src/services/backup.ts; thin shims keep the
+	// settings-tab callsites unchanged.
 	async backupArrangements(): Promise<{ count: number; path: string }> {
-		// Initialize external store if needed
-		await this.externalStore.ensureInitialized();
-
-		// Collect all arrangements from external store
-		const allArrangements: Record<string, unknown> = {};
-		const uids = this.externalStore.getAllUids();
-
-		for (const uid of uids) {
-			const arrangements = this.externalStore.getAll(uid);
-			if (arrangements.length > 0) {
-				allArrangements[uid] = arrangements;
-			}
-		}
-
-		// Create backup folder if it doesn't exist
-		const backupFolder = this.getBackupFolderPath();
-		if (!await this.app.vault.adapter.exists(backupFolder)) {
-			await this.app.vault.createFolder(backupFolder);
-		}
-
-		// Generate backup filename with timestamp
-		const now = new Date();
-		const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-		const backupFileName = `arrangements-backup-${timestamp}.json`;
-		const backupPath = `${backupFolder}/${backupFileName}`;
-
-		// Create backup data with metadata
-		const backupData = {
-			version: 1,
-			createdAt: now.toISOString(),
-			arrangementCount: Object.keys(allArrangements).length,
-			arrangements: allArrangements
-		};
-
-		// Write backup file
-		await this.app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
-
-		return { count: Object.keys(allArrangements).length, path: backupPath };
+		return backupArrangements({
+			app: this.app,
+			externalStore: this.externalStore,
+			perspectaFolderPath: this.settings.perspectaFolderPath,
+		});
 	}
 
-	// List available backups
 	async listBackups(): Promise<{ name: string; path: string; date: Date }[]> {
-		const backupFolder = this.getBackupFolderPath();
-
-		if (!await this.app.vault.adapter.exists(backupFolder)) {
-			return [];
-		}
-
-		const files = await this.app.vault.adapter.list(backupFolder);
-		const backups: { name: string; path: string; date: Date }[] = [];
-
-		for (const filePath of files.files) {
-			if (filePath.endsWith('.json')) {
-				const fileName = filePath.split('/').pop() || '';
-				// Parse date from filename: arrangements-backup-YYYY-MM-DDTHH-MM-SS.json
-				const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
-				if (match) {
-					const dateStr = match[1].replace(/-/g, (m, offset) => offset > 9 ? ':' : '-').replace('T', 'T');
-					const date = new Date(dateStr.slice(0, 10) + 'T' + dateStr.slice(11).replace(/-/g, ':'));
-					backups.push({ name: fileName, path: filePath, date });
-				}
-			}
-		}
-
-		// Sort by date, newest first
-		backups.sort((a, b) => b.date.getTime() - a.date.getTime());
-		return backups;
+		return listBackups({
+			app: this.app,
+			perspectaFolderPath: this.settings.perspectaFolderPath,
+		});
 	}
 
-	// Restore arrangements from a backup file
-	async restoreFromBackup(backupPath: string, mode?: RestoreMode): Promise<{ restored: number; errors: number; cancelled?: boolean }> {
-		// Extract backup name from path
-		const backupName = backupPath.split('/').pop() || 'backup';
-
-		// Show mode selector if not provided
-		if (!mode) {
-			const result = await showRestoreModeSelector(backupName);
-			if (result.cancelled) {
-				return { restored: 0, errors: 0, cancelled: true };
-			}
-			mode = result.mode;
-		}
-
-		// Read and parse backup file with error handling
-		let backupData: { arrangements?: Record<string, unknown> };
-		try {
-			const content = await this.app.vault.adapter.read(backupPath);
-			backupData = JSON.parse(content);
-		} catch (e) {
-			Logger.error('Failed to parse backup file:', e);
-			new Notice('Failed to parse backup file. The file may be corrupted.');
-			return { restored: 0, errors: 1 };
-		}
-
-		if (!backupData.arrangements || typeof backupData.arrangements !== 'object') {
-			new Notice('Invalid backup file format');
-			return { restored: 0, errors: 1 };
-		}
-
-		// Initialize external store if needed
-		await this.externalStore.ensureInitialized();
-
-		let restored = 0;
-		let errors = 0;
-
-		if (mode === 'overwrite') {
-			// Clear all existing arrangements first
-			await this.externalStore.clearAll();
-		}
-
-		for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
-			try {
-				const backupArrangements = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
-
-				if (mode === 'merge') {
-					// Get existing arrangements for this UID
-					const existing = this.externalStore.get(uid) || [];
-					
-					// Combine existing and backup arrangements
-					const combined = [...existing];
-					
-					for (const backupItem of backupArrangements) {
-						// Check if this exact arrangement already exists (by savedAt timestamp)
-						const alreadyExists = combined.some(e => e.savedAt === backupItem.savedAt);
-						if (!alreadyExists) {
-							combined.push(backupItem);
-						}
-					}
-					
-					// Sort by savedAt (newest first) and keep only max allowed
-					combined.sort((a, b) => b.savedAt - a.savedAt);
-					const trimmed = combined.slice(0, this.settings.maxArrangementsPerNote);
-					
-					// Replace the arrangements for this UID
-					this.externalStore.clearUid(uid);
-					for (const item of trimmed) {
-						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
-					}
-				} else {
-					// Overwrite mode - just restore from backup
-					for (const item of backupArrangements) {
-						this.externalStore.set(uid, item.arrangement, this.settings.maxArrangementsPerNote);
-					}
-				}
-				restored++;
-			} catch (e) {
-				Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
-				errors++;
-			}
-		}
-
-		// Flush to disk
-		await this.externalStore.flushDirty();
-
-		// Refresh indicators
-		this.filesWithContext.clear();
-		await this.setupFileExplorerIndicators();
-
-		return { restored, errors };
+	async restoreFromBackup(
+		backupPath: string,
+		mode?: RestoreMode
+	): Promise<{ restored: number; errors: number; cancelled?: boolean }> {
+		return restoreFromBackup(
+			{
+				app: this.app,
+				externalStore: this.externalStore,
+				perspectaFolderPath: this.settings.perspectaFolderPath,
+				maxArrangementsPerNote: this.settings.maxArrangementsPerNote,
+				onAfterRestore: async () => {
+					this.filesWithContext.clear();
+					await this.setupFileExplorerIndicators();
+				},
+			},
+			backupPath,
+			mode
+		);
 	}
 
 	// Generate UIDs for any files in the context that don't have them
