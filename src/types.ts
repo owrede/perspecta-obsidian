@@ -120,6 +120,49 @@ export interface WindowArrangementV1 {
 
 export type WindowArrangement = WindowArrangementV1 | WindowArrangementV2;
 
+// ============================================================================
+// Compact wire format
+// ----------------------------------------------------------------------------
+// Frontmatter-mode arrangements are base64-encoded JSON of this compact shape.
+// Short keys keep the encoded string short. Changing keys is a wire-format
+// break — bump `v` and write a migration if you do.
+// ============================================================================
+
+/** Tab in compact form: just a path string, or [path, uid|null, active?]. */
+export type CompactTabArray = [string] | [string, string | null] | [string, string | null, 1];
+export type CompactTab = string | CompactTabArray;
+
+export interface CompactSplit {
+	d: 'h' | 'v';                // direction
+	c: CompactNode[];            // children
+	s?: number[];                // split sizes (added in v0.1.31; older blobs omit)
+}
+
+/** A workspace node is either a tab list or a split. */
+export type CompactNode = CompactTab[] | CompactSplit;
+
+export interface CompactWindow {
+	r: CompactNode;              // root
+	g?: [number, number, number, number]; // [x, y, width, height]
+}
+
+export interface CompactSidebar {
+	c: boolean;                  // collapsed
+	t?: string;                  // activeTab id
+}
+
+export interface CompactArrangement {
+	v: number;                   // schema version
+	ts: number;                  // saved-at timestamp
+	f: number;                   // focusedWindow index
+	m: CompactWindow;            // main window
+	p?: CompactWindow[];         // popouts
+	ls?: CompactSidebar;         // left sidebar
+	rs?: CompactSidebar;         // right sidebar
+	ar?: number;                 // sourceScreen aspect ratio
+	wp?: string;                 // wallpaper path
+}
+
 export type StorageMode = 'frontmatter' | 'external';
 
 export interface PerspectaSettings {

@@ -72,7 +72,12 @@ import {
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
 	FRONTMATTER_KEY,
-	UID_FRONTMATTER_KEY
+	UID_FRONTMATTER_KEY,
+	CompactArrangement,
+	CompactWindow,
+	CompactNode,
+	CompactSplit,
+	CompactTab
 } from './types';
 
 // Import internal API type definitions
@@ -199,6 +204,14 @@ function getPropertiesCollapsed(view: unknown): boolean | undefined {
 	}
 
 	return false;
+}
+
+// Minimal duck-typed shape for walking popout containers without committing
+// to the full Obsidian internal split tree. Each level may have a `view` (a
+// leaf) or further `children` (a split or tab group).
+interface ProxyContainerChild {
+	view?: { getViewType?: () => string };
+	children?: ProxyContainerChild[];
 }
 
 // ============================================================================
@@ -624,16 +637,14 @@ export default class PerspectaPlugin extends Plugin {
 	/**
 	 * Check if a popout container contains a proxy view
 	 */
-	private isProxyWindow(container: any): boolean {
-		if (!container?.children) return false;
+	private isProxyWindow(container: unknown): boolean {
+		const node = container as { children?: ProxyContainerChild[] } | null | undefined;
+		if (!node?.children) return false;
 
-		// Check all leaves in this container for proxy view type
-		for (const child of container.children) {
-			// Direct leaf check
+		for (const child of node.children) {
 			if (child?.view?.getViewType?.() === PROXY_VIEW_TYPE) {
 				return true;
 			}
-			// Check nested children (for tab groups)
 			if (child?.children) {
 				for (const leaf of child.children) {
 					if (leaf?.view?.getViewType?.() === PROXY_VIEW_TYPE) {
@@ -814,10 +825,12 @@ export default class PerspectaPlugin extends Plugin {
 			// DevTools windows have specific characteristics
 			const url = win.location?.href || '';
 			const title = win.document?.title || '';
-			return url.includes('devtools://') || 
-			       url.includes('chrome-devtools://') ||
-			       title.includes('DevTools') ||
-			       title.includes('Developer Tools');
+			return (
+				url.includes('devtools://') ||
+				url.includes('chrome-devtools://') ||
+				title.includes('DevTools') ||
+				title.includes('Developer Tools')
+			);
 		} catch {
 			// Cross-origin access denied - likely DevTools
 			return true;
@@ -1472,20 +1485,20 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// Create compact arrangement with minimal data
-	private createCompactArrangement(arr: WindowArrangementV2): any {
-		const compact: any = {
+	private createCompactArrangement(arr: WindowArrangementV2): CompactArrangement {
+		const compact: CompactArrangement = {
 			v: arr.v,
 			ts: arr.ts,
-			f: arr.focusedWindow,  // short key: focusedWindow
-			m: this.compactWindow(arr.main)  // short key: main
+			f: arr.focusedWindow,
+			m: this.compactWindow(arr.main)
 		};
 
 		if (arr.popouts.length > 0) {
-			compact.p = arr.popouts.map(p => this.compactWindow(p));  // short key: popouts
+			compact.p = arr.popouts.map(p => this.compactWindow(p));
 		}
 
 		if (arr.leftSidebar) {
-			compact.ls = { c: arr.leftSidebar.collapsed };  // short keys
+			compact.ls = { c: arr.leftSidebar.collapsed };
 			if (arr.leftSidebar.activeTab) compact.ls.t = arr.leftSidebar.activeTab;
 		}
 
@@ -1500,50 +1513,59 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		if (arr.wallpaper) {
-			compact.wp = arr.wallpaper;  // short key: wallpaper
+			compact.wp = arr.wallpaper;
 		}
 
 		return compact;
 	}
 
-	private compactWindow(win: WindowStateV2): any {
-		const compact: any = {
-			r: this.compactNode(win.root)  // short key: root
+	private compactWindow(win: WindowStateV2): CompactWindow {
+		const compact: CompactWindow = {
+			r: this.compactNode(win.root)
 		};
 
 		// Store geometry as array [x, y, w, h] if present
 		if (win.x !== undefined && win.y !== undefined && win.width !== undefined && win.height !== undefined) {
-			compact.g = [win.x, win.y, win.width, win.height];  // short key: geometry
+			compact.g = [win.x, win.y, win.width, win.height];
 		}
 
 		return compact;
 	}
 
-	private compactNode(node: WorkspaceNodeState): any {
+	private compactNode(node: WorkspaceNodeState): CompactNode {
 		if (node.type === 'tabs') {
-			// Compact tab format: array of [path, uid?, active?]
-			// Only include uid if present, only include active marker for active tab
-			return node.tabs.map(tab => {
-				const arr: any[] = [tab.path];
-				if (tab.uid) arr.push(tab.uid);
-				else if (tab.active) arr.push(null);  // placeholder for uid
-				if (tab.active) arr.push(1);  // 1 = active
-				return arr.length === 1 ? tab.path : arr;  // Just path string if no extras
+			// Compact tab format: string (path only) or [path, uid|null, 1?] (with extras)
+			return node.tabs.map((tab): CompactTab => {
+				if (tab.active) {
+					// Need active marker at index 2 → uid (or null placeholder) at index 1
+					return [tab.path, tab.uid ?? null, 1];
+				}
+				if (tab.uid) {
+					return [tab.path, tab.uid];
+				}
+				return tab.path;
 			});
-		} else {
-			// Split format: { d: direction, c: children }
-			return {
-				d: node.direction === 'horizontal' ? 'h' : 'v',
-				c: node.children.map(child => this.compactNode(child))
-			};
 		}
+
+		// Split format: { d, c, s? }
+		const split: CompactSplit = {
+			d: node.direction === 'horizontal' ? 'h' : 'v',
+			c: node.children.map(child => this.compactNode(child))
+		};
+		// Preserve split pane sizes (e.g., 25%/75%) so frontmatter-mode restore
+		// doesn't fall back to the default 50/50 layout. Older arrangements
+		// without `s` still decode (sizes become undefined).
+		if (node.sizes && node.sizes.length > 0) {
+			split.s = node.sizes;
+		}
+		return split;
 	}
 
 	// Decode base64 JSON blob back to WindowArrangementV2
 	private decodeArrangement(encoded: string): WindowArrangementV2 | null {
 		try {
 			const json = decodeBase64(encoded);
-			const compact = JSON.parse(json);
+			const compact = JSON.parse(json) as CompactArrangement;
 			return this.expandCompactArrangement(compact);
 		} catch (e) {
 			console.error('[Perspecta] Failed to decode arrangement:', e);
@@ -1551,13 +1573,13 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
-	private expandCompactArrangement(compact: any): WindowArrangementV2 {
+	private expandCompactArrangement(compact: CompactArrangement): WindowArrangementV2 {
 		const arr: WindowArrangementV2 = {
-			v: compact.v || 2,
+			v: 2,
 			ts: compact.ts || Date.now(),
 			focusedWindow: compact.f ?? -1,
 			main: this.expandWindow(compact.m),
-			popouts: (compact.p || []).map((p: any) => this.expandWindow(p))
+			popouts: (compact.p || []).map(p => this.expandWindow(p))
 		};
 
 		if (compact.ls) {
@@ -1584,7 +1606,7 @@ export default class PerspectaPlugin extends Plugin {
 		return arr;
 	}
 
-	private expandWindow(compact: any): WindowStateV2 {
+	private expandWindow(compact: CompactWindow): WindowStateV2 {
 		const win: WindowStateV2 = {
 			root: this.expandNode(compact.r)
 		};
@@ -1599,29 +1621,31 @@ export default class PerspectaPlugin extends Plugin {
 		return win;
 	}
 
-	private expandNode(compact: any): WorkspaceNodeState {
+	private expandNode(compact: CompactNode): WorkspaceNodeState {
 		// Array = tabs, Object with d/c = split
 		if (Array.isArray(compact)) {
 			const tabs: TabState[] = compact.map(item => {
 				if (typeof item === 'string') {
-					// Just path
 					return { path: item, active: false, name: item.split('/').pop()?.replace(/\.md$/, '') };
-				} else {
-					// Array: [path, uid?, active?]
-					const path = item[0];
-					const uid = item[1] || undefined;
-					const active = item[2] === 1;
-					return { path, uid, active, name: path.split('/').pop()?.replace(/\.md$/, '') };
 				}
+				// [path, uid|null, active?]
+				const path = item[0];
+				const uid = item[1] || undefined;
+				const active = item[2] === 1;
+				return { path, uid, active, name: path.split('/').pop()?.replace(/\.md$/, '') };
 			});
 			return { type: 'tabs', tabs };
-		} else {
-			return {
-				type: 'split',
-				direction: compact.d === 'h' ? 'horizontal' : 'vertical',
-				children: compact.c.map((child: any) => this.expandNode(child))
-			};
 		}
+
+		const node: SplitState = {
+			type: 'split',
+			direction: compact.d === 'h' ? 'horizontal' : 'vertical',
+			children: compact.c.map(child => this.expandNode(child))
+		};
+		if (compact.s && compact.s.length > 0) {
+			node.sizes = compact.s;
+		}
+		return node;
 	}
 
 	// ============================================================================

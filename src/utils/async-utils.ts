@@ -37,26 +37,26 @@ export function longPause(): Promise<void> {
  */
 export async function retryAsync<T>(
 	operation: () => Promise<T>,
-	maxAttempts: number = 3,
-	baseDelay: number = 100
+	maxAttempts = 3,
+	baseDelay = 100
 ): Promise<T> {
-	let lastError: Error;
-	
+	let lastError: Error = new Error('retryAsync: no attempts made');
+
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
 			return await operation();
 		} catch (error) {
-			lastError = error as Error;
+			lastError = error instanceof Error ? error : new Error(String(error));
 			if (attempt === maxAttempts) {
 				break;
 			}
-			
+
 			const delayMs = baseDelay * Math.pow(2, attempt - 1);
 			await delay(delayMs);
 		}
 	}
-	
-	throw lastError!;
+
+	throw lastError;
 }
 
 /**
@@ -77,7 +77,7 @@ export function withTimeout<T>(
 /**
  * Debounce function for async operations
  */
-export function debounceAsync<T extends any[], R>(
+export function debounceAsync<T extends unknown[], R>(
 	fn: (...args: T) => Promise<R>,
 	delay: number
 ): (...args: T) => Promise<R> {
@@ -112,8 +112,8 @@ export function debounceAsync<T extends any[], R>(
  */
 export async function waitForCondition(
 	condition: () => boolean | Promise<boolean>,
-	timeoutMs: number = 5000,
-	intervalMs: number = 50
+	timeoutMs = 5000,
+	intervalMs = 50
 ): Promise<void> {
 	const startTime = Date.now();
 	
