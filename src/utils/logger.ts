@@ -35,10 +35,12 @@ interface LoggerConfig {
 }
 
 /**
- * Default configuration - production mode (errors only).
+ * Default configuration - production mode.
+ * INFO covers one-shot lifecycle events (plugin load) and warnings/errors.
+ * DEBUG (verbose per-operation tracing) stays off until enableDebugLogging is set.
  */
 const config: LoggerConfig = {
-	level: LogLevel.ERROR,
+	level: LogLevel.INFO,
 	prefix: '[Perspecta]'
 };
 

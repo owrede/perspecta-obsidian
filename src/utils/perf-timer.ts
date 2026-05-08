@@ -2,6 +2,8 @@
 // Performance Timer
 // ============================================================================
 
+import { Logger } from './logger';
+
 export class PerfTimer {
 	private static enabled = false;
 	private static times: { label: string; elapsed: number; fromStart: number }[] = [];
@@ -15,7 +17,7 @@ export class PerfTimer {
 		this.start = performance.now();
 		this.lastMark = this.start;
 		this.currentOperation = operation;
-		console.log(`[Perspecta] ▶ ${operation} started at ${this.start.toFixed(0)}`);
+		Logger.debug(`▶ ${operation} started at ${this.start.toFixed(0)}`);
 	}
 
 	static mark(label: string) {
@@ -26,18 +28,18 @@ export class PerfTimer {
 		this.times.push({ label, elapsed, fromStart });
 		this.lastMark = now;
 		const flag = elapsed > 50 ? '⚠ SLOW' : '✓';
-		console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+		Logger.debug(`  ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
 	}
 
 	static end(operation: string) {
 		if (!this.enabled) return;
 		const total = performance.now() - this.start;
-		console.log(`[Perspecta] ◼ ${operation} completed in ${total.toFixed(1)}ms`);
+		Logger.debug(`◼ ${operation} completed in ${total.toFixed(1)}ms`);
 		if (this.times.length > 0) {
-			console.log('[Perspecta] Full breakdown:');
+			Logger.debug('Full breakdown:');
 			for (const t of this.times) {
 				const flag = t.elapsed > 50 ? '⚠' : '✓';
-				console.log(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
+				Logger.debug(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
 			}
 		}
 	}
@@ -52,7 +54,7 @@ export class PerfTimer {
 			const fromStart = performance.now() - this.start;
 			this.times.push({ label, elapsed, fromStart });
 			const flag = elapsed > 50 ? '⚠ SLOW' : '✓';
-			console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+			Logger.debug(`  ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
 		}
 	}
 

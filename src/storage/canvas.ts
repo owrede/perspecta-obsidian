@@ -5,6 +5,7 @@
 
 import { App, TFile } from 'obsidian';
 import { WindowArrangement, CanvasData } from '../types';
+import { Logger } from '../utils/logger';
 
 // Get UID from a canvas file's JSON
 export async function getUidFromCanvas(app: App, file: TFile): Promise<string | undefined> {
@@ -44,7 +45,7 @@ export async function addUidToCanvas(app: App, file: TFile, uid: string): Promis
 
 		await app.vault.modify(file, JSON.stringify(data, null, '\t'));
 	} catch (e) {
-		console.error('[Perspecta] Failed to add UID to canvas:', e);
+		Logger.error('Failed to add UID to canvas:', e);
 	}
 }
 
@@ -62,7 +63,7 @@ export async function saveContextToCanvas(app: App, file: TFile, context: Window
 
 		await app.vault.modify(file, JSON.stringify(data, null, '\t'));
 	} catch (e) {
-		console.error('[Perspecta] Failed to save context to canvas:', e);
+		Logger.error('Failed to save context to canvas:', e);
 		throw e;
 	}
 }

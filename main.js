@@ -274,71 +274,9 @@ function asExtendedWorkspace(workspace) {
   return workspace;
 }
 
-// src/utils/perf-timer.ts
-var PerfTimer = class {
-  static begin(operation) {
-    if (!this.enabled)
-      return;
-    this.times = [];
-    this.start = performance.now();
-    this.lastMark = this.start;
-    this.currentOperation = operation;
-    console.log(`[Perspecta] \u25B6 ${operation} started at ${this.start.toFixed(0)}`);
-  }
-  static mark(label) {
-    if (!this.enabled)
-      return;
-    const now = performance.now();
-    const elapsed = now - this.lastMark;
-    const fromStart = now - this.start;
-    this.times.push({ label, elapsed, fromStart });
-    this.lastMark = now;
-    const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
-    console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-  }
-  static end(operation) {
-    if (!this.enabled)
-      return;
-    const total = performance.now() - this.start;
-    console.log(`[Perspecta] \u25FC ${operation} completed in ${total.toFixed(1)}ms`);
-    if (this.times.length > 0) {
-      console.log("[Perspecta] Full breakdown:");
-      for (const t of this.times) {
-        const flag = t.elapsed > 50 ? "\u26A0" : "\u2713";
-        console.log(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
-      }
-    }
-  }
-  static async timeAsync(label, fn) {
-    if (!this.enabled)
-      return fn();
-    const start = performance.now();
-    try {
-      return await fn();
-    } finally {
-      const elapsed = performance.now() - start;
-      const fromStart = performance.now() - this.start;
-      this.times.push({ label, elapsed, fromStart });
-      const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
-      console.log(`[Perspecta]   ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
-    }
-  }
-  static setEnabled(enabled) {
-    this.enabled = enabled;
-  }
-  static isEnabled() {
-    return this.enabled;
-  }
-};
-PerfTimer.enabled = false;
-PerfTimer.times = [];
-PerfTimer.start = 0;
-PerfTimer.lastMark = 0;
-PerfTimer.currentOperation = "";
-
 // src/utils/logger.ts
 var config = {
-  level: 1 /* ERROR */,
+  level: 3 /* INFO */,
   prefix: "[Perspecta]"
 };
 function setLogLevel(level) {
@@ -387,6 +325,68 @@ var Logger = {
   disableDebug: disableDebugMode,
   isDebugEnabled
 };
+
+// src/utils/perf-timer.ts
+var PerfTimer = class {
+  static begin(operation) {
+    if (!this.enabled)
+      return;
+    this.times = [];
+    this.start = performance.now();
+    this.lastMark = this.start;
+    this.currentOperation = operation;
+    Logger.debug(`\u25B6 ${operation} started at ${this.start.toFixed(0)}`);
+  }
+  static mark(label) {
+    if (!this.enabled)
+      return;
+    const now = performance.now();
+    const elapsed = now - this.lastMark;
+    const fromStart = now - this.start;
+    this.times.push({ label, elapsed, fromStart });
+    this.lastMark = now;
+    const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
+    Logger.debug(`  ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+  }
+  static end(operation) {
+    if (!this.enabled)
+      return;
+    const total = performance.now() - this.start;
+    Logger.debug(`\u25FC ${operation} completed in ${total.toFixed(1)}ms`);
+    if (this.times.length > 0) {
+      Logger.debug("Full breakdown:");
+      for (const t of this.times) {
+        const flag = t.elapsed > 50 ? "\u26A0" : "\u2713";
+        Logger.debug(`  ${flag} ${t.label}: ${t.elapsed.toFixed(1)}ms (at ${t.fromStart.toFixed(1)}ms)`);
+      }
+    }
+  }
+  static async timeAsync(label, fn) {
+    if (!this.enabled)
+      return fn();
+    const start = performance.now();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = performance.now() - start;
+      const fromStart = performance.now() - this.start;
+      this.times.push({ label, elapsed, fromStart });
+      const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
+      Logger.debug(`  ${flag} ${label}: ${elapsed.toFixed(1)}ms (total: ${fromStart.toFixed(1)}ms)`);
+    }
+  }
+  static setEnabled(enabled) {
+    this.enabled = enabled;
+  }
+  static isEnabled() {
+    return this.enabled;
+  }
+};
+PerfTimer.enabled = false;
+PerfTimer.times = [];
+PerfTimer.start = 0;
+PerfTimer.lastMark = 0;
+PerfTimer.currentOperation = "";
 
 // src/utils/coordinates.ts
 var MIN_WINDOW_SIZE = 100;
@@ -492,7 +492,7 @@ function physicalToVirtual(physical) {
     height: Math.round(virtualHeight)
   };
   if (coordinateDebug) {
-    console.log(`[Perspecta] physicalToVirtual (non-linear):`, {
+    Logger.debug(`physicalToVirtual (non-linear):`, {
       physical,
       screen,
       virtualRef: VIRTUAL_SCREEN,
@@ -508,7 +508,7 @@ function virtualToPhysical(virtual, sourceScreen) {
   const safeVirtual = sanitizeGeometry(virtual);
   const screen = getPhysicalScreen();
   if (screen.width <= 0 || screen.height <= 0) {
-    console.warn("[Perspecta] Invalid screen dimensions, using defaults");
+    Logger.warn("Invalid screen dimensions, using defaults");
     return { x: 100, y: 100, width: 800, height: 600 };
   }
   const arVirt = VIRTUAL_SCREEN.width / VIRTUAL_SCREEN.height;
@@ -533,7 +533,7 @@ function virtualToPhysical(virtual, sourceScreen) {
   y = Math.max(screen.y, Math.min(y, screen.y + screen.height - height));
   const result = { x, y, width, height };
   if (coordinateDebug) {
-    console.log(`[Perspecta] virtualToPhysical (non-linear):`, {
+    Logger.debug(`virtualToPhysical (non-linear):`, {
       virtual: safeVirtual,
       screen,
       virtualRef: VIRTUAL_SCREEN,
@@ -1062,7 +1062,7 @@ async function saveContextToCanvas(app, file, context) {
     data.perspecta.context = context;
     await app.vault.modify(file, JSON.stringify(data, null, "	"));
   } catch (e) {
-    console.error("[Perspecta] Failed to save context to canvas:", e);
+    Logger.error("Failed to save context to canvas:", e);
     throw e;
   }
 }
@@ -1123,7 +1123,7 @@ async function saveContextToBase(app, file, context) {
     data.perspecta.context = base64;
     await app.vault.modify(file, (0, import_obsidian3.stringifyYaml)(data));
   } catch (e) {
-    console.error("[Perspecta] Failed to save context to base file:", e);
+    Logger.error("Failed to save context to base file:", e);
     throw e;
   }
 }
@@ -1195,16 +1195,16 @@ var ExternalContextStore = class {
               }
             }
           } catch (e) {
-            console.warn(`[Perspecta] Failed to load context file: ${file}`, e);
+            Logger.warn(`Failed to load context file: ${file}`, e);
           }
         }
       }
       this.initialized = true;
       if (PerfTimer.isEnabled()) {
-        console.log(`[Perspecta] External store initialized with ${this.cache.size} contexts`);
+        Logger.info(`External store initialized with ${this.cache.size} contexts`);
       }
     } catch (e) {
-      console.error("[Perspecta] Failed to initialize external store:", e);
+      Logger.error("Failed to initialize external store:", e);
     }
   }
   // Get the most recent arrangement (for backward compatibility)
@@ -1281,7 +1281,7 @@ var ExternalContextStore = class {
         await this.adapter.remove(filePath);
       }
     } catch (e) {
-      console.warn(`[Perspecta] Failed to delete context file: ${filePath}`, e);
+      Logger.warn(`Failed to delete context file: ${filePath}`, e);
     }
   }
   // Clear all arrangements for a specific UID (without deleting the file yet)
@@ -1311,7 +1311,7 @@ var ExternalContextStore = class {
       this.saveTimeoutCleanup = null;
     }
     this.debouncedFlush().catch((error) => {
-      console.error("[Perspecta] Failed to flush dirty data:", error);
+      Logger.error("Failed to flush dirty data:", error);
     });
   }
   async flushDirty() {
@@ -1331,7 +1331,7 @@ var ExternalContextStore = class {
           const json = JSON.stringify(collection);
           await this.adapter.write(filePath, json);
         } catch (e) {
-          console.error(`[Perspecta] Failed to save context: ${uid}`, e);
+          Logger.error(`Failed to save context: ${uid}`, e);
           this.dirty.add(uid);
         }
       } else {
@@ -1340,12 +1340,12 @@ var ExternalContextStore = class {
             await this.adapter.remove(filePath);
           }
         } catch (e) {
-          console.warn(`[Perspecta] Failed to delete empty context file: ${filePath}`, e);
+          Logger.warn(`Failed to delete empty context file: ${filePath}`, e);
         }
       }
     }
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] Saved ${toSave.length} context(s) to disk`);
+      Logger.info(`Saved ${toSave.length} context(s) to disk`);
     }
   }
   async cleanup() {
@@ -2010,7 +2010,7 @@ var EventManager = class {
       try {
         cleanup();
       } catch (error) {
-        console.warn("[Perspecta] Error during event cleanup:", error);
+        Logger.warn("Error during event cleanup:", error);
       }
     });
     this.cleanupFunctions = [];
@@ -2058,7 +2058,7 @@ var ComponentEventManager = class {
       try {
         cleanup();
       } catch (error) {
-        console.warn("[Perspecta] Error during component event cleanup:", error);
+        Logger.warn("Error during component event cleanup:", error);
       }
     });
     this.cleanupFunctions = [];
@@ -3115,9 +3115,9 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
     try {
       const stat2 = await this.app.vault.adapter.stat(`${this.manifest.dir}/main.js`);
       const ts = (stat2 == null ? void 0 : stat2.mtime) ? new Date(stat2.mtime).toLocaleString() : "unknown";
-      console.log(`[Perspecta] Loaded v${this.manifest.version} (main.js: ${ts})`);
+      Logger.info(`Loaded v${this.manifest.version} (main.js: ${ts})`);
     } catch (e) {
-      console.log(`[Perspecta] Loaded v${this.manifest.version}`);
+      Logger.info(`Loaded v${this.manifest.version}`);
     }
     this.checkVersionCompatibility();
     this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
@@ -3366,7 +3366,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
     };
     const virtual = physicalToVirtual(physical);
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] captureWindowState:`, { physical, virtual });
+      Logger.debug(`captureWindowState:`, { physical, virtual });
     }
     return {
       root: rootSplit ? this.captureSplitOrTabs(rootSplit) : { type: "tabs", tabs: [] },
@@ -3386,13 +3386,13 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       if (!win || win === window)
         continue;
       if (seenWindows.has(win)) {
-        console.log("[Perspecta] Skipping duplicate window in capturePopoutStates");
+        Logger.debug("Skipping duplicate window in capturePopoutStates");
         continue;
       }
       seenWindows.add(win);
       if (COORDINATE_DEBUG) {
         const firstChild = (_a = container == null ? void 0 : container.children) == null ? void 0 : _a[0];
-        console.log(`[Perspecta] capturePopoutStates container:`, {
+        Logger.debug(`capturePopoutStates container:`, {
           containerType: (_b = container == null ? void 0 : container.constructor) == null ? void 0 : _b.name,
           containerDirection: container == null ? void 0 : container.direction,
           containerChildren: (_c = container == null ? void 0 : container.children) == null ? void 0 : _c.length,
@@ -3467,7 +3467,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       if (children.length === 0)
         return { type: "tabs", tabs: [] };
       if (COORDINATE_DEBUG) {
-        console.log(`[Perspecta] captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
+        Logger.debug(`captureSplitOrTabs: direction=${node.direction}, children=${children.length}, sizes=${JSON.stringify(sizes)}`);
       }
       return { type: "split", direction: node.direction, children, sizes };
     }
@@ -3482,7 +3482,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
     const children = (tabContainer == null ? void 0 : tabContainer.children) || [];
     const currentTabIndex = getCurrentTabIndex(tabContainer);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
+      Logger.debug(`captureTabGroup: ${children.length} children, currentTab=${currentTabIndex}`);
     }
     for (let i = 0; i < children.length; i++) {
       const leaf = children[i];
@@ -3504,7 +3504,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
         }
         const isActive = i === currentTabIndex;
         if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ""}`);
+          Logger.debug(`  tab[${i}]: ${file.basename}, active=${isActive}, scroll=${scroll}${canvasViewport ? `, canvas: tx=${canvasViewport.tx.toFixed(0)}, ty=${canvasViewport.ty.toFixed(0)}, zoom=${canvasViewport.zoom.toFixed(2)}` : ""}`);
         }
         tabs.push({
           path: file.path,
@@ -3576,7 +3576,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
     });
     const elapsed = performance.now() - start;
     if (elapsed > 20) {
-      console.warn(`[Perspecta] \u26A0 SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
+      Logger.warn(`\u26A0 SLOW getPopoutWindowObjects: ${elapsed.toFixed(1)}ms`);
     }
     return windows;
   }
@@ -3624,9 +3624,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       }
     } catch (e) {
     }
-    if (this.settings.enableDebugLogging) {
-      console.log("[Perspecta] Could not re-open DevTools - Electron remote not available");
-    }
+    Logger.debug("Could not re-open DevTools - Electron remote not available");
   }
   // ============================================================================
   // Context Save (Optimized)
@@ -3670,7 +3668,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
           PerfTimer.mark("captureWallpaper");
         }
       } catch (e) {
-        console.log("[Perspecta] Could not capture wallpaper:", e);
+        Logger.debug("Could not capture wallpaper:", e);
       }
     }
     if (this.settings.autoGenerateUids || this.settings.storageMode === "external") {
@@ -3783,7 +3781,7 @@ ${newFm}
         metadataTypeManager.save();
       }
     } catch (e) {
-      console.log("[Perspecta] Could not hide internal properties:", e);
+      Logger.debug("Could not hide internal properties:", e);
     }
   }
   // Clean up old 'uid' properties from all files that have perspecta-uid
@@ -3796,7 +3794,7 @@ ${newFm}
           cleaned++;
         }
       } catch (e) {
-        console.warn(`[Perspecta] Failed to cleanup ${file.path}:`, e);
+        Logger.warn(`Failed to cleanup ${file.path}:`, e);
       }
     }
     return cleaned;
@@ -3823,7 +3821,7 @@ ${newFm}
         await this.removeArrangementFromFrontmatter(file);
         migrated++;
       } catch (e) {
-        console.error(`[Perspecta] Failed to migrate ${file.path}:`, e);
+        Logger.error(`Failed to migrate ${file.path}:`, e);
         errors++;
       }
     }
@@ -3852,7 +3850,7 @@ ${newFm}
         await this.externalStore.delete(uid);
         migrated++;
       } catch (e) {
-        console.error(`[Perspecta] Failed to migrate ${file.path}:`, e);
+        Logger.error(`Failed to migrate ${file.path}:`, e);
         errors++;
       }
     }
@@ -3991,10 +3989,10 @@ ${newFm}
       try {
         await addUidToFile(this.app, file, uid);
         if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta] Added UID to ${file.path}: ${uid}`);
+          Logger.debug(`Added UID to ${file.path}: ${uid}`);
         }
       } catch (e) {
-        console.warn(`[Perspecta] Failed to add UID to ${file.path}:`, e);
+        Logger.warn(`Failed to add UID to ${file.path}:`, e);
       }
     }
     if (filesToUpdate.length > 0) {
@@ -4029,17 +4027,17 @@ ${newFm}
     const readStart = performance.now();
     const content = await this.app.vault.read(file);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]   \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
+      Logger.debug(`  \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
     }
     const fmStart = performance.now();
     const newContent = this.updateFrontmatter(content, arrangement);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]   \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
+      Logger.debug(`  \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
     }
     const writeStart = performance.now();
     await this.app.vault.modify(file, newContent);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]   \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
+      Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
     }
   }
   updateFrontmatter(content, arrangement) {
@@ -4132,7 +4130,7 @@ ${content}`;
       const compact = JSON.parse(json);
       return this.expandCompactArrangement(compact);
     } catch (e) {
-      console.error("[Perspecta] Failed to decode arrangement:", e);
+      Logger.error("Failed to decode arrangement:", e);
       return null;
     }
   }
@@ -4203,7 +4201,7 @@ ${content}`;
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
     if (this.isRestoring) {
-      console.log("[Perspecta] Skipping restoreContext - already restoring");
+      Logger.debug("Skipping restoreContext - already restoring");
       return;
     }
     this.isRestoring = true;
@@ -4245,7 +4243,7 @@ ${content}`;
       if (PerfTimer.isEnabled()) {
         requestIdleCallback(() => {
           const totalTime = performance.now() - fullStart;
-          console.log(`[Perspecta] \u{1F3C1} Full restore (including render): ${totalTime.toFixed(0)}ms`);
+          Logger.debug(`\u{1F3C1} Full restore (including render): ${totalTime.toFixed(0)}ms`);
         }, { timeout: 5e3 });
       }
     } finally {
@@ -4342,9 +4340,9 @@ ${content}`;
       await this.saveArrangementToNote(contextFile, correctedContext);
     }
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] Updated context with ${this.pathCorrections.size} corrected paths:`);
+      Logger.debug(`Updated context with ${this.pathCorrections.size} corrected paths:`);
       this.pathCorrections.forEach((correction, oldPath) => {
-        console.log(`  ${oldPath} \u2192 ${correction.newPath}`);
+        Logger.debug(`  ${oldPath} \u2192 ${correction.newPath}`);
       });
     }
   }
@@ -4354,7 +4352,7 @@ ${content}`;
       PerfTimer.mark("applyArrangement:start");
       const devToolsWasOpen = this.isDevToolsOpen();
       if (devToolsWasOpen && this.settings.enableDebugLogging) {
-        console.log("[Perspecta] DevTools detected as open, will re-open after restore");
+        Logger.debug("DevTools detected as open, will re-open after restore");
       }
       const v2 = this.normalizeToV2(arrangement);
       PerfTimer.mark("normalizeToV2");
@@ -4364,7 +4362,7 @@ ${content}`;
         const windowCount = 1 + v2.popouts.length;
         tiledPositions = calculateTiledLayout(windowCount, v2.main);
         if (COORDINATE_DEBUG) {
-          console.log(`[Perspecta] Using tiled layout due to aspect ratio mismatch:`, {
+          Logger.debug(`Using tiled layout due to aspect ratio mismatch:`, {
             sourceAspect: (_b = (_a = v2.sourceScreen) == null ? void 0 : _a.aspectRatio) == null ? void 0 : _b.toFixed(2),
             targetAspect: (getPhysicalScreen().width / getPhysicalScreen().height).toFixed(2),
             windowCount,
@@ -4376,9 +4374,7 @@ ${content}`;
       PerfTimer.mark("checkTilingNeeded");
       const popoutWindows = this.getPopoutWindowObjects();
       PerfTimer.mark("getPopoutWindowObjects");
-      if (this.settings.enableDebugLogging) {
-        console.log(`[Perspecta] Found ${popoutWindows.length} popout windows to close`);
-      }
+      Logger.debug(`Found ${popoutWindows.length} popout windows to close`);
       for (const win of popoutWindows) {
         this.closePopoutWindow(win);
       }
@@ -4445,10 +4441,10 @@ ${content}`;
           if (result.success) {
             PerfTimer.mark("restoreWallpaper");
           } else {
-            console.log("[Perspecta] Could not restore wallpaper:", result.error);
+            Logger.debug("Could not restore wallpaper:", result.error);
           }
         }).catch((e) => {
-          console.log("[Perspecta] Wallpaper restoration failed:", e);
+          Logger.debug("Wallpaper restoration failed:", e);
         });
       }
       this.scheduleScrollRestoration(v2.main.root);
@@ -4456,9 +4452,7 @@ ${content}`;
         this.scheduleScrollRestoration(popout.root);
       }
       PerfTimer.mark("scheduleScrollRestoration");
-      if (this.settings.enableDebugLogging) {
-        console.log("[Perspecta] Scheduling properties restoration");
-      }
+      Logger.debug("Scheduling properties restoration");
       this.schedulePropertiesRestoration(v2.main.root);
       for (const popout of v2.popouts) {
         this.schedulePropertiesRestoration(popout.root);
@@ -4541,8 +4535,8 @@ ${content}`;
       return a.originalIndex - b.originalIndex;
     });
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] restoreTabGroup: ${state.tabs.length} tabs, active at index ${activeTabIdx}`);
-      console.log(`[Perspecta]   Opening order: ${reorderedTabs.map((r) => r.tab.name || r.tab.path).join(" \u2192 ")}`);
+      Logger.debug(`restoreTabGroup: ${state.tabs.length} tabs, active at index ${activeTabIdx}`);
+      Logger.debug(`  Opening order: ${reorderedTabs.map((r) => r.tab.name || r.tab.path).join(" \u2192 ")}`);
     }
     let firstLeaf;
     let container = null;
@@ -4553,7 +4547,7 @@ ${content}`;
       const { file, method } = resolveFile2(this.app, tab);
       if (!file) {
         if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   \u2717 File not found: ${tab.path} (tried path, uid: ${tab.uid || "none"}, name: ${tab.name || "none"})`);
+          Logger.debug(`  \u2717 File not found: ${tab.path} (tried path, uid: ${tab.uid || "none"}, name: ${tab.name || "none"})`);
         }
         continue;
       }
@@ -4563,7 +4557,7 @@ ${content}`;
           newName: file.basename
         });
         if (PerfTimer.isEnabled()) {
-          console.log(`[Perspecta]   \u21AA Resolved ${tab.path} \u2192 ${file.path} (via ${method})`);
+          Logger.debug(`  \u21AA Resolved ${tab.path} \u2192 ${file.path} (via ${method})`);
         }
       }
       let leaf;
@@ -4589,7 +4583,7 @@ ${content}`;
       if (PerfTimer.isEnabled()) {
         const flag = elapsed > 50 ? "\u26A0 SLOW" : "\u2713";
         const methodSuffix = method !== "path" ? ` [${method}]` : "";
-        console.log(`[Perspecta]   ${flag} openFile[${originalIndex}]: ${file.basename} - ${elapsed.toFixed(1)}ms${methodSuffix}${tab.active ? " [ACTIVE]" : ""}`);
+        Logger.debug(`  ${flag} openFile[${originalIndex}]: ${file.basename} - ${elapsed.toFixed(1)}ms${methodSuffix}${tab.active ? " [ACTIVE]" : ""}`);
       }
     }
     return firstLeaf;
@@ -4621,7 +4615,7 @@ ${content}`;
     if (!state.children.length)
       return existingLeaf;
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreSplit START: direction=${state.direction}, children=${state.children.length}, parent:`, {
+      Logger.debug(`restoreSplit START: direction=${state.direction}, children=${state.children.length}, parent:`, {
         type: (_a = parent == null ? void 0 : parent.constructor) == null ? void 0 : _a.name,
         direction: parent == null ? void 0 : parent.direction
       });
@@ -4629,7 +4623,7 @@ ${content}`;
     if (parent && parent.direction !== state.direction) {
       parent.direction = state.direction;
       if (COORDINATE_DEBUG) {
-        console.log(`[Perspecta] restoreSplit: changed parent direction to ${state.direction}`);
+        Logger.debug(`restoreSplit: changed parent direction to ${state.direction}`);
       }
     }
     let firstLeaf = existingLeaf;
@@ -4686,15 +4680,13 @@ ${content}`;
       }
     }
     if (state.sizes && state.sizes.length > 0 && firstLeaf) {
-      if (this.settings.enableDebugLogging) {
-        console.log(`[Perspecta] restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
-      }
+      Logger.debug(`restoreSplit: applying sizes ${JSON.stringify(state.sizes)} to ${state.children.length} children`);
       await this.applySplitSizes(firstLeaf, state.sizes);
-    } else if (this.settings.enableDebugLogging) {
-      console.log(`[Perspecta] restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
+    } else {
+      Logger.debug(`restoreSplit: no sizes to apply (sizes=${JSON.stringify(state.sizes)}, firstLeaf=${!!firstLeaf})`);
     }
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreSplit END: direction=${state.direction}`);
+      Logger.debug(`restoreSplit END: direction=${state.direction}`);
     }
     return firstLeaf;
   }
@@ -4710,15 +4702,13 @@ ${content}`;
     let parent = null;
     let attempts = 0;
     const maxAttempts = 10;
-    if (this.settings.enableDebugLogging) {
-      console.log(`[Perspecta] applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
-    }
+    Logger.debug(`applySplitSizes: starting from leaf, looking for parent with ${sizes.length} children`);
     while (current && attempts < maxAttempts) {
-      if (this.settings.enableDebugLogging) {
+      if (Logger.isDebugEnabled()) {
         const isSplitNode = isSplit(current);
         const childCount = (_b = (_a = current.children) == null ? void 0 : _a.length) != null ? _b : 0;
         const direction = (_c = current.direction) != null ? _c : "none";
-        console.log(`[Perspecta] applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
+        Logger.debug(`applySplitSizes: attempt ${attempts}, isSplit=${isSplitNode}, children=${childCount}, direction=${direction}`);
       }
       if (isSplit(current) && ((_d = current.children) == null ? void 0 : _d.length) === sizes.length && current.direction) {
         parent = current;
@@ -4832,8 +4822,8 @@ ${content}`;
     if (propsMap.size === 0) {
       return;
     }
-    if (this.settings.enableDebugLogging) {
-      console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
+    if (Logger.isDebugEnabled()) {
+      Logger.debug(`Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
     }
     this.safeTimeout(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
@@ -4843,9 +4833,7 @@ ${content}`;
         if (propsMap.has(file.path)) {
           const collapsed = propsMap.get(file.path);
           if (collapsed !== void 0) {
-            if (this.settings.enableDebugLogging) {
-              console.log(`[Perspecta] Restoring properties for ${file.path}: ${collapsed ? "collapsed" : "expanded"}`);
-            }
+            Logger.debug(`Restoring properties for ${file.path}: ${collapsed ? "collapsed" : "expanded"}`);
             this.setPropertiesCollapsed(leaf.view, collapsed);
           }
         }
@@ -4875,9 +4863,7 @@ ${content}`;
     var _a;
     const containerEl = view == null ? void 0 : view.containerEl;
     if (!containerEl) {
-      if (this.settings.enableDebugLogging) {
-        console.log("[Perspecta] Properties restoration: no container element found");
-      }
+      Logger.debug("Properties restoration: no container element found");
       return;
     }
     const metadataEl = containerEl.querySelector(".metadata-container");
@@ -4890,15 +4876,13 @@ ${content}`;
       if (toggle) {
         try {
           toggle.click();
-          if (this.settings.enableDebugLogging) {
+          if (Logger.isDebugEnabled()) {
             const filePath = ((_a = view.file) == null ? void 0 : _a.path) || "unknown";
-            console.log(`[Perspecta] Properties ${collapsed ? "collapsed" : "expanded"} for ${filePath}`);
+            Logger.debug(`Properties ${collapsed ? "collapsed" : "expanded"} for ${filePath}`);
           }
           return;
         } catch (e) {
-          if (this.settings.enableDebugLogging) {
-            console.log("[Perspecta] Properties restoration: click failed", e);
-          }
+          Logger.debug("Properties restoration: click failed", e);
         }
       }
     }
@@ -4955,7 +4939,7 @@ ${content}`;
       return startLeaf;
     }
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] buildNestedSplit: direction=${state.direction}, children=${state.children.length}`);
+      Logger.debug(`buildNestedSplit: direction=${state.direction}, children=${state.children.length}`);
     }
     let firstLeaf = startLeaf;
     const firstChild = state.children[0];
@@ -5039,12 +5023,12 @@ ${content}`;
     const openPopoutStart = performance.now();
     const popoutLeaf = this.app.workspace.openPopoutLeaf();
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]     \u2713 openPopoutLeaf: ${(performance.now() - openPopoutStart).toFixed(1)}ms`);
+      Logger.debug(`    \u2713 openPopoutLeaf: ${(performance.now() - openPopoutStart).toFixed(1)}ms`);
     }
     const openFileStart = performance.now();
     await popoutLeaf.openFile(file);
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]     \u2713 openFile (popout first): ${(performance.now() - openFileStart).toFixed(1)}ms`);
+      Logger.debug(`    \u2713 openFile (popout first): ${(performance.now() - openFileStart).toFixed(1)}ms`);
     }
     const win = (_b = (_a = popoutLeaf.view) == null ? void 0 : _a.containerEl) == null ? void 0 : _b.win;
     if (win) {
@@ -5111,7 +5095,7 @@ ${content}`;
       }
     }
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta]     \u2713 restoreProxyWindow: ${file.basename}`);
+      Logger.debug(`    \u2713 restoreProxyWindow: ${file.basename}`);
     }
   }
   // Restore split using "outer-first" approach:
@@ -5122,7 +5106,7 @@ ${content}`;
     if (!state.children.length)
       return;
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreSplitOuterFirst: direction=${state.direction}, children=${state.children.length}`);
+      Logger.debug(`restoreSplitOuterFirst: direction=${state.direction}, children=${state.children.length}`);
     }
     const leafSlots = [];
     leafSlots.push(existingLeaf);
@@ -5191,7 +5175,7 @@ ${content}`;
       return;
     }
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreNestedSplitInPlace: direction=${state.direction}, children=${state.children.length}`);
+      Logger.debug(`restoreNestedSplitInPlace: direction=${state.direction}, children=${state.children.length}`);
     }
     const firstChild = state.children[0];
     if (firstChild.type === "tabs" && firstChild.tabs.length > 1) {
@@ -5294,7 +5278,7 @@ ${content}`;
     if (this.pendingTabActivations.length === 0)
       return;
     if (PerfTimer.isEnabled()) {
-      console.log(`[Perspecta] Processing ${this.pendingTabActivations.length} pending tab activations`);
+      Logger.debug(`Processing ${this.pendingTabActivations.length} pending tab activations`);
     }
     for (const { container, activeTabIndex, activeLeaf } of this.pendingTabActivations) {
       if (typeof container.currentTab !== "undefined") {
@@ -5313,7 +5297,7 @@ ${content}`;
         activeLeaf.view.containerEl.focus();
       }
       if (PerfTimer.isEnabled()) {
-        console.log(`[Perspecta]   Activated tab at index ${activeTabIndex}`);
+        Logger.debug(`  Activated tab at index ${activeTabIndex}`);
       }
     }
     this.pendingTabActivations = [];
@@ -5455,7 +5439,7 @@ ${content}`;
   }
   restoreWindowGeometry(win, state, sourceScreen) {
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreWindowGeometry called`, {
+      Logger.debug(`restoreWindowGeometry called`, {
         hasCoords: state.x !== void 0 && state.y !== void 0,
         hasSize: state.width !== void 0 && state.height !== void 0,
         state: { x: state.x, y: state.y, width: state.width, height: state.height },
@@ -5464,7 +5448,7 @@ ${content}`;
     }
     if (state.width === void 0 || state.height === void 0 || state.x === void 0 || state.y === void 0) {
       if (COORDINATE_DEBUG) {
-        console.log(`[Perspecta] restoreWindowGeometry: missing coordinates, skipping`);
+        Logger.debug(`restoreWindowGeometry: missing coordinates, skipping`);
       }
       return;
     }
@@ -5475,7 +5459,7 @@ ${content}`;
       height: state.height
     }, sourceScreen);
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreWindowGeometry: applying`, physical);
+      Logger.debug("restoreWindowGeometry: applying", physical);
     }
     try {
       win.resizeTo(physical.width, physical.height);
@@ -5489,7 +5473,7 @@ ${content}`;
   // Apply geometry directly without virtual-to-physical conversion (used for tiled layouts)
   restoreWindowGeometryDirect(win, geometry) {
     if (COORDINATE_DEBUG) {
-      console.log(`[Perspecta] restoreWindowGeometryDirect: applying`, geometry);
+      Logger.debug("restoreWindowGeometryDirect: applying", geometry);
     }
     try {
       win.resizeTo(geometry.width, geometry.height);
@@ -6056,8 +6040,8 @@ ${content}`;
         }
       }
       if (isOlder) {
-        console.warn(
-          `[Perspecta] Obsidian version ${currentVersion} detected. Some features may not work correctly. Recommended version: ${MIN_RECOMMENDED_VERSION} or later.`
+        Logger.warn(
+          `Obsidian version ${currentVersion} detected. Some features may not work correctly. Recommended version: ${MIN_RECOMMENDED_VERSION} or later.`
         );
       }
     } catch (e) {
@@ -6082,7 +6066,7 @@ ${content}`;
     PerfTimer.setEnabled(debugEnabled);
     COORDINATE_DEBUG = debugEnabled;
     setCoordinateDebug(debugEnabled);
-    Logger.setLevel(debugEnabled ? 4 /* DEBUG */ : 1 /* ERROR */);
+    Logger.setLevel(debugEnabled ? 4 /* DEBUG */ : 3 /* INFO */);
   }
   /**
    * Validates settings values are within acceptable ranges.

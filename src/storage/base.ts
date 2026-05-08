@@ -6,6 +6,7 @@
 import { App, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import { WindowArrangement, BaseData } from '../types';
 import { encodeBase64, decodeBase64 } from '../utils/base64';
+import { Logger } from '../utils/logger';
 
 // Get UID from a base file's YAML
 export async function getUidFromBase(app: App, file: TFile): Promise<string | undefined> {
@@ -50,7 +51,7 @@ export async function addUidToBase(app: App, file: TFile, uid: string): Promise<
 
 		await app.vault.modify(file, stringifyYaml(data));
 	} catch (e) {
-		console.error('[Perspecta] Failed to add UID to base file:', e);
+		Logger.error('Failed to add UID to base file:', e);
 	}
 }
 
@@ -72,7 +73,7 @@ export async function saveContextToBase(app: App, file: TFile, context: WindowAr
 
 		await app.vault.modify(file, stringifyYaml(data));
 	} catch (e) {
-		console.error('[Perspecta] Failed to save context to base file:', e);
+		Logger.error('Failed to save context to base file:', e);
 		throw e;
 	}
 }

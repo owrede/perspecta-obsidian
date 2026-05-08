@@ -2,6 +2,8 @@
  * Utility functions for managing DOM event listeners with automatic cleanup
  */
 
+import { Logger } from './logger';
+
 export interface EventListenerCleanup {
 	(): void;
 }
@@ -74,7 +76,7 @@ export class EventManager {
 			try {
 				cleanup();
 			} catch (error) {
-				console.warn('[Perspecta] Error during event cleanup:', error);
+				Logger.warn('Error during event cleanup:', error);
 			}
 		});
 		this.cleanupFunctions = [];
@@ -141,7 +143,7 @@ export class ComponentEventManager {
 			try {
 				cleanup();
 			} catch (error) {
-				console.warn('[Perspecta] Error during component event cleanup:', error);
+				Logger.warn('Error during component event cleanup:', error);
 			}
 		});
 		this.cleanupFunctions = [];
