@@ -1,6 +1,6 @@
 {
   "name": "perspecta-obsidian",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Context-switching plugin that saves and restores window arrangements for knowledge work",
   "main": "main.js",
   "scripts": {
