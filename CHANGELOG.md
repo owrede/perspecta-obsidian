@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.33] - 2026-05-08
+
+- Internal: Logger migration — replaced ~120 raw `console.*` calls across the codebase with the centralized Logger. Production stays quiet; verbose tracing still toggles via Settings → Debug → Enable debug logging. Default Logger level bumped from ERROR to INFO so lifecycle messages remain visible.
+- Internal: Extracted compact arrangement codec to `src/storage/codec.ts` (177 lines out of main.ts). Codec is now a pure-function module that can be unit-tested in isolation — exactly the kind of seam that would have caught the v0.1.31 split-sizes bug before release.
+- Internal: main.ts shrinks from 4,029 → 3,852 lines.
+
 ## [0.1.32] - 2026-05-08
 
 - Reliability: Scroll/canvas-viewport restoration now waits for target leaves to actually load (with a 2s safety cap) instead of relying on a fixed 500ms delay. Fixes silent loss of scroll position when restoring large arrangements on slow disks.
