@@ -2429,6 +2429,15 @@ var import_obsidian6 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.31",
+    date: "2026-05-08",
+    changes: [
+      "Fix: Frontmatter storage now preserves split pane sizes \u2014 previously the compact codec dropped the `sizes` field, so frontmatter-mode restore always fell back to 50/50 (external storage was unaffected)",
+      "Internal: Compact arrangement codec is now fully typed (no `any`); wire format documented in `src/types.ts`",
+      "Internal: Resolved all ESLint errors (mixed indentation, inferrable type annotations, throw-literal)"
+    ]
+  },
+  {
     version: "0.1.30",
     date: "2025-12-30",
     changes: [
@@ -3397,9 +3406,10 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
    */
   isProxyWindow(container) {
     var _a, _b, _c, _d;
-    if (!(container == null ? void 0 : container.children))
+    const node = container;
+    if (!(node == null ? void 0 : node.children))
       return false;
-    for (const child of container.children) {
+    for (const child of node.children) {
       if (((_b = (_a = child == null ? void 0 : child.view) == null ? void 0 : _a.getViewType) == null ? void 0 : _b.call(_a)) === PROXY_VIEW_TYPE) {
         return true;
       }
@@ -4042,9 +4052,7 @@ ${content}`;
       v: arr.v,
       ts: arr.ts,
       f: arr.focusedWindow,
-      // short key: focusedWindow
       m: this.compactWindow(arr.main)
-      // short key: main
     };
     if (arr.popouts.length > 0) {
       compact.p = arr.popouts.map((p) => this.compactWindow(p));
@@ -4070,7 +4078,6 @@ ${content}`;
   compactWindow(win) {
     const compact = {
       r: this.compactNode(win.root)
-      // short key: root
     };
     if (win.x !== void 0 && win.y !== void 0 && win.width !== void 0 && win.height !== void 0) {
       compact.g = [win.x, win.y, win.width, win.height];
@@ -4080,21 +4087,24 @@ ${content}`;
   compactNode(node) {
     if (node.type === "tabs") {
       return node.tabs.map((tab) => {
-        const arr = [tab.path];
-        if (tab.uid)
-          arr.push(tab.uid);
-        else if (tab.active)
-          arr.push(null);
-        if (tab.active)
-          arr.push(1);
-        return arr.length === 1 ? tab.path : arr;
+        var _a;
+        if (tab.active) {
+          return [tab.path, (_a = tab.uid) != null ? _a : null, 1];
+        }
+        if (tab.uid) {
+          return [tab.path, tab.uid];
+        }
+        return tab.path;
       });
-    } else {
-      return {
-        d: node.direction === "horizontal" ? "h" : "v",
-        c: node.children.map((child) => this.compactNode(child))
-      };
     }
+    const split = {
+      d: node.direction === "horizontal" ? "h" : "v",
+      c: node.children.map((child) => this.compactNode(child))
+    };
+    if (node.sizes && node.sizes.length > 0) {
+      split.s = node.sizes;
+    }
+    return split;
   }
   // Decode base64 JSON blob back to WindowArrangementV2
   decodeArrangement(encoded) {
@@ -4110,7 +4120,7 @@ ${content}`;
   expandCompactArrangement(compact) {
     var _a;
     const arr = {
-      v: compact.v || 2,
+      v: 2,
       ts: compact.ts || Date.now(),
       focusedWindow: (_a = compact.f) != null ? _a : -1,
       main: this.expandWindow(compact.m),
@@ -4153,21 +4163,23 @@ ${content}`;
         var _a, _b;
         if (typeof item === "string") {
           return { path: item, active: false, name: (_a = item.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "") };
-        } else {
-          const path = item[0];
-          const uid = item[1] || void 0;
-          const active = item[2] === 1;
-          return { path, uid, active, name: (_b = path.split("/").pop()) == null ? void 0 : _b.replace(/\.md$/, "") };
         }
+        const path = item[0];
+        const uid = item[1] || void 0;
+        const active = item[2] === 1;
+        return { path, uid, active, name: (_b = path.split("/").pop()) == null ? void 0 : _b.replace(/\.md$/, "") };
       });
       return { type: "tabs", tabs };
-    } else {
-      return {
-        type: "split",
-        direction: compact.d === "h" ? "horizontal" : "vertical",
-        children: compact.c.map((child) => this.expandNode(child))
-      };
     }
+    const node = {
+      type: "split",
+      direction: compact.d === "h" ? "horizontal" : "vertical",
+      children: compact.c.map((child) => this.expandNode(child))
+    };
+    if (compact.s && compact.s.length > 0) {
+      node.sizes = compact.s;
+    }
+    return node;
   }
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {

@@ -11,6 +11,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.31',
+		date: '2026-05-08',
+		changes: [
+			'Fix: Frontmatter storage now preserves split pane sizes — previously the compact codec dropped the `sizes` field, so frontmatter-mode restore always fell back to 50/50 (external storage was unaffected)',
+			'Internal: Compact arrangement codec is now fully typed (no `any`); wire format documented in `src/types.ts`',
+			'Internal: Resolved all ESLint errors (mixed indentation, inferrable type annotations, throw-literal)',
+		],
+	},
+	{
 		version: '0.1.30',
 		date: '2025-12-30',
 		changes: [

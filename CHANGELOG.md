@@ -2,6 +2,12 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.31] - 2026-05-08
+
+- Fix: Frontmatter storage now preserves split pane sizes — previously the compact codec dropped the `sizes` field, so frontmatter-mode restore always fell back to 50/50 (external storage was unaffected)
+- Internal: Compact arrangement codec is now fully typed (no `any`); wire format documented in `src/types.ts`
+- Internal: Resolved all ESLint errors (mixed indentation, inferrable type annotations, throw-literal)
+
 ## [0.1.30] - 2025-12-30
 
 - Fix: Split pane sizes (e.g., 25%/75%) now correctly restored instead of defaulting to 50%/50%
