@@ -134,7 +134,11 @@ import {
 	baseHasContext
 } from './storage/base';
 import { ExternalContextStore } from './storage/external-store';
-import { encodeArrangement, decodeArrangement } from './storage/codec';
+import {
+	getContextFromFrontmatter,
+	saveContextToFrontmatter,
+	removeContextFromFrontmatter,
+} from './storage/frontmatter-store';
 import { backupArrangements, listBackups, restoreFromBackup } from './services/backup';
 
 // Import UI components
@@ -962,7 +966,7 @@ export default class PerspectaPlugin extends Plugin {
 			saved = await this.saveContextExternal(targetFile, context);
 			PerfTimer.mark('saveContextExternal');
 		} else {
-			await this.saveArrangementToNote(targetFile, context);
+			await saveContextToFrontmatter(this.app, targetFile, context);
 			PerfTimer.mark('saveArrangementToNote');
 		}
 
@@ -1012,7 +1016,7 @@ export default class PerspectaPlugin extends Plugin {
 		this.externalStore.set(uid, context, maxArrangements);
 
 		// Remove perspecta-arrangement from frontmatter (if present) to avoid duplication
-		await this.removeArrangementFromFrontmatter(file);
+		await removeContextFromFrontmatter(this.app, file);
 
 		this.filesWithContext.add(file.path);
 		this.debouncedRefreshIndicators();
@@ -1020,34 +1024,6 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	// Remove perspecta-arrangement property from a file's frontmatter
-	private async removeArrangementFromFrontmatter(file: TFile): Promise<boolean> {
-		const content = await this.app.vault.read(file);
-		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-		const match = content.match(frontmatterRegex);
-
-		if (!match) return false;
-
-		const fm = match[1];
-		// Check if arrangement exists in frontmatter
-		if (!fm.includes(`${FRONTMATTER_KEY}:`)) return false;
-
-		// Remove arrangement (both old multi-line YAML and new single-line format)
-		const newFm = fm
-			.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')  // Old multi-line
-			.replace(/perspecta-arrangement: ".*"\n?/g, '')  // New single-line
-			.trim();
-
-		// If frontmatter is empty now (except whitespace), we could remove it entirely
-		// but better to keep it if there's other content
-		const newContent = content.replace(frontmatterRegex, `---\n${newFm}\n---`);
-
-		if (newContent !== content) {
-			await this.app.vault.modify(file, newContent);
-			return true;
-		}
-		return false;
-	}
-
 	// ============================================================================
 	// Storage Migration & Cleanup
 	// ============================================================================
@@ -1124,7 +1100,7 @@ export default class PerspectaPlugin extends Plugin {
 		for (const file of files) {
 			try {
 				// Check if file has context in frontmatter
-				const context = this.getContextFromNote(file);
+				const context = getContextFromFrontmatter(this.app, file);
 				if (!context) continue;
 
 				// Ensure file has a UID
@@ -1140,7 +1116,7 @@ export default class PerspectaPlugin extends Plugin {
 				this.externalStore.set(uid, v2);
 
 				// Remove from frontmatter
-				await this.removeArrangementFromFrontmatter(file);
+				await removeContextFromFrontmatter(this.app, file);
 
 				migrated++;
 			} catch (e) {
@@ -1182,7 +1158,7 @@ export default class PerspectaPlugin extends Plugin {
 				if (!context) continue;
 
 				// Save to frontmatter
-				await this.saveArrangementToNote(file, context);
+				await saveContextToFrontmatter(this.app, file, context);
 
 				// Delete from external store
 				await this.externalStore.delete(uid);
@@ -1301,43 +1277,6 @@ export default class PerspectaPlugin extends Plugin {
 		}
 	}
 
-	private async saveArrangementToNote(file: TFile, arrangement: WindowArrangementV2) {
-		const readStart = performance.now();
-		const content = await this.app.vault.read(file);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
-		}
-
-		const fmStart = performance.now();
-		const newContent = this.updateFrontmatter(content, arrangement);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
-		}
-
-		const writeStart = performance.now();
-		await this.app.vault.modify(file, newContent);
-		if (PerfTimer.isEnabled()) {
-			Logger.debug(`  ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
-		}
-	}
-
-	private updateFrontmatter(content: string, arrangement: WindowArrangementV2): string {
-		const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-		const match = content.match(frontmatterRegex);
-		const encoded = encodeArrangement(arrangement);
-
-		if (match) {
-			// Remove old arrangement (both old multi-line YAML and new single-line format)
-			let fm = match[1]
-				.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')  // Old multi-line
-				.replace(/perspecta-arrangement: ".*"/g, '')  // New single-line
-				.trim();
-			fm = fm ? fm + '\n' + encoded : encoded;
-			return content.replace(frontmatterRegex, `---\n${fm}\n---`);
-		}
-		return `---\n${encoded}\n---\n${content}`;
-	}
-
 
 	// ============================================================================
 	// Context Restore (Optimized)
@@ -1439,7 +1378,7 @@ export default class PerspectaPlugin extends Plugin {
 
 				if (arrangements.length === 0) {
 					// No arrangements in external store, fall back to frontmatter
-					return { context: this.getContextFromNote(file), cancelled: false };
+					return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 				}
 
 				if (arrangements.length === 1 || forceLatest) {
@@ -1465,7 +1404,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
-		return { context: this.getContextFromNote(file), cancelled: false };
+		return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 	}
 
 	// Get context for file - handles markdown, canvas, base, and external storage
@@ -1492,23 +1431,7 @@ export default class PerspectaPlugin extends Plugin {
 		}
 
 		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
-		return this.getContextFromNote(file);
-	}
-
-	private getContextFromNote(file: TFile): WindowArrangement | null {
-		const cache = this.app.metadataCache.getFileCache(file);
-		const rawValue = cache?.frontmatter?.[FRONTMATTER_KEY];
-
-		if (!rawValue) return null;
-
-		// Check if it's the new base64 format (string) or old YAML format (object)
-		if (typeof rawValue === 'string') {
-			// New compact format - decode from base64
-			return decodeArrangement(rawValue);
-		} else {
-			// Old YAML format - return as-is (backward compatibility)
-			return rawValue as WindowArrangement;
-		}
+		return getContextFromFrontmatter(this.app, file);
 	}
 
 	// Update saved context with corrected file paths after fallback resolution
@@ -1541,7 +1464,7 @@ export default class PerspectaPlugin extends Plugin {
 				this.externalStore.set(uid, correctedContext);
 			}
 		} else {
-			await this.saveArrangementToNote(contextFile, correctedContext);
+			await saveContextToFrontmatter(this.app, contextFile, correctedContext);
 		}
 
 		if (PerfTimer.isEnabled()) {

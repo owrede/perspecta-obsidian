@@ -1,0 +1,110 @@
+// ============================================================================
+// Frontmatter Storage
+// ----------------------------------------------------------------------------
+// Reads, writes, and removes WindowArrangement data stored in markdown
+// frontmatter (the default storage mode). Companion to external-store.ts,
+// which handles the external-storage mode.
+//
+// The arrangement is stored as a single base64 line:
+//   perspecta-arrangement: "<base64-encoded-compact-json>"
+// See src/storage/codec.ts for the wire format.
+// ============================================================================
+
+import { App, TFile } from 'obsidian';
+import { FRONTMATTER_KEY, WindowArrangement, WindowArrangementV2 } from '../types';
+import { decodeArrangement, encodeArrangement } from './codec';
+import { Logger } from '../utils/logger';
+import { PerfTimer } from '../utils/perf-timer';
+
+const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
+
+/**
+ * Read an arrangement from a note's frontmatter, or null if none.
+ * Falls back to the legacy multi-line YAML representation for backward compatibility.
+ */
+export function getContextFromFrontmatter(app: App, file: TFile): WindowArrangement | null {
+	const cache = app.metadataCache.getFileCache(file);
+	const rawValue = cache?.frontmatter?.[FRONTMATTER_KEY];
+
+	if (!rawValue) return null;
+
+	// New compact format = base64 string. Old format = parsed YAML object.
+	if (typeof rawValue === 'string') {
+		return decodeArrangement(rawValue);
+	}
+	return rawValue as WindowArrangement;
+}
+
+/**
+ * Save an arrangement into a note's frontmatter (replacing any existing one).
+ */
+export async function saveContextToFrontmatter(
+	app: App,
+	file: TFile,
+	arrangement: WindowArrangementV2
+): Promise<void> {
+	const readStart = performance.now();
+	const content = await app.vault.read(file);
+	if (PerfTimer.isEnabled()) {
+		Logger.debug(`  ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
+	}
+
+	const fmStart = performance.now();
+	const newContent = updateFrontmatter(content, arrangement);
+	if (PerfTimer.isEnabled()) {
+		Logger.debug(`  ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
+	}
+
+	const writeStart = performance.now();
+	await app.vault.modify(file, newContent);
+	if (PerfTimer.isEnabled()) {
+		Logger.debug(`  ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
+	}
+}
+
+/**
+ * Remove the perspecta-arrangement line from a note's frontmatter, if present.
+ * Returns true if the file was modified.
+ */
+export async function removeContextFromFrontmatter(app: App, file: TFile): Promise<boolean> {
+	const content = await app.vault.read(file);
+	const match = content.match(FRONTMATTER_REGEX);
+	if (!match) return false;
+
+	const fm = match[1];
+	if (!fm.includes(`${FRONTMATTER_KEY}:`)) return false;
+
+	// Strip both old multi-line YAML and new single-line variants.
+	const newFm = fm
+		.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')
+		.replace(/perspecta-arrangement: ".*"\n?/g, '')
+		.trim();
+
+	const newContent = content.replace(FRONTMATTER_REGEX, `---\n${newFm}\n---`);
+
+	if (newContent !== content) {
+		await app.vault.modify(file, newContent);
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Splice an encoded arrangement into the file's frontmatter, replacing any
+ * existing entry. Used by saveContextToFrontmatter.
+ */
+function updateFrontmatter(content: string, arrangement: WindowArrangementV2): string {
+	const match = content.match(FRONTMATTER_REGEX);
+	const encoded = encodeArrangement(arrangement);
+
+	if (match) {
+		// Strip any existing perspecta-arrangement entry, then append the new one.
+		let fm = match[1]
+			.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, '')
+			.replace(/perspecta-arrangement: ".*"/g, '')
+			.trim();
+		fm = fm ? fm + '\n' + encoded : encoded;
+		return content.replace(FRONTMATTER_REGEX, `---\n${fm}\n---`);
+	}
+	return `---\n${encoded}\n---\n${content}`;
+}

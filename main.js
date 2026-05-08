@@ -1512,6 +1512,70 @@ function expandNode(compact) {
   return node;
 }
 
+// src/storage/frontmatter-store.ts
+var FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
+function getContextFromFrontmatter(app, file) {
+  var _a;
+  const cache = app.metadataCache.getFileCache(file);
+  const rawValue = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[FRONTMATTER_KEY];
+  if (!rawValue)
+    return null;
+  if (typeof rawValue === "string") {
+    return decodeArrangement(rawValue);
+  }
+  return rawValue;
+}
+async function saveContextToFrontmatter(app, file, arrangement) {
+  const readStart = performance.now();
+  const content = await app.vault.read(file);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
+  }
+  const fmStart = performance.now();
+  const newContent = updateFrontmatter(content, arrangement);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
+  }
+  const writeStart = performance.now();
+  await app.vault.modify(file, newContent);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
+  }
+}
+async function removeContextFromFrontmatter(app, file) {
+  const content = await app.vault.read(file);
+  const match = content.match(FRONTMATTER_REGEX);
+  if (!match)
+    return false;
+  const fm = match[1];
+  if (!fm.includes(`${FRONTMATTER_KEY}:`))
+    return false;
+  const newFm = fm.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"\n?/g, "").trim();
+  const newContent = content.replace(FRONTMATTER_REGEX, `---
+${newFm}
+---`);
+  if (newContent !== content) {
+    await app.vault.modify(file, newContent);
+    return true;
+  }
+  return false;
+}
+function updateFrontmatter(content, arrangement) {
+  const match = content.match(FRONTMATTER_REGEX);
+  const encoded = encodeArrangement(arrangement);
+  if (match) {
+    let fm = match[1].replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"/g, "").trim();
+    fm = fm ? fm + "\n" + encoded : encoded;
+    return content.replace(FRONTMATTER_REGEX, `---
+${fm}
+---`);
+  }
+  return `---
+${encoded}
+---
+${content}`;
+}
+
 // src/services/backup.ts
 var import_obsidian5 = require("obsidian");
 
@@ -3960,7 +4024,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       saved = await this.saveContextExternal(targetFile, context);
       PerfTimer.mark("saveContextExternal");
     } else {
-      await this.saveArrangementToNote(targetFile, context);
+      await saveContextToFrontmatter(this.app, targetFile, context);
       PerfTimer.mark("saveArrangementToNote");
     }
     if (saved) {
@@ -3995,31 +4059,12 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       }
     }
     this.externalStore.set(uid, context, maxArrangements);
-    await this.removeArrangementFromFrontmatter(file);
+    await removeContextFromFrontmatter(this.app, file);
     this.filesWithContext.add(file.path);
     this.debouncedRefreshIndicators();
     return true;
   }
   // Remove perspecta-arrangement property from a file's frontmatter
-  async removeArrangementFromFrontmatter(file) {
-    const content = await this.app.vault.read(file);
-    const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-    const match = content.match(frontmatterRegex);
-    if (!match)
-      return false;
-    const fm = match[1];
-    if (!fm.includes(`${FRONTMATTER_KEY}:`))
-      return false;
-    const newFm = fm.replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"\n?/g, "").trim();
-    const newContent = content.replace(frontmatterRegex, `---
-${newFm}
----`);
-    if (newContent !== content) {
-      await this.app.vault.modify(file, newContent);
-      return true;
-    }
-    return false;
-  }
   // ============================================================================
   // Storage Migration & Cleanup
   // ============================================================================
@@ -4077,7 +4122,7 @@ ${newFm}
     await this.externalStore.ensureInitialized();
     for (const file of files) {
       try {
-        const context = this.getContextFromNote(file);
+        const context = getContextFromFrontmatter(this.app, file);
         if (!context)
           continue;
         let uid = getUidFromCache(this.app, file);
@@ -4088,7 +4133,7 @@ ${newFm}
         }
         const v2 = this.normalizeToV2(context);
         this.externalStore.set(uid, v2);
-        await this.removeArrangementFromFrontmatter(file);
+        await removeContextFromFrontmatter(this.app, file);
         migrated++;
       } catch (e) {
         Logger.error(`Failed to migrate ${file.path}:`, e);
@@ -4116,7 +4161,7 @@ ${newFm}
         const context = this.externalStore.getLatest(uid);
         if (!context)
           continue;
-        await this.saveArrangementToNote(file, context);
+        await saveContextToFrontmatter(this.app, file, context);
         await this.externalStore.delete(uid);
         migrated++;
       } catch (e) {
@@ -4206,39 +4251,6 @@ ${newFm}
       }
     }
   }
-  async saveArrangementToNote(file, arrangement) {
-    const readStart = performance.now();
-    const content = await this.app.vault.read(file);
-    if (PerfTimer.isEnabled()) {
-      Logger.debug(`  \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
-    }
-    const fmStart = performance.now();
-    const newContent = this.updateFrontmatter(content, arrangement);
-    if (PerfTimer.isEnabled()) {
-      Logger.debug(`  \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
-    }
-    const writeStart = performance.now();
-    await this.app.vault.modify(file, newContent);
-    if (PerfTimer.isEnabled()) {
-      Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
-    }
-  }
-  updateFrontmatter(content, arrangement) {
-    const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-    const match = content.match(frontmatterRegex);
-    const encoded = encodeArrangement(arrangement);
-    if (match) {
-      let fm = match[1].replace(/perspecta-arrangement:[\s\S]*?(?=\n[^\s]|\n$|$)/g, "").replace(/perspecta-arrangement: ".*"/g, "").trim();
-      fm = fm ? fm + "\n" + encoded : encoded;
-      return content.replace(frontmatterRegex, `---
-${fm}
----`);
-    }
-    return `---
-${encoded}
----
-${content}`;
-  }
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
     if (this.isRestoring) {
@@ -4306,7 +4318,7 @@ ${content}`;
         await this.externalStore.ensureInitialized();
         const arrangements = this.externalStore.getAll(uid);
         if (arrangements.length === 0) {
-          return { context: this.getContextFromNote(file), cancelled: false };
+          return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
         }
         if (arrangements.length === 1 || forceLatest) {
           return { context: arrangements[0].arrangement, cancelled: false };
@@ -4324,7 +4336,7 @@ ${content}`;
         return { context: result.arrangement.arrangement, cancelled: false };
       }
     }
-    return { context: this.getContextFromNote(file), cancelled: false };
+    return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
   }
   // Get context for file - handles markdown, canvas, base, and external storage
   async getContextForFile(file) {
@@ -4343,19 +4355,7 @@ ${content}`;
           return context;
       }
     }
-    return this.getContextFromNote(file);
-  }
-  getContextFromNote(file) {
-    var _a;
-    const cache = this.app.metadataCache.getFileCache(file);
-    const rawValue = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[FRONTMATTER_KEY];
-    if (!rawValue)
-      return null;
-    if (typeof rawValue === "string") {
-      return decodeArrangement(rawValue);
-    } else {
-      return rawValue;
-    }
+    return getContextFromFrontmatter(this.app, file);
   }
   // Update saved context with corrected file paths after fallback resolution
   async updateContextWithCorrectedPaths(contextFile, originalContext) {
@@ -4378,7 +4378,7 @@ ${content}`;
         this.externalStore.set(uid, correctedContext);
       }
     } else {
-      await this.saveArrangementToNote(contextFile, correctedContext);
+      await saveContextToFrontmatter(this.app, contextFile, correctedContext);
     }
     if (PerfTimer.isEnabled()) {
       Logger.debug(`Updated context with ${this.pathCorrections.size} corrected paths:`);
