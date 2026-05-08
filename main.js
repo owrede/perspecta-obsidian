@@ -98,16 +98,6 @@ function debounceAsync(fn, delay2) {
     return pendingPromise;
   };
 }
-async function waitForCondition(condition, timeoutMs = 5e3, intervalMs = 50) {
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeoutMs) {
-    if (await condition()) {
-      return;
-    }
-    await delay(intervalMs);
-  }
-  throw new Error(`Condition not met within ${timeoutMs}ms`);
-}
 function safeTimeout(callback, delay2) {
   const timeoutId = setTimeout(callback, delay2);
   return () => {
@@ -4838,9 +4828,15 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   /**
    * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
    *
-   * Waits for the target leaves to actually exist before applying positions, with a hard
-   * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
-   * dropped scroll position when restoring large arrangements on slow disks.
+   * Retries application until every target path's scroll/viewport actually
+   * sticks (applyScrollPosition / restoreCanvasViewport return true), with
+   * a 2s timeout cap. Path-existence alone isn't sufficient — a leaf can
+   * be open with the right path before its CodeMirror editor is mounted
+   * or its canvas has loaded, in which case the apply silently no-ops.
+   *
+   * Replaces the earlier "wait for path-match, then apply once" approach,
+   * which silently dropped scroll position when restoring large
+   * arrangements on slow disks.
    */
   scheduleScrollRestoration(state) {
     const scrollMap = /* @__PURE__ */ new Map();
@@ -4848,56 +4844,51 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     this.collectViewPositions(state, scrollMap, canvasViewportMap);
     if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
-    const targetPaths = /* @__PURE__ */ new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
-    const expectedCount = targetPaths.size;
-    Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
-    const apply = () => {
+    const pendingScroll = new Set(scrollMap.keys());
+    const pendingViewport = new Set(canvasViewportMap.keys());
+    Logger.debug(`scheduleScrollRestoration: ${pendingScroll.size} scroll, ${pendingViewport.size} canvas viewports`);
+    const tryApplyOnce = () => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         if (!hasFile(leaf.view))
           return;
-        const file = leaf.view.file;
-        if (scrollMap.has(file.path)) {
-          const scroll = scrollMap.get(file.path);
-          if (scroll !== void 0 && scroll > 0) {
-            if (applyScrollPosition(leaf.view, scroll)) {
-              Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-            }
+        const path = leaf.view.file.path;
+        if (pendingScroll.has(path)) {
+          const scroll = scrollMap.get(path);
+          if (scroll === void 0 || scroll === 0) {
+            pendingScroll.delete(path);
+          } else if (applyScrollPosition(leaf.view, scroll)) {
+            pendingScroll.delete(path);
+            Logger.debug(`scheduleScrollRestoration: ${leaf.view.file.basename} -> scroll ${scroll}`);
           }
         }
-        if (canvasViewportMap.has(file.path)) {
-          const viewport = canvasViewportMap.get(file.path);
-          if (viewport) {
-            this.restoreCanvasViewport(leaf, viewport);
+        if (pendingViewport.has(path)) {
+          const viewport = canvasViewportMap.get(path);
+          if (viewport && this.restoreCanvasViewport(leaf, viewport)) {
+            pendingViewport.delete(path);
           }
         }
       });
     };
     (async () => {
-      try {
-        await waitForCondition(
-          () => {
-            if (this.isUnloading)
-              return true;
-            let matched = 0;
-            this.app.workspace.iterateAllLeaves((leaf) => {
-              if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
-                matched++;
-              }
-            });
-            return matched >= expectedCount;
-          },
-          /* timeoutMs */
-          2e3,
-          /* intervalMs */
-          50
-        );
-        Logger.debug("scheduleScrollRestoration: target leaves loaded, applying positions");
-      } catch (e) {
-        Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+      const startedAt = Date.now();
+      const TIMEOUT_MS = 2e3;
+      const INTERVAL_MS = 50;
+      while (Date.now() - startedAt < TIMEOUT_MS) {
+        if (this.isUnloading)
+          return;
+        tryApplyOnce();
+        if (pendingScroll.size === 0 && pendingViewport.size === 0) {
+          Logger.debug(`scheduleScrollRestoration: all positions applied in ${Date.now() - startedAt}ms`);
+          return;
+        }
+        await delay(INTERVAL_MS);
       }
-      if (this.isUnloading)
-        return;
-      apply();
+      if (pendingScroll.size > 0 || pendingViewport.size > 0) {
+        Logger.debug(
+          `scheduleScrollRestoration: timed out with ${pendingScroll.size} scroll + ${pendingViewport.size} viewport pending`,
+          { scroll: [...pendingScroll], viewport: [...pendingViewport] }
+        );
+      }
     })();
   }
   /**
@@ -4995,7 +4986,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
    */
   restoreCanvasViewport(leaf, viewport) {
     if (!isCanvasView(leaf.view))
-      return;
+      return false;
     const canvas = leaf.view.canvas;
     try {
       const currentZoom = canvas.tZoom || 1;
@@ -5013,8 +5004,10 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         canvas.requestFrame();
       }
       Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : "unknown"} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+      return true;
     } catch (e) {
       Logger.debug("Could not restore canvas viewport:", e);
+      return false;
     }
   }
   /**

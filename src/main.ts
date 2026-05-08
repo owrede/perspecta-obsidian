@@ -1905,9 +1905,15 @@ export default class PerspectaPlugin extends Plugin {
 	/**
 	 * Collect scroll/viewport positions from a workspace node state and apply them to matching leaves.
 	 *
-	 * Waits for the target leaves to actually exist before applying positions, with a hard
-	 * timeout cap as a safety net. Replaces the previous fixed 500ms delay, which silently
-	 * dropped scroll position when restoring large arrangements on slow disks.
+	 * Retries application until every target path's scroll/viewport actually
+	 * sticks (applyScrollPosition / restoreCanvasViewport return true), with
+	 * a 2s timeout cap. Path-existence alone isn't sufficient — a leaf can
+	 * be open with the right path before its CodeMirror editor is mounted
+	 * or its canvas has loaded, in which case the apply silently no-ops.
+	 *
+	 * Replaces the earlier "wait for path-match, then apply once" approach,
+	 * which silently dropped scroll position when restoring large
+	 * arrangements on slow disks.
 	 */
 	private scheduleScrollRestoration(state: WorkspaceNodeState): void {
 		const scrollMap = new Map<string, number>();
@@ -1916,53 +1922,61 @@ export default class PerspectaPlugin extends Plugin {
 
 		if (scrollMap.size === 0 && canvasViewportMap.size === 0) return;
 
-		const targetPaths = new Set([...scrollMap.keys(), ...canvasViewportMap.keys()]);
-		const expectedCount = targetPaths.size;
-		Logger.debug(`scheduleScrollRestoration: waiting for ${expectedCount} leaves (${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports)`);
+		// Track which paths haven't successfully applied yet. Each retry
+		// pass removes paths whose apply succeeded; the loop stops when
+		// the set is empty or the timeout fires.
+		const pendingScroll = new Set(scrollMap.keys());
+		const pendingViewport = new Set(canvasViewportMap.keys());
+		Logger.debug(`scheduleScrollRestoration: ${pendingScroll.size} scroll, ${pendingViewport.size} canvas viewports`);
 
-		const apply = () => {
+		const tryApplyOnce = () => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
-				const file = leaf.view.file;
+				const path = leaf.view.file.path;
 
-				if (scrollMap.has(file.path)) {
-					const scroll = scrollMap.get(file.path);
-					if (scroll !== undefined && scroll > 0) {
-						if (applyScrollPosition(leaf.view, scroll)) {
-							Logger.debug(`scheduleScrollRestoration: ${file.basename} -> scroll ${scroll}`);
-						}
+				if (pendingScroll.has(path)) {
+					const scroll = scrollMap.get(path);
+					if (scroll === undefined || scroll === 0) {
+						pendingScroll.delete(path); // nothing to restore
+					} else if (applyScrollPosition(leaf.view, scroll)) {
+						pendingScroll.delete(path);
+						Logger.debug(`scheduleScrollRestoration: ${leaf.view.file.basename} -> scroll ${scroll}`);
 					}
 				}
 
-				if (canvasViewportMap.has(file.path)) {
-					const viewport = canvasViewportMap.get(file.path);
-					if (viewport) {
-						this.restoreCanvasViewport(leaf, viewport);
+				if (pendingViewport.has(path)) {
+					const viewport = canvasViewportMap.get(path);
+					if (viewport && this.restoreCanvasViewport(leaf, viewport)) {
+						pendingViewport.delete(path);
 					}
 				}
 			});
 		};
 
-		// Fire-and-forget async wait — if we don't reach the target count in time
-		// (slow disk, file genuinely missing) we still apply best-effort.
+		// Retry loop: try every 50ms up to 2s. If anything's still pending
+		// at the end, log it — the file may have failed to open or the
+		// view type may not support scrolling.
 		(async () => {
-			try {
-				await waitForCondition(() => {
-					if (this.isUnloading) return true; // bail out cleanly
-					let matched = 0;
-					this.app.workspace.iterateAllLeaves((leaf) => {
-						if (hasFile(leaf.view) && targetPaths.has(leaf.view.file.path)) {
-							matched++;
-						}
-					});
-					return matched >= expectedCount;
-				}, /* timeoutMs */ 2000, /* intervalMs */ 50);
-				Logger.debug('scheduleScrollRestoration: target leaves loaded, applying positions');
-			} catch {
-				Logger.debug(`scheduleScrollRestoration: timed out waiting for ${expectedCount} leaves, applying anyway`);
+			const startedAt = Date.now();
+			const TIMEOUT_MS = 2000;
+			const INTERVAL_MS = 50;
+
+			while (Date.now() - startedAt < TIMEOUT_MS) {
+				if (this.isUnloading) return;
+				tryApplyOnce();
+				if (pendingScroll.size === 0 && pendingViewport.size === 0) {
+					Logger.debug(`scheduleScrollRestoration: all positions applied in ${Date.now() - startedAt}ms`);
+					return;
+				}
+				await delay(INTERVAL_MS);
 			}
-			if (this.isUnloading) return;
-			apply();
+
+			if (pendingScroll.size > 0 || pendingViewport.size > 0) {
+				Logger.debug(
+					`scheduleScrollRestoration: timed out with ${pendingScroll.size} scroll + ${pendingViewport.size} viewport pending`,
+					{ scroll: [...pendingScroll], viewport: [...pendingViewport] }
+				);
+			}
 		})();
 	}
 
@@ -2075,9 +2089,9 @@ export default class PerspectaPlugin extends Plugin {
 	/**
 	 * Restore canvas viewport (pan and zoom)
 	 */
-	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): void {
+	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): boolean {
 		// Use type-safe canvas view check
-		if (!isCanvasView(leaf.view)) return;
+		if (!isCanvasView(leaf.view)) return false;
 		const canvas = leaf.view.canvas;
 
 		try {
@@ -2102,8 +2116,10 @@ export default class PerspectaPlugin extends Plugin {
 			}
 
 			Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : 'unknown'} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+			return true;
 		} catch (e) {
 			Logger.debug('Could not restore canvas viewport:', e);
+			return false;
 		}
 	}
 
