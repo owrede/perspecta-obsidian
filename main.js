@@ -3185,7 +3185,7 @@ var PerspectaPlugin = class extends import_obsidian7.Plugin {
       if (!file || !this.shiftCmdHeld)
         return;
       if (this.filesWithContext.has(file.path)) {
-        setTimeout(() => {
+        this.safeTimeout(() => {
           this.restoreContext(file, true);
         }, 50);
       }
@@ -4213,7 +4213,7 @@ ${content}`;
       const _focusedWin = await this.applyArrangement(context, targetFile.path);
       PerfTimer.mark("applyArrangement");
       if (this.settings.showDebugModalOnRestore) {
-        setTimeout(() => {
+        this.safeTimeout(() => {
           const v2Context = this.normalizeToV2(context);
           this.showRestoreDebugModal(v2Context, targetFile.name);
         }, 1e3);
@@ -4411,7 +4411,7 @@ ${content}`;
       }
       if (this.pendingTabActivations.length > 0) {
         requestAnimationFrame(() => {
-          setTimeout(() => {
+          this.safeTimeout(() => {
             this.processPendingTabActivations();
           }, 100);
         });
@@ -4733,7 +4733,7 @@ ${content}`;
   applyScrollToLeaf(leaf, scroll) {
     if (scroll === void 0 || scroll === 0)
       return;
-    setTimeout(() => {
+    this.safeTimeout(() => {
       if (applyScrollPosition(leaf.view, scroll)) {
         Logger.debug(`applyScrollToLeaf: scrolled to ${scroll}`);
       }
@@ -4749,7 +4749,7 @@ ${content}`;
     if (scrollMap.size === 0 && canvasViewportMap.size === 0)
       return;
     Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
-    setTimeout(() => {
+    this.safeTimeout(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         if (!hasFile(leaf.view))
           return;
@@ -4783,7 +4783,7 @@ ${content}`;
     if (this.settings.enableDebugLogging) {
       console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
     }
-    setTimeout(() => {
+    this.safeTimeout(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         if (!hasFile(leaf.view))
           return;
@@ -5308,7 +5308,7 @@ ${content}`;
       Logger.debug(`  tab[${index}]: opened ${file.basename}, active=${tab.active}`);
     }
     if (activeIsFirstTab) {
-      setTimeout(() => {
+      this.safeTimeout(() => {
         this.app.workspace.setActiveLeaf(existingLeaf, { focus: false });
         Logger.debug(`  Activated first tab (existingLeaf)`);
       }, 100);

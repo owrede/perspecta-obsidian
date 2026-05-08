@@ -352,9 +352,10 @@ export default class PerspectaPlugin extends Plugin {
 			if (!file || !this.shiftCmdHeld) return;
 			
 			if (this.filesWithContext.has(file.path)) {
-				// Small delay to let Obsidian finish its navigation, then restore
-				// Use forceLatest=true to skip the arrangement selector modal
-				setTimeout(() => {
+				// Small delay to let Obsidian finish its navigation, then restore.
+				// Use forceLatest=true to skip the arrangement selector modal.
+				// safeTimeout: don't fire after unload.
+				this.safeTimeout(() => {
 					this.restoreContext(file, true);
 				}, 50);
 			}
@@ -1697,8 +1698,9 @@ export default class PerspectaPlugin extends Plugin {
 
 			// Show restore debug modal if enabled
 			if (this.settings.showDebugModalOnRestore) {
-				// Wait a moment for UI to settle before capturing current state
-				setTimeout(() => {
+				// Wait a moment for UI to settle before capturing current state.
+				// safeTimeout: don't fire after unload.
+				this.safeTimeout(() => {
 					const v2Context = this.normalizeToV2(context);
 					this.showRestoreDebugModal(v2Context, targetFile.name);
 				}, 1000);
@@ -1972,11 +1974,12 @@ export default class PerspectaPlugin extends Plugin {
 				}
 			}
 
-			// Process pending tab activations after a delay to ensure windows are fully ready
-			// Use requestAnimationFrame + setTimeout to wait for both rendering and event loop
+			// Process pending tab activations after a delay to ensure windows are fully ready.
+			// rAF waits for layout/paint; safeTimeout waits one more macrotask AND won't fire
+			// if the plugin unloads mid-restore.
 			if (this.pendingTabActivations.length > 0) {
 				requestAnimationFrame(() => {
-					setTimeout(() => {
+					this.safeTimeout(() => {
 						this.processPendingTabActivations();
 					}, 100);
 				});
@@ -2371,8 +2374,8 @@ export default class PerspectaPlugin extends Plugin {
 	private applyScrollToLeaf(leaf: WorkspaceLeaf, scroll: number | undefined): void {
 		if (scroll === undefined || scroll === 0) return;
 
-		// Delay to ensure view is fully rendered
-		setTimeout(() => {
+		// Delay to ensure view is fully rendered. safeTimeout: don't fire after unload.
+		this.safeTimeout(() => {
 			if (applyScrollPosition(leaf.view, scroll)) {
 				Logger.debug(`applyScrollToLeaf: scrolled to ${scroll}`);
 			}
@@ -2392,9 +2395,10 @@ export default class PerspectaPlugin extends Plugin {
 
 		Logger.debug(`scheduleScrollRestoration: ${scrollMap.size} scroll, ${canvasViewportMap.size} canvas viewports`);
 
-		// Apply positions after a longer delay to ensure all views in splits are loaded
-		// Re-iterate leaves inside timeout since split views may not exist yet when this is called
-		setTimeout(() => {
+		// Apply positions after a longer delay to ensure all views in splits are loaded.
+		// Re-iterate leaves inside timeout since split views may not exist yet when this is called.
+		// safeTimeout: don't fire after unload.
+		this.safeTimeout(() => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
 				const file = leaf.view.file;
@@ -2434,8 +2438,9 @@ export default class PerspectaPlugin extends Plugin {
 			console.log(`[Perspecta] Restoring properties for ${propsMap.size} files:`, Array.from(propsMap.entries()));
 		}
 		
-		// Apply after delay to ensure all views are loaded
-		setTimeout(() => {
+		// Apply after delay to ensure all views are loaded.
+		// safeTimeout: don't fire after unload.
+		this.safeTimeout(() => {
 			this.app.workspace.iterateAllLeaves((leaf) => {
 				if (!hasFile(leaf.view)) return;
 				const file = leaf.view.file;
@@ -3138,8 +3143,9 @@ export default class PerspectaPlugin extends Plugin {
 
 		// If active tab was the first tab (in existingLeaf), we need to switch to it
 		if (activeIsFirstTab) {
-			// Re-activate the first leaf by opening its file again or using setActiveLeaf
-			setTimeout(() => {
+			// Re-activate the first leaf by opening its file again or using setActiveLeaf.
+			// safeTimeout: don't fire after unload.
+			this.safeTimeout(() => {
 				this.app.workspace.setActiveLeaf(existingLeaf, { focus: false });
 				Logger.debug(`  Activated first tab (existingLeaf)`);
 			}, 100);
