@@ -11,10 +11,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.38',
+		date: '2026-05-09',
+		changes: [
+			'Fix: Canvas viewport restore now sets the saved zoom and pan directly instead of computing a (broken) relative zoom delta. Previously, restoring a canvas could end at the wrong zoom level — sometimes zooming the wrong direction — because the code treated `canvas.tZoom` as a multiplier and `canvas.zoomBy` as multiplicative; both assumptions were wrong. The fix uses `canvas.setViewport(tx, ty, zoom)` (atomic absolute set) with a direct-property-assignment fallback. Bug present since v0.1.7.',
+			'Internal: Extracted canvas viewport apply logic to `src/utils/canvas-viewport.ts` (pure function, dependency-injected canvas mock).',
+			'Internal: 10 new unit tests (`tests/canvas-viewport.test.ts`) covering the bug shape — verified to fail when the buggy delta math is reintroduced.',
+			'Internal: Removed the v0.1.37 frontmatter-save diagnostics (the hypothesis was wrong — the canvas was on external storage, so the frontmatter race never applied here). One temporary `[Perspecta-DIAG] restoreCanvasViewport` log remains so we can verify the fix in the wild; it will be removed in v0.1.39.',
+		],
+	},
+	{
 		version: '0.1.37',
 		date: '2026-05-09',
 		changes: [
-			'Diagnostic: temporary always-on logging in saveContext, restoreContext, addUidToFile, and saveContextToFrontmatter to localise an intermittent save-failure (one user reports the arrangement line disappearing after save). Filter the dev-tools console for `[Perspecta-DIAG]`. The logs will be removed in v0.1.38 once the cause is identified.',
+			'Diagnostic: temporary logging to localise a save/restore bug. The diagnostic data showed the bug was actually in canvas viewport restore (zoom direction) — fixed in v0.1.38.',
 		],
 	},
 	{
