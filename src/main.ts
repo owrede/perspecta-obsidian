@@ -109,6 +109,7 @@ import {
 } from './utils/coordinates';
 import { getWallpaper, setWallpaper, copyWallpaperToLocal, getWallpapersDir } from './utils/wallpaper';
 import { generateUid, getUidFromCache, addUidToFile } from './utils/uid';
+import { applyCanvasViewport } from './utils/canvas-viewport';
 import { resolveFile as resolveFileWithFallback } from './utils/file-resolver';
 
 // Import storage
@@ -916,11 +917,7 @@ export default class PerspectaPlugin extends Plugin {
 		const targetFile = file ?? this.app.workspace.getActiveFile();
 		PerfTimer.mark('getActiveFile');
 
-		// === DIAGNOSTIC (v0.1.37) ===
-		console.warn(`[Perspecta-DIAG] saveContext START targetFile="${targetFile?.path}", storageMode=${this.settings.storageMode}, autoGenerateUids=${this.settings.autoGenerateUids}`);
-
 		if (!targetFile) {
-			console.warn('[Perspecta-DIAG] saveContext aborted: no active file');
 			new Notice('No active file to save context to', 4000);
 			return;
 		}
@@ -1005,9 +1002,6 @@ export default class PerspectaPlugin extends Plugin {
 				new Notice(`Context saved to ${targetFile.name}`, 4000);
 			}
 		}
-
-		// === DIAGNOSTIC (v0.1.37) ===
-		console.warn(`[Perspecta-DIAG] saveContext END saved=${saved}`);
 
 		PerfTimer.end('saveContext');
 	}
@@ -1237,12 +1231,8 @@ export default class PerspectaPlugin extends Plugin {
 	private isRestoring = false;  // Guard against concurrent restores
 
 	async restoreContext(file?: TFile, forceLatest = false) {
-		// === DIAGNOSTIC (v0.1.37) ===
-		console.warn(`[Perspecta-DIAG] restoreContext START file=${file?.path}, forceLatest=${forceLatest}, isRestoring=${this.isRestoring}, storageMode=${this.settings.storageMode}`);
-
 		// Prevent concurrent restores which can cause duplicate windows
 		if (this.isRestoring) {
-			console.warn('[Perspecta-DIAG] restoreContext aborted: already restoring');
 			Logger.debug('Skipping restoreContext - already restoring');
 			return;
 		}
@@ -1258,19 +1248,10 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.mark('getActiveFile');
 
 		if (!targetFile) {
-			console.warn('[Perspecta-DIAG] restoreContext aborted: no active file');
 			new Notice('No active file', 4000);
 			this.isRestoring = false;
 			return;
 		}
-
-		// === DIAGNOSTIC (v0.1.37) ===
-		// Inspect the metadata cache for what we're going to read.
-		const fmCache = this.app.metadataCache.getFileCache(targetFile)?.frontmatter;
-		const arrValue = fmCache?.['perspecta-arrangement'];
-		const arrType = arrValue === undefined ? 'undefined' : arrValue === null ? 'null' : typeof arrValue;
-		const arrLen = typeof arrValue === 'string' ? arrValue.length : -1;
-		console.warn(`[Perspecta-DIAG] restoreContext: targetFile="${targetFile.path}", ext=${targetFile.extension}, fmKeys=${fmCache ? Object.keys(fmCache).join(',') : '(no fm cache)'}, arrType=${arrType}, arrLen=${arrLen}`);
 
 		try {
 			// Get context - may show selector if multiple arrangements exist (unless forceLatest)
@@ -1278,14 +1259,12 @@ export default class PerspectaPlugin extends Plugin {
 			PerfTimer.mark('getContextForFileWithSelection');
 
 			if (!contextResult || contextResult.cancelled) {
-				console.warn(`[Perspecta-DIAG] restoreContext: cancelled or no result, contextResult=${JSON.stringify({ has: !!contextResult, cancelled: contextResult?.cancelled })}`);
 				PerfTimer.end('restoreContext');
 				return;
 			}
 
 			const context = contextResult.context;
-			if (!context) { console.warn('[Perspecta-DIAG] restoreContext: no context — showing notice'); new Notice('No context found in this note', 4000); return; }
-			console.warn(`[Perspecta-DIAG] restoreContext: got context v=${context.v}, ts=${context.ts}, popouts=${(context as { popouts?: unknown[] }).popouts?.length ?? 'n/a'}`);
+			if (!context) { new Notice('No context found in this note', 4000); return; }
 
 			const _focusedWin = await this.applyArrangement(context, targetFile.path);
 			PerfTimer.mark('applyArrangement');
@@ -2127,38 +2106,44 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	/**
-	 * Restore canvas viewport (pan and zoom)
+	 * Restore canvas viewport (pan and zoom). Delegates to the pure helper
+	 * in utils/canvas-viewport.ts so the logic is unit-testable.
+	 *
+	 * History: through v0.1.37 used `zoomBy(viewport.zoom / currentZoom)` +
+	 * `panTo(...)` — but canvas.tZoom is not a multiplier and zoomBy is
+	 * additive, so the delta math gave wrong results (sometimes zooming
+	 * the wrong direction). Fixed in v0.1.38 by switching to setViewport
+	 * with direct-assignment as a fallback.
 	 */
 	private restoreCanvasViewport(leaf: WorkspaceLeaf, viewport: { tx: number; ty: number; zoom: number }): boolean {
-		// Use type-safe canvas view check
 		if (!isCanvasView(leaf.view)) return false;
 		const canvas = leaf.view.canvas;
+		const fileName = hasFile(leaf.view) ? leaf.view.file.basename : 'unknown';
 
 		try {
-			// Calculate zoom delta and apply
-			const currentZoom = canvas.tZoom || 1;
-			const zoomDelta = viewport.zoom / currentZoom;
+			const result = applyCanvasViewport(canvas, viewport);
 
-			if (typeof canvas.zoomBy === 'function') {
-				canvas.zoomBy(zoomDelta);
-			}
+			Logger.debug(
+				`restoreCanvasViewport[${result.strategy}]: ${fileName} ` +
+				`tx ${result.before.tx.toFixed(0)}→${result.after.tx.toFixed(0)}, ` +
+				`ty ${result.before.ty.toFixed(0)}→${result.after.ty.toFixed(0)}, ` +
+				`zoom ${result.before.zoom.toFixed(2)}→${result.after.zoom.toFixed(2)}`
+			);
 
-			if (typeof canvas.panTo === 'function') {
-				canvas.panTo(viewport.tx, viewport.ty);
-			}
+			// === DIAGNOSTIC (v0.1.38) ===
+			// Always-on so we can confirm the fix without flipping debug mode.
+			// Will be removed in v0.1.39 once we've seen one good restore.
+			console.warn(
+				`[Perspecta-DIAG] restoreCanvasViewport[${result.strategy}]: file=${fileName}, ` +
+				`saved={tx:${viewport.tx.toFixed(0)},ty:${viewport.ty.toFixed(0)},zoom:${viewport.zoom.toFixed(3)}}, ` +
+				`before={tx:${result.before.tx.toFixed(0)},ty:${result.before.ty.toFixed(0)},zoom:${result.before.zoom.toFixed(3)}}, ` +
+				`after={tx:${result.after.tx.toFixed(0)},ty:${result.after.ty.toFixed(0)},zoom:${result.after.zoom.toFixed(3)}}`
+			);
 
-			if (typeof canvas.markViewportChanged === 'function') {
-				canvas.markViewportChanged();
-			}
-
-			if (typeof canvas.requestFrame === 'function') {
-				canvas.requestFrame();
-			}
-
-			Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : 'unknown'} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
 			return true;
 		} catch (e) {
 			Logger.debug('Could not restore canvas viewport:', e);
+			console.warn('[Perspecta-DIAG] restoreCanvasViewport threw:', e);
 			return false;
 		}
 	}

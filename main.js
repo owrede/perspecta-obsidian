@@ -846,11 +846,7 @@ function getUidFromCache(app, file) {
   return (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[UID_FRONTMATTER_KEY];
 }
 async function addUidToFile(app, file, uid) {
-  const tag = `[Perspecta-DIAG] addUidToFile "${file.path}"`;
-  console.warn(`${tag} step0 entry`);
   const content = await app.vault.read(file);
-  const hadArrBefore = content.includes("perspecta-arrangement:");
-  console.warn(`${tag} step1 vault.read: len=${content.length}, hadArrKey=${hadArrBefore}`);
   const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
   const match = content.match(frontmatterRegex);
   let newContent;
@@ -862,11 +858,7 @@ async function addUidToFile(app, file, uid) {
         newContent = content.replace(frontmatterRegex, `---
 ${fm}
 ---`);
-        console.warn(`${tag} step2 already-has-uid, cleaning legacy uid; will modify`);
         await app.vault.modify(file, newContent);
-        console.warn(`${tag} step3 vault.modify (cleanup) returned`);
-      } else {
-        console.warn(`${tag} step2 already-has-uid, no legacy uid; no-op`);
       }
       return;
     }
@@ -882,10 +874,7 @@ ${UID_FRONTMATTER_KEY}: "${uid}"
 ---
 ${content}`;
   }
-  const hadArrAfter = newContent.includes("perspecta-arrangement:");
-  console.warn(`${tag} step2 prepared write: newLen=${newContent.length}, hasArrKey=${hadArrAfter}`);
   await app.vault.modify(file, newContent);
-  console.warn(`${tag} step3 vault.modify returned`);
 }
 async function cleanupOldUid(app, file) {
   const content = await app.vault.read(file);
@@ -907,6 +896,37 @@ ${newFm}
     return true;
   }
   return false;
+}
+
+// src/utils/canvas-viewport.ts
+function applyCanvasViewport(canvas, saved) {
+  const before = {
+    tx: canvas.tx,
+    ty: canvas.ty,
+    zoom: canvas.tZoom
+  };
+  let strategy;
+  if (typeof canvas.setViewport === "function") {
+    canvas.setViewport(saved.tx, saved.ty, saved.zoom);
+    strategy = "setViewport";
+  } else {
+    canvas.tx = saved.tx;
+    canvas.ty = saved.ty;
+    canvas.tZoom = saved.zoom;
+    strategy = "directAssign";
+  }
+  if (typeof canvas.markViewportChanged === "function") {
+    canvas.markViewportChanged();
+  }
+  if (typeof canvas.requestFrame === "function") {
+    canvas.requestFrame();
+  }
+  const after = {
+    tx: canvas.tx,
+    ty: canvas.ty,
+    zoom: canvas.tZoom
+  };
+  return { strategy, before, after };
 }
 
 // src/utils/file-resolver.ts
@@ -1527,31 +1547,21 @@ function getContextFromFrontmatter(app, file) {
   return rawValue;
 }
 async function saveContextToFrontmatter(app, file, arrangement) {
-  const tag = `[Perspecta-DIAG] saveContextToFrontmatter "${file.path}"`;
   const readStart = performance.now();
   const content = await app.vault.read(file);
-  const readMs = (performance.now() - readStart).toFixed(1);
-  const hasKeyBeforeWrite = content.includes("perspecta-arrangement:");
-  console.warn(`${tag} step1 vault.read: ${readMs}ms, len=${content.length}, hasArrKeyOnDisk=${hasKeyBeforeWrite}`);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
+  }
   const fmStart = performance.now();
   const newContent = updateFrontmatter(content, arrangement);
-  const fmMs = (performance.now() - fmStart).toFixed(1);
-  const hasKeyAfterEncode = newContent.includes("perspecta-arrangement:");
-  console.warn(`${tag} step2 updateFrontmatter: ${fmMs}ms, newLen=${newContent.length}, hasArrKey=${hasKeyAfterEncode}`);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
+  }
   const writeStart = performance.now();
   await app.vault.modify(file, newContent);
-  const writeMs = (performance.now() - writeStart).toFixed(1);
-  console.warn(`${tag} step3 vault.modify: ${writeMs}ms (returned)`);
-  const verify = async (label, delayMs) => {
-    await new Promise((r) => setTimeout(r, delayMs));
-    const after = await app.vault.read(file);
-    const stillHas = after.includes("perspecta-arrangement:");
-    const sameLen = after.length === newContent.length;
-    console.warn(`${tag} step4 verify@${label}: hasArrKey=${stillHas}, sameLen=${sameLen}, len=${after.length}`);
-  };
-  void verify("100ms", 100);
-  void verify("500ms", 500);
-  void verify("2000ms", 2e3);
+  if (PerfTimer.isEnabled()) {
+    Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
+  }
 }
 function hasContextInFrontmatter(app, file) {
   var _a, _b;
@@ -2877,10 +2887,20 @@ var import_obsidian7 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.38",
+    date: "2026-05-09",
+    changes: [
+      "Fix: Canvas viewport restore now sets the saved zoom and pan directly instead of computing a (broken) relative zoom delta. Previously, restoring a canvas could end at the wrong zoom level \u2014 sometimes zooming the wrong direction \u2014 because the code treated `canvas.tZoom` as a multiplier and `canvas.zoomBy` as multiplicative; both assumptions were wrong. The fix uses `canvas.setViewport(tx, ty, zoom)` (atomic absolute set) with a direct-property-assignment fallback. Bug present since v0.1.7.",
+      "Internal: Extracted canvas viewport apply logic to `src/utils/canvas-viewport.ts` (pure function, dependency-injected canvas mock).",
+      "Internal: 10 new unit tests (`tests/canvas-viewport.test.ts`) covering the bug shape \u2014 verified to fail when the buggy delta math is reintroduced.",
+      "Internal: Removed the v0.1.37 frontmatter-save diagnostics (the hypothesis was wrong \u2014 the canvas was on external storage, so the frontmatter race never applied here). One temporary `[Perspecta-DIAG] restoreCanvasViewport` log remains so we can verify the fix in the wild; it will be removed in v0.1.39."
+    ]
+  },
+  {
     version: "0.1.37",
     date: "2026-05-09",
     changes: [
-      "Diagnostic: temporary always-on logging in saveContext, restoreContext, addUidToFile, and saveContextToFrontmatter to localise an intermittent save-failure (one user reports the arrangement line disappearing after save). Filter the dev-tools console for `[Perspecta-DIAG]`. The logs will be removed in v0.1.38 once the cause is identified."
+      "Diagnostic: temporary logging to localise a save/restore bug. The diagnostic data showed the bug was actually in canvas viewport restore (zoom direction) \u2014 fixed in v0.1.38."
     ]
   },
   {
@@ -4118,9 +4138,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     PerfTimer.begin("saveContext");
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
-    console.warn(`[Perspecta-DIAG] saveContext START targetFile="${targetFile == null ? void 0 : targetFile.path}", storageMode=${this.settings.storageMode}, autoGenerateUids=${this.settings.autoGenerateUids}`);
     if (!targetFile) {
-      console.warn("[Perspecta-DIAG] saveContext aborted: no active file");
       new import_obsidian8.Notice("No active file to save context to", 4e3);
       return;
     }
@@ -4188,7 +4206,6 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         new import_obsidian8.Notice(`Context saved to ${targetFile.name}`, 4e3);
       }
     }
-    console.warn(`[Perspecta-DIAG] saveContext END saved=${saved}`);
     PerfTimer.end("saveContext");
   }
   // Save context to external store (using file's UID as key)
@@ -4360,10 +4377,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   }
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
-    var _a, _b, _c;
-    console.warn(`[Perspecta-DIAG] restoreContext START file=${file == null ? void 0 : file.path}, forceLatest=${forceLatest}, isRestoring=${this.isRestoring}, storageMode=${this.settings.storageMode}`);
     if (this.isRestoring) {
-      console.warn("[Perspecta-DIAG] restoreContext aborted: already restoring");
       Logger.debug("Skipping restoreContext - already restoring");
       return;
     }
@@ -4374,31 +4388,22 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
-      console.warn("[Perspecta-DIAG] restoreContext aborted: no active file");
       new import_obsidian8.Notice("No active file", 4e3);
       this.isRestoring = false;
       return;
     }
-    const fmCache = (_a = this.app.metadataCache.getFileCache(targetFile)) == null ? void 0 : _a.frontmatter;
-    const arrValue = fmCache == null ? void 0 : fmCache["perspecta-arrangement"];
-    const arrType = arrValue === void 0 ? "undefined" : arrValue === null ? "null" : typeof arrValue;
-    const arrLen = typeof arrValue === "string" ? arrValue.length : -1;
-    console.warn(`[Perspecta-DIAG] restoreContext: targetFile="${targetFile.path}", ext=${targetFile.extension}, fmKeys=${fmCache ? Object.keys(fmCache).join(",") : "(no fm cache)"}, arrType=${arrType}, arrLen=${arrLen}`);
     try {
       const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
       PerfTimer.mark("getContextForFileWithSelection");
       if (!contextResult || contextResult.cancelled) {
-        console.warn(`[Perspecta-DIAG] restoreContext: cancelled or no result, contextResult=${JSON.stringify({ has: !!contextResult, cancelled: contextResult == null ? void 0 : contextResult.cancelled })}`);
         PerfTimer.end("restoreContext");
         return;
       }
       const context = contextResult.context;
       if (!context) {
-        console.warn("[Perspecta-DIAG] restoreContext: no context \u2014 showing notice");
         new import_obsidian8.Notice("No context found in this note", 4e3);
         return;
       }
-      console.warn(`[Perspecta-DIAG] restoreContext: got context v=${context.v}, ts=${context.ts}, popouts=${(_c = (_b = context.popouts) == null ? void 0 : _b.length) != null ? _c : "n/a"}`);
       const _focusedWin = await this.applyArrangement(context, targetFile.path);
       PerfTimer.mark("applyArrangement");
       if (this.settings.showDebugModalOnRestore) {
@@ -5049,31 +5054,32 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
   }
   /**
-   * Restore canvas viewport (pan and zoom)
+   * Restore canvas viewport (pan and zoom). Delegates to the pure helper
+   * in utils/canvas-viewport.ts so the logic is unit-testable.
+   *
+   * History: through v0.1.37 used `zoomBy(viewport.zoom / currentZoom)` +
+   * `panTo(...)` — but canvas.tZoom is not a multiplier and zoomBy is
+   * additive, so the delta math gave wrong results (sometimes zooming
+   * the wrong direction). Fixed in v0.1.38 by switching to setViewport
+   * with direct-assignment as a fallback.
    */
   restoreCanvasViewport(leaf, viewport) {
     if (!isCanvasView(leaf.view))
       return false;
     const canvas = leaf.view.canvas;
+    const fileName = hasFile(leaf.view) ? leaf.view.file.basename : "unknown";
     try {
-      const currentZoom = canvas.tZoom || 1;
-      const zoomDelta = viewport.zoom / currentZoom;
-      if (typeof canvas.zoomBy === "function") {
-        canvas.zoomBy(zoomDelta);
-      }
-      if (typeof canvas.panTo === "function") {
-        canvas.panTo(viewport.tx, viewport.ty);
-      }
-      if (typeof canvas.markViewportChanged === "function") {
-        canvas.markViewportChanged();
-      }
-      if (typeof canvas.requestFrame === "function") {
-        canvas.requestFrame();
-      }
-      Logger.debug(`restoreCanvasViewport: ${hasFile(leaf.view) ? leaf.view.file.basename : "unknown"} -> tx=${viewport.tx.toFixed(0)}, ty=${viewport.ty.toFixed(0)}, zoom=${viewport.zoom.toFixed(2)}`);
+      const result = applyCanvasViewport(canvas, viewport);
+      Logger.debug(
+        `restoreCanvasViewport[${result.strategy}]: ${fileName} tx ${result.before.tx.toFixed(0)}\u2192${result.after.tx.toFixed(0)}, ty ${result.before.ty.toFixed(0)}\u2192${result.after.ty.toFixed(0)}, zoom ${result.before.zoom.toFixed(2)}\u2192${result.after.zoom.toFixed(2)}`
+      );
+      console.warn(
+        `[Perspecta-DIAG] restoreCanvasViewport[${result.strategy}]: file=${fileName}, saved={tx:${viewport.tx.toFixed(0)},ty:${viewport.ty.toFixed(0)},zoom:${viewport.zoom.toFixed(3)}}, before={tx:${result.before.tx.toFixed(0)},ty:${result.before.ty.toFixed(0)},zoom:${result.before.zoom.toFixed(3)}}, after={tx:${result.after.tx.toFixed(0)},ty:${result.after.ty.toFixed(0)},zoom:${result.after.zoom.toFixed(3)}}`
+      );
       return true;
     } catch (e) {
       Logger.debug("Could not restore canvas viewport:", e);
+      console.warn("[Perspecta-DIAG] restoreCanvasViewport threw:", e);
       return false;
     }
   }
