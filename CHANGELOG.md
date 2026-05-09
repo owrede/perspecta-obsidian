@@ -2,6 +2,11 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.39] - 2026-05-09
+
+- Fix: Wallpapers no longer accumulate duplicates in the `<vault>/<perspecta-folder>/wallpapers/` directory. Filenames are now content-addressed (`<16-char-content-hash>.<ext>`), so the same image always produces the same name — meaning the existence check actually deduplicates. Previously, hashing the source path produced a new name on every save once the wallpaper was a previously-saved local copy: `name_a.jpg → name_a_b.jpg → name_a_b_c.jpg → …` ad infinitum. Bug present since v0.1.13. Old duplicate files in your wallpapers directory can be deleted manually — only the file your most recent saved arrangement points at is referenced.
+- Internal: 11 new unit tests in `tests/wallpaper-copy.test.ts` covering content-addressed naming, save→restore→save idempotency, and extension normalisation.
+
 ## [0.1.38] - 2026-05-09
 
 - Fix: Canvas viewport restore now sets the saved zoom and pan directly instead of computing a (broken) relative zoom delta. Previously, restoring a canvas could end at the wrong zoom level — sometimes zooming the wrong direction — because the code treated `canvas.tZoom` as a multiplier and `canvas.zoomBy` as multiplicative; both assumptions were wrong. The fix uses `canvas.setViewport(tx, ty, zoom)` (atomic absolute set) with a direct-property-assignment fallback. Bug present since v0.1.7.

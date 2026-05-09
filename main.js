@@ -790,8 +790,9 @@ function getWallpaperPlatformNotes() {
   }
   return "Platform not supported for wallpaper operations.";
 }
-function hashPath(path) {
-  return (0, import_crypto.createHash)("sha256").update(path).digest("hex").substring(0, 8);
+async function hashFileContent(path) {
+  const data = await (0, import_promises.readFile)(path);
+  return (0, import_crypto.createHash)("sha256").update(data).digest("hex").substring(0, 16);
 }
 async function copyWallpaperToLocal(sourcePath, destDir) {
   const pathValidation = validatePath(sourcePath);
@@ -810,10 +811,9 @@ async function copyWallpaperToLocal(sourcePath, destDir) {
     if (!(0, import_fs.existsSync)(destDir)) {
       await (0, import_promises.mkdir)(destDir, { recursive: true });
     }
-    const originalName = (0, import_path.basename)(sourcePath, (0, import_path.extname)(sourcePath));
-    const ext = (0, import_path.extname)(sourcePath);
-    const pathHash = hashPath(sourcePath);
-    const destFilename = `${originalName}_${pathHash}${ext}`;
+    const ext = (0, import_path.extname)(sourcePath).toLowerCase();
+    const contentHash = await hashFileContent(sourcePath);
+    const destFilename = `${contentHash}${ext}`;
     const destPath = (0, import_path.join)(destDir, destFilename);
     if ((0, import_fs.existsSync)(destPath)) {
       return { success: true, path: destPath };
@@ -2886,6 +2886,14 @@ var import_obsidian7 = require("obsidian");
 
 // src/changelog.ts
 var CHANGELOG = [
+  {
+    version: "0.1.39",
+    date: "2026-05-09",
+    changes: [
+      "Fix: Wallpapers no longer accumulate duplicates in the `<vault>/<perspecta-folder>/wallpapers/` directory. Filenames are now content-addressed (`<16-char-content-hash>.<ext>`), so the same image always produces the same name \u2014 meaning the existence check actually deduplicates. Previously, hashing the source path produced a new name on every save once the wallpaper was a previously-saved local copy: `name_a.jpg \u2192 name_a_b.jpg \u2192 name_a_b_c.jpg \u2192 \u2026` ad infinitum. Bug present since v0.1.13. Old duplicate files in your wallpapers directory can be deleted manually \u2014 only the file your most recent saved arrangement points at is referenced.",
+      "Internal: 11 new unit tests in `tests/wallpaper-copy.test.ts` covering content-addressed naming, save\u2192restore\u2192save idempotency, and extension normalisation."
+    ]
+  },
   {
     version: "0.1.38",
     date: "2026-05-09",
