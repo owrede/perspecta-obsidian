@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.39',
+		date: '2026-05-09',
+		changes: [
+			'Fix: Wallpapers no longer accumulate duplicates in the `<vault>/<perspecta-folder>/wallpapers/` directory. Filenames are now content-addressed (`<16-char-content-hash>.<ext>`), so the same image always produces the same name — meaning the existence check actually deduplicates. Previously, hashing the source path produced a new name on every save once the wallpaper was a previously-saved local copy: `name_a.jpg → name_a_b.jpg → name_a_b_c.jpg → …` ad infinitum. Bug present since v0.1.13. Old duplicate files in your wallpapers directory can be deleted manually — only the file your most recent saved arrangement points at is referenced.',
+			'Internal: 11 new unit tests in `tests/wallpaper-copy.test.ts` covering content-addressed naming, save→restore→save idempotency, and extension normalisation.',
+		],
+	},
+	{
 		version: '0.1.38',
 		date: '2026-05-09',
 		changes: [

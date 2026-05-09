@@ -29,9 +29,9 @@
 import { Platform } from 'obsidian';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { copyFile, stat, mkdir } from 'fs/promises';
+import { copyFile, readFile, stat, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { basename, extname, join } from 'path';
+import { extname, join } from 'path';
 import { createHash } from 'crypto';
 
 const execFileAsync = promisify(execFile);
@@ -422,14 +422,24 @@ export function validateWallpaperPath(path: string): { isValid: boolean; error?:
 }
 
 /**
- * Generates a short hash from a file path for unique naming.
- * Uses first 8 characters of SHA-256 hash.
+ * Generates a short content hash from file bytes for stable, idempotent naming.
+ * Uses first 16 characters of SHA-256 hash.
  *
- * @param path - The path to hash
- * @returns 8-character hex hash string
+ * Content-addressed (not path-addressed) so the same image always produces
+ * the same name, regardless of where it lives on disk. This is what makes
+ * `copyWallpaperToLocal` idempotent — calling it twice on the same image
+ * produces the same destination filename, so the existence check actually
+ * deduplicates.
+ *
+ * Pre-v0.1.39 used `hashPath(sourcePath)`. That hashed the path, which
+ * grew on every save once the wallpaper was a previously-saved local copy:
+ * each save read the previous local copy's path, generated a new hash from
+ * that, and wrote a longer-named file. Result: `name_a.jpg`, `name_a_b.jpg`,
+ * `name_a_b_c.jpg`, ... ad infinitum, all with identical bytes.
  */
-function hashPath(path: string): string {
-	return createHash('sha256').update(path).digest('hex').substring(0, 8);
+async function hashFileContent(path: string): Promise<string> {
+	const data = await readFile(path);
+	return createHash('sha256').update(data).digest('hex').substring(0, 16);
 }
 
 /**
@@ -480,14 +490,18 @@ export async function copyWallpaperToLocal(
 			await mkdir(destDir, { recursive: true });
 		}
 
-		// Generate unique filename: originalname_hash.ext
-		const originalName = basename(sourcePath, extname(sourcePath));
-		const ext = extname(sourcePath);
-		const pathHash = hashPath(sourcePath);
-		const destFilename = `${originalName}_${pathHash}${ext}`;
+		// Content-addressed filename: <16-char-content-hash>.<ext>
+		// Same image bytes → same name, so the existence check below
+		// actually deduplicates. No basename or path components are mixed
+		// in, so the filename can't grow across repeated saves.
+		const ext = extname(sourcePath).toLowerCase();
+		const contentHash = await hashFileContent(sourcePath);
+		const destFilename = `${contentHash}${ext}`;
 		const destPath = join(destDir, destFilename);
 
-		// Skip copy if file already exists (same content assumed)
+		// Skip copy if file already exists — same content hash means
+		// identical bytes (collision probability ~negligible at 16 hex chars
+		// for the small population of system wallpapers a user has).
 		if (existsSync(destPath)) {
 			return { success: true, path: destPath };
 		}
