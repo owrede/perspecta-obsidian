@@ -2,6 +2,10 @@
 
 All notable changes to Perspecta will be documented in this file.
 
+## [0.1.37] - 2026-05-09
+
+- Diagnostic: temporary always-on logging in saveContext, restoreContext, addUidToFile, and saveContextToFrontmatter to localise an intermittent save-failure (one user reports the arrangement line disappearing after save). Filter the dev-tools console for `[Perspecta-DIAG]`. The logs will be removed in v0.1.38 once the cause is identified.
+
 ## [0.1.36] - 2026-05-08
 
 - Fix: The "saved context" target icon no longer appears on every markdown file. The check used `!== null` against the frontmatter cache, but Obsidian returns `undefined` for missing keys (never `null`) — so the indicator fired for every note in the vault. Now uses a centralised hasContextInFrontmatter() helper.

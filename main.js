@@ -846,7 +846,11 @@ function getUidFromCache(app, file) {
   return (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[UID_FRONTMATTER_KEY];
 }
 async function addUidToFile(app, file, uid) {
+  const tag = `[Perspecta-DIAG] addUidToFile "${file.path}"`;
+  console.warn(`${tag} step0 entry`);
   const content = await app.vault.read(file);
+  const hadArrBefore = content.includes("perspecta-arrangement:");
+  console.warn(`${tag} step1 vault.read: len=${content.length}, hadArrKey=${hadArrBefore}`);
   const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
   const match = content.match(frontmatterRegex);
   let newContent;
@@ -858,7 +862,11 @@ async function addUidToFile(app, file, uid) {
         newContent = content.replace(frontmatterRegex, `---
 ${fm}
 ---`);
+        console.warn(`${tag} step2 already-has-uid, cleaning legacy uid; will modify`);
         await app.vault.modify(file, newContent);
+        console.warn(`${tag} step3 vault.modify (cleanup) returned`);
+      } else {
+        console.warn(`${tag} step2 already-has-uid, no legacy uid; no-op`);
       }
       return;
     }
@@ -874,7 +882,10 @@ ${UID_FRONTMATTER_KEY}: "${uid}"
 ---
 ${content}`;
   }
+  const hadArrAfter = newContent.includes("perspecta-arrangement:");
+  console.warn(`${tag} step2 prepared write: newLen=${newContent.length}, hasArrKey=${hadArrAfter}`);
   await app.vault.modify(file, newContent);
+  console.warn(`${tag} step3 vault.modify returned`);
 }
 async function cleanupOldUid(app, file) {
   const content = await app.vault.read(file);
@@ -1516,21 +1527,31 @@ function getContextFromFrontmatter(app, file) {
   return rawValue;
 }
 async function saveContextToFrontmatter(app, file, arrangement) {
+  const tag = `[Perspecta-DIAG] saveContextToFrontmatter "${file.path}"`;
   const readStart = performance.now();
   const content = await app.vault.read(file);
-  if (PerfTimer.isEnabled()) {
-    Logger.debug(`  \u2713 vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
-  }
+  const readMs = (performance.now() - readStart).toFixed(1);
+  const hasKeyBeforeWrite = content.includes("perspecta-arrangement:");
+  console.warn(`${tag} step1 vault.read: ${readMs}ms, len=${content.length}, hasArrKeyOnDisk=${hasKeyBeforeWrite}`);
   const fmStart = performance.now();
   const newContent = updateFrontmatter(content, arrangement);
-  if (PerfTimer.isEnabled()) {
-    Logger.debug(`  \u2713 updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
-  }
+  const fmMs = (performance.now() - fmStart).toFixed(1);
+  const hasKeyAfterEncode = newContent.includes("perspecta-arrangement:");
+  console.warn(`${tag} step2 updateFrontmatter: ${fmMs}ms, newLen=${newContent.length}, hasArrKey=${hasKeyAfterEncode}`);
   const writeStart = performance.now();
   await app.vault.modify(file, newContent);
-  if (PerfTimer.isEnabled()) {
-    Logger.debug(`  \u2713 vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
-  }
+  const writeMs = (performance.now() - writeStart).toFixed(1);
+  console.warn(`${tag} step3 vault.modify: ${writeMs}ms (returned)`);
+  const verify = async (label, delayMs) => {
+    await new Promise((r) => setTimeout(r, delayMs));
+    const after = await app.vault.read(file);
+    const stillHas = after.includes("perspecta-arrangement:");
+    const sameLen = after.length === newContent.length;
+    console.warn(`${tag} step4 verify@${label}: hasArrKey=${stillHas}, sameLen=${sameLen}, len=${after.length}`);
+  };
+  void verify("100ms", 100);
+  void verify("500ms", 500);
+  void verify("2000ms", 2e3);
 }
 function hasContextInFrontmatter(app, file) {
   var _a, _b;
@@ -2856,6 +2877,13 @@ var import_obsidian7 = require("obsidian");
 // src/changelog.ts
 var CHANGELOG = [
   {
+    version: "0.1.37",
+    date: "2026-05-09",
+    changes: [
+      "Diagnostic: temporary always-on logging in saveContext, restoreContext, addUidToFile, and saveContextToFrontmatter to localise an intermittent save-failure (one user reports the arrangement line disappearing after save). Filter the dev-tools console for `[Perspecta-DIAG]`. The logs will be removed in v0.1.38 once the cause is identified."
+    ]
+  },
+  {
     version: "0.1.36",
     date: "2026-05-08",
     changes: [
@@ -4090,7 +4118,9 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     PerfTimer.begin("saveContext");
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
+    console.warn(`[Perspecta-DIAG] saveContext START targetFile="${targetFile == null ? void 0 : targetFile.path}", storageMode=${this.settings.storageMode}, autoGenerateUids=${this.settings.autoGenerateUids}`);
     if (!targetFile) {
+      console.warn("[Perspecta-DIAG] saveContext aborted: no active file");
       new import_obsidian8.Notice("No active file to save context to", 4e3);
       return;
     }
@@ -4158,6 +4188,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         new import_obsidian8.Notice(`Context saved to ${targetFile.name}`, 4e3);
       }
     }
+    console.warn(`[Perspecta-DIAG] saveContext END saved=${saved}`);
     PerfTimer.end("saveContext");
   }
   // Save context to external store (using file's UID as key)
@@ -4329,7 +4360,10 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   }
   // Guard against concurrent restores
   async restoreContext(file, forceLatest = false) {
+    var _a, _b, _c;
+    console.warn(`[Perspecta-DIAG] restoreContext START file=${file == null ? void 0 : file.path}, forceLatest=${forceLatest}, isRestoring=${this.isRestoring}, storageMode=${this.settings.storageMode}`);
     if (this.isRestoring) {
+      console.warn("[Perspecta-DIAG] restoreContext aborted: already restoring");
       Logger.debug("Skipping restoreContext - already restoring");
       return;
     }
@@ -4340,22 +4374,31 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     const targetFile = file != null ? file : this.app.workspace.getActiveFile();
     PerfTimer.mark("getActiveFile");
     if (!targetFile) {
+      console.warn("[Perspecta-DIAG] restoreContext aborted: no active file");
       new import_obsidian8.Notice("No active file", 4e3);
       this.isRestoring = false;
       return;
     }
+    const fmCache = (_a = this.app.metadataCache.getFileCache(targetFile)) == null ? void 0 : _a.frontmatter;
+    const arrValue = fmCache == null ? void 0 : fmCache["perspecta-arrangement"];
+    const arrType = arrValue === void 0 ? "undefined" : arrValue === null ? "null" : typeof arrValue;
+    const arrLen = typeof arrValue === "string" ? arrValue.length : -1;
+    console.warn(`[Perspecta-DIAG] restoreContext: targetFile="${targetFile.path}", ext=${targetFile.extension}, fmKeys=${fmCache ? Object.keys(fmCache).join(",") : "(no fm cache)"}, arrType=${arrType}, arrLen=${arrLen}`);
     try {
       const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
       PerfTimer.mark("getContextForFileWithSelection");
       if (!contextResult || contextResult.cancelled) {
+        console.warn(`[Perspecta-DIAG] restoreContext: cancelled or no result, contextResult=${JSON.stringify({ has: !!contextResult, cancelled: contextResult == null ? void 0 : contextResult.cancelled })}`);
         PerfTimer.end("restoreContext");
         return;
       }
       const context = contextResult.context;
       if (!context) {
+        console.warn("[Perspecta-DIAG] restoreContext: no context \u2014 showing notice");
         new import_obsidian8.Notice("No context found in this note", 4e3);
         return;
       }
+      console.warn(`[Perspecta-DIAG] restoreContext: got context v=${context.v}, ts=${context.ts}, popouts=${(_c = (_b = context.popouts) == null ? void 0 : _b.length) != null ? _c : "n/a"}`);
       const _focusedWin = await this.applyArrangement(context, targetFile.path);
       PerfTimer.mark("applyArrangement");
       if (this.settings.showDebugModalOnRestore) {

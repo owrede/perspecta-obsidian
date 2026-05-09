@@ -11,6 +11,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: '0.1.37',
+		date: '2026-05-09',
+		changes: [
+			'Diagnostic: temporary always-on logging in saveContext, restoreContext, addUidToFile, and saveContextToFrontmatter to localise an intermittent save-failure (one user reports the arrangement line disappearing after save). Filter the dev-tools console for `[Perspecta-DIAG]`. The logs will be removed in v0.1.38 once the cause is identified.',
+		],
+	},
+	{
 		version: '0.1.36',
 		date: '2026-05-08',
 		changes: [

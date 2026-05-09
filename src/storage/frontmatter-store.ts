@@ -13,8 +13,6 @@
 import { App, TFile } from 'obsidian';
 import { FRONTMATTER_KEY, WindowArrangement, WindowArrangementV2 } from '../types';
 import { decodeArrangement, encodeArrangement } from './codec';
-import { Logger } from '../utils/logger';
-import { PerfTimer } from '../utils/perf-timer';
 
 const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
 
@@ -43,23 +41,39 @@ export async function saveContextToFrontmatter(
 	file: TFile,
 	arrangement: WindowArrangementV2
 ): Promise<void> {
+	// === DIAGNOSTIC (v0.1.37) ===
+	// Always-on logging to verify the vault.read/modify race against the
+	// editor buffer. Will be removed in the follow-up fix release.
+	const tag = `[Perspecta-DIAG] saveContextToFrontmatter "${file.path}"`;
+
 	const readStart = performance.now();
 	const content = await app.vault.read(file);
-	if (PerfTimer.isEnabled()) {
-		Logger.debug(`  ✓ vault.read: ${(performance.now() - readStart).toFixed(1)}ms`);
-	}
+	const readMs = (performance.now() - readStart).toFixed(1);
+	const hasKeyBeforeWrite = content.includes('perspecta-arrangement:');
+	console.warn(`${tag} step1 vault.read: ${readMs}ms, len=${content.length}, hasArrKeyOnDisk=${hasKeyBeforeWrite}`);
 
 	const fmStart = performance.now();
 	const newContent = updateFrontmatter(content, arrangement);
-	if (PerfTimer.isEnabled()) {
-		Logger.debug(`  ✓ updateFrontmatter: ${(performance.now() - fmStart).toFixed(1)}ms`);
-	}
+	const fmMs = (performance.now() - fmStart).toFixed(1);
+	const hasKeyAfterEncode = newContent.includes('perspecta-arrangement:');
+	console.warn(`${tag} step2 updateFrontmatter: ${fmMs}ms, newLen=${newContent.length}, hasArrKey=${hasKeyAfterEncode}`);
 
 	const writeStart = performance.now();
 	await app.vault.modify(file, newContent);
-	if (PerfTimer.isEnabled()) {
-		Logger.debug(`  ✓ vault.modify: ${(performance.now() - writeStart).toFixed(1)}ms`);
-	}
+	const writeMs = (performance.now() - writeStart).toFixed(1);
+	console.warn(`${tag} step3 vault.modify: ${writeMs}ms (returned)`);
+
+	// Re-read at three points to see if anything overwrites our line.
+	const verify = async (label: string, delayMs: number): Promise<void> => {
+		await new Promise(r => setTimeout(r, delayMs));
+		const after = await app.vault.read(file);
+		const stillHas = after.includes('perspecta-arrangement:');
+		const sameLen = after.length === newContent.length;
+		console.warn(`${tag} step4 verify@${label}: hasArrKey=${stillHas}, sameLen=${sameLen}, len=${after.length}`);
+	};
+	void verify('100ms', 100);
+	void verify('500ms', 500);
+	void verify('2000ms', 2000);
 }
 
 /**

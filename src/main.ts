@@ -916,7 +916,11 @@ export default class PerspectaPlugin extends Plugin {
 		const targetFile = file ?? this.app.workspace.getActiveFile();
 		PerfTimer.mark('getActiveFile');
 
+		// === DIAGNOSTIC (v0.1.37) ===
+		console.warn(`[Perspecta-DIAG] saveContext START targetFile="${targetFile?.path}", storageMode=${this.settings.storageMode}, autoGenerateUids=${this.settings.autoGenerateUids}`);
+
 		if (!targetFile) {
+			console.warn('[Perspecta-DIAG] saveContext aborted: no active file');
 			new Notice('No active file to save context to', 4000);
 			return;
 		}
@@ -1001,6 +1005,9 @@ export default class PerspectaPlugin extends Plugin {
 				new Notice(`Context saved to ${targetFile.name}`, 4000);
 			}
 		}
+
+		// === DIAGNOSTIC (v0.1.37) ===
+		console.warn(`[Perspecta-DIAG] saveContext END saved=${saved}`);
 
 		PerfTimer.end('saveContext');
 	}
@@ -1230,8 +1237,12 @@ export default class PerspectaPlugin extends Plugin {
 	private isRestoring = false;  // Guard against concurrent restores
 
 	async restoreContext(file?: TFile, forceLatest = false) {
+		// === DIAGNOSTIC (v0.1.37) ===
+		console.warn(`[Perspecta-DIAG] restoreContext START file=${file?.path}, forceLatest=${forceLatest}, isRestoring=${this.isRestoring}, storageMode=${this.settings.storageMode}`);
+
 		// Prevent concurrent restores which can cause duplicate windows
 		if (this.isRestoring) {
+			console.warn('[Perspecta-DIAG] restoreContext aborted: already restoring');
 			Logger.debug('Skipping restoreContext - already restoring');
 			return;
 		}
@@ -1247,10 +1258,19 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.mark('getActiveFile');
 
 		if (!targetFile) {
+			console.warn('[Perspecta-DIAG] restoreContext aborted: no active file');
 			new Notice('No active file', 4000);
 			this.isRestoring = false;
 			return;
 		}
+
+		// === DIAGNOSTIC (v0.1.37) ===
+		// Inspect the metadata cache for what we're going to read.
+		const fmCache = this.app.metadataCache.getFileCache(targetFile)?.frontmatter;
+		const arrValue = fmCache?.['perspecta-arrangement'];
+		const arrType = arrValue === undefined ? 'undefined' : arrValue === null ? 'null' : typeof arrValue;
+		const arrLen = typeof arrValue === 'string' ? arrValue.length : -1;
+		console.warn(`[Perspecta-DIAG] restoreContext: targetFile="${targetFile.path}", ext=${targetFile.extension}, fmKeys=${fmCache ? Object.keys(fmCache).join(',') : '(no fm cache)'}, arrType=${arrType}, arrLen=${arrLen}`);
 
 		try {
 			// Get context - may show selector if multiple arrangements exist (unless forceLatest)
@@ -1258,12 +1278,14 @@ export default class PerspectaPlugin extends Plugin {
 			PerfTimer.mark('getContextForFileWithSelection');
 
 			if (!contextResult || contextResult.cancelled) {
+				console.warn(`[Perspecta-DIAG] restoreContext: cancelled or no result, contextResult=${JSON.stringify({ has: !!contextResult, cancelled: contextResult?.cancelled })}`);
 				PerfTimer.end('restoreContext');
 				return;
 			}
 
 			const context = contextResult.context;
-			if (!context) { new Notice('No context found in this note', 4000); return; }
+			if (!context) { console.warn('[Perspecta-DIAG] restoreContext: no context — showing notice'); new Notice('No context found in this note', 4000); return; }
+			console.warn(`[Perspecta-DIAG] restoreContext: got context v=${context.v}, ts=${context.ts}, popouts=${(context as { popouts?: unknown[] }).popouts?.length ?? 'n/a'}`);
 
 			const _focusedWin = await this.applyArrangement(context, targetFile.path);
 			PerfTimer.mark('applyArrangement');
