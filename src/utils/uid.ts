@@ -25,7 +25,14 @@ export function getUidFromCache(app: App, file: TFile): string | undefined {
 
 // Add UID to a markdown file's frontmatter (creates frontmatter if needed)
 export async function addUidToFile(app: App, file: TFile, uid: string): Promise<void> {
+	// === DIAGNOSTIC (v0.1.37) ===
+	const tag = `[Perspecta-DIAG] addUidToFile "${file.path}"`;
+	console.warn(`${tag} step0 entry`);
+
 	const content = await app.vault.read(file);
+	const hadArrBefore = content.includes('perspecta-arrangement:');
+	console.warn(`${tag} step1 vault.read: len=${content.length}, hadArrKey=${hadArrBefore}`);
+
 	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
 	const match = content.match(frontmatterRegex);
 
@@ -37,7 +44,11 @@ export async function addUidToFile(app: App, file: TFile, uid: string): Promise<
 			if (fm.match(/^uid:\s*["']?[^"'\n]+["']?\s*$/m)) {
 				fm = fm.replace(/^uid:\s*["']?[^"'\n]+["']?\n?/gm, '').trim();
 				newContent = content.replace(frontmatterRegex, `---\n${fm}\n---`);
+				console.warn(`${tag} step2 already-has-uid, cleaning legacy uid; will modify`);
 				await app.vault.modify(file, newContent);
+				console.warn(`${tag} step3 vault.modify (cleanup) returned`);
+			} else {
+				console.warn(`${tag} step2 already-has-uid, no legacy uid; no-op`);
 			}
 			return;
 		}
@@ -49,7 +60,10 @@ export async function addUidToFile(app: App, file: TFile, uid: string): Promise<
 		newContent = `---\n${UID_FRONTMATTER_KEY}: "${uid}"\n---\n${content}`;
 	}
 
+	const hadArrAfter = newContent.includes('perspecta-arrangement:');
+	console.warn(`${tag} step2 prepared write: newLen=${newContent.length}, hasArrKey=${hadArrAfter}`);
 	await app.vault.modify(file, newContent);
+	console.warn(`${tag} step3 vault.modify returned`);
 }
 
 // Remove old 'uid' property from a file if it has perspecta-uid
