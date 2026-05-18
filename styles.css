@@ -72,6 +72,42 @@
     opacity: 0.9;
 }
 
+/* Weak indicator: arrangement exists only in another workspace.
+   Uses a different Lucide icon (external-link) at the SAME size as the
+   strong indicator — distinguished by shape + dim opacity, not by scale.
+   Clicking opens the cross-workspace action dialog. */
+.perspecta-context-indicator-weak {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    color: var(--text-muted);
+    opacity: 0.55;
+    vertical-align: middle;
+    cursor: pointer;
+}
+
+.perspecta-context-indicator-weak:hover {
+    opacity: 1;
+    color: var(--interactive-accent);
+}
+
+.perspecta-context-indicator-weak svg {
+    width: 14px;
+    height: 14px;
+}
+
+.nav-file-title .perspecta-context-indicator-weak {
+    margin-left: 0;
+    margin-right: 4px;
+    opacity: 0.5;
+    position: relative;
+    top: 2px;
+}
+
+.nav-file-title:hover .perspecta-context-indicator-weak {
+    opacity: 0.85;
+}
+
 /* ============================================================================
    Debug Modal
    ============================================================================ */

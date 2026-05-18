@@ -108,6 +108,8 @@ function safeTimeout(callback, delay2) {
 }
 
 // src/types.ts
+var DEFAULT_WORKSPACE_ID = "default";
+var DEFAULT_WORKSPACE_DISPLAY_NAME = "Default";
 var DEFAULT_SETTINGS = {
   enableVisualMapping: true,
   enableAutomation: true,
@@ -129,13 +131,26 @@ var DEFAULT_SETTINGS = {
   storeWallpapersLocally: true,
   // Default to local storage for portability
   // Performance settings
-  enableParallelPopoutCreation: false
+  enableParallelPopoutCreation: false,
   // Default to sequential for safety
+  // Workspace integration
+  workspaceFallbackToDefault: true,
+  workspaceCrossSelector: false,
+  workspaceSharedLocation: "perspecta/workspaces",
+  enableWorkspaceStatusBar: true
 };
 var FRONTMATTER_KEY = "perspecta-arrangement";
 var UID_FRONTMATTER_KEY = "perspecta-uid";
 
 // src/types/obsidian-internal.ts
+function getWorkspacesInstance(app) {
+  var _a;
+  const ext = app;
+  const plugin = (_a = ext.internalPlugins) == null ? void 0 : _a.plugins.workspaces;
+  if (!plugin || !plugin.enabled || !plugin.instance)
+    return null;
+  return plugin.instance;
+}
 function asExtendedLeaf(leaf) {
   return leaf;
 }
@@ -377,6 +392,661 @@ PerfTimer.times = [];
 PerfTimer.start = 0;
 PerfTimer.lastMark = 0;
 PerfTimer.currentOperation = "";
+
+// src/storage/external-store.ts
+var CONTEXTS_FOLDER = "contexts";
+var MANIFEST_FILENAME = "_workspaces.json";
+function isArrangementCollection(data) {
+  return typeof data === "object" && data !== null && "arrangements" in data && Array.isArray(data.arrangements);
+}
+function isWorkspaceManifest(data) {
+  return typeof data === "object" && data !== null && data.v === 1 && typeof data.workspaces === "object";
+}
+function slugifyWorkspaceName(name) {
+  const slug = name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+  return slug || "workspace";
+}
+var ExternalContextStore = class {
+  constructor(config2) {
+    // Workspace-keyed cache: workspaceId → uid → collection.
+    this.cache = /* @__PURE__ */ new Map();
+    // Workspace-keyed dirty set: workspaceId → set of uids needing flush.
+    this.dirty = /* @__PURE__ */ new Map();
+    // Workspace manifest.
+    this.workspaceManifest = { v: 1, workspaces: {} };
+    this.manifestDirty = false;
+    // Active workspace id (defaults to 'default').
+    this.activeWorkspaceId = DEFAULT_WORKSPACE_ID;
+    this.saveTimeoutCleanup = null;
+    this.initialized = false;
+    var _a;
+    this.app = config2.app;
+    this.manifest = config2.manifest;
+    this.sharedLocation = ((_a = config2.sharedLocation) != null ? _a : "perspecta/workspaces").replace(/\/+$/, "");
+    this.debouncedFlush = debounceAsync(async () => {
+      await this.flushDirty();
+    }, TIMING.EXTERNAL_STORE_DEBOUNCE);
+  }
+  get adapter() {
+    return this.app.vault.adapter;
+  }
+  /** Plugin-dir base contexts folder (where the manifest lives). */
+  getContextsBasePath() {
+    return `${this.manifest.dir}/${CONTEXTS_FOLDER}`;
+  }
+  getManifestPath() {
+    return `${this.getContextsBasePath()}/${MANIFEST_FILENAME}`;
+  }
+  /** Folder for a specific workspace bucket — plugin-dir or shared. */
+  getWorkspaceFolder(workspaceId) {
+    const info = this.workspaceManifest.workspaces[workspaceId];
+    if ((info == null ? void 0 : info.shared) && workspaceId !== DEFAULT_WORKSPACE_ID) {
+      return `${this.sharedLocation}/${workspaceId}`;
+    }
+    return `${this.getContextsBasePath()}/${workspaceId}`;
+  }
+  /** Update the shared location at runtime (e.g. when settings change). */
+  updateSharedLocation(sharedLocation) {
+    this.sharedLocation = sharedLocation.replace(/\/+$/, "");
+  }
+  // =========================================================================
+  // Initialization
+  // =========================================================================
+  async initialize() {
+    if (this.initialized)
+      return;
+    const contextsPath = this.getContextsBasePath();
+    try {
+      if (!await this.adapter.exists(contextsPath)) {
+        await this.adapter.mkdir(contextsPath);
+      }
+      await this.loadManifest();
+      await this.migrateFlatLayoutIfNeeded();
+      if (!this.workspaceManifest.workspaces[DEFAULT_WORKSPACE_ID]) {
+        this.workspaceManifest.workspaces[DEFAULT_WORKSPACE_ID] = {
+          displayName: DEFAULT_WORKSPACE_DISPLAY_NAME,
+          shared: false
+        };
+        this.manifestDirty = true;
+      }
+      for (const wsId of Object.keys(this.workspaceManifest.workspaces)) {
+        await this.loadWorkspaceBucket(wsId);
+      }
+      if (this.manifestDirty) {
+        await this.writeManifest();
+        this.manifestDirty = false;
+      }
+      this.initialized = true;
+      if (PerfTimer.isEnabled()) {
+        const totalUids = Array.from(this.cache.values()).reduce((sum, m) => sum + m.size, 0);
+        Logger.info(`External store initialized: ${this.cache.size} workspace(s), ${totalUids} context(s)`);
+      }
+    } catch (e) {
+      Logger.error("Failed to initialize external store:", e);
+    }
+  }
+  async loadManifest() {
+    const manifestPath = this.getManifestPath();
+    try {
+      if (await this.adapter.exists(manifestPath)) {
+        const content = await this.adapter.read(manifestPath);
+        const parsed = JSON.parse(content);
+        if (isWorkspaceManifest(parsed)) {
+          this.workspaceManifest = parsed;
+        } else {
+          Logger.warn("Invalid workspace manifest, recreating");
+          this.workspaceManifest = { v: 1, workspaces: {} };
+          this.manifestDirty = true;
+        }
+      } else {
+        this.workspaceManifest = { v: 1, workspaces: {} };
+        this.manifestDirty = true;
+      }
+    } catch (e) {
+      Logger.warn("Failed to load workspace manifest:", e);
+      this.workspaceManifest = { v: 1, workspaces: {} };
+      this.manifestDirty = true;
+    }
+  }
+  async writeManifest() {
+    const manifestPath = this.getManifestPath();
+    const contextsPath = this.getContextsBasePath();
+    if (!await this.adapter.exists(contextsPath)) {
+      await this.adapter.mkdir(contextsPath);
+    }
+    await this.adapter.write(manifestPath, JSON.stringify(this.workspaceManifest, null, 2));
+  }
+  /**
+   * If there are *.json files at <plugin-dir>/contexts/ root (legacy flat
+   * layout), move them into contexts/default/. Idempotent.
+   */
+  async migrateFlatLayoutIfNeeded() {
+    const contextsPath = this.getContextsBasePath();
+    try {
+      const listing = await this.adapter.list(contextsPath);
+      const rootJsonFiles = listing.files.filter(
+        (f) => f.endsWith(".json") && !f.endsWith(`/${MANIFEST_FILENAME}`)
+      );
+      if (rootJsonFiles.length === 0)
+        return;
+      const defaultFolder = `${contextsPath}/${DEFAULT_WORKSPACE_ID}`;
+      if (!await this.adapter.exists(defaultFolder)) {
+        await this.adapter.mkdir(defaultFolder);
+      }
+      for (const filePath of rootJsonFiles) {
+        const filename = filePath.split("/").pop();
+        if (!filename)
+          continue;
+        const target = `${defaultFolder}/${filename}`;
+        try {
+          if (await this.adapter.exists(target)) {
+            Logger.warn(`Migration: ${target} already exists, leaving ${filePath} in place`);
+            continue;
+          }
+          const content = await this.adapter.read(filePath);
+          await this.adapter.write(target, content);
+          await this.adapter.remove(filePath);
+        } catch (e) {
+          Logger.warn(`Failed to migrate ${filePath}:`, e);
+        }
+      }
+      if (!this.workspaceManifest.workspaces[DEFAULT_WORKSPACE_ID]) {
+        this.workspaceManifest.workspaces[DEFAULT_WORKSPACE_ID] = {
+          displayName: DEFAULT_WORKSPACE_DISPLAY_NAME,
+          shared: false
+        };
+      }
+      this.manifestDirty = true;
+      Logger.info(`Migrated ${rootJsonFiles.length} flat context file(s) into default/`);
+    } catch (e) {
+      Logger.warn("Flat-layout migration check failed:", e);
+    }
+  }
+  async loadWorkspaceBucket(workspaceId) {
+    var _a;
+    const folder = this.getWorkspaceFolder(workspaceId);
+    const bucket = /* @__PURE__ */ new Map();
+    this.cache.set(workspaceId, bucket);
+    try {
+      if (!await this.adapter.exists(folder)) {
+        return;
+      }
+      const listing = await this.adapter.list(folder);
+      for (const file of listing.files) {
+        if (!file.endsWith(".json"))
+          continue;
+        try {
+          const content = await this.adapter.read(file);
+          const data = JSON.parse(content);
+          const uid = (_a = file.split("/").pop()) == null ? void 0 : _a.replace(".json", "");
+          if (!uid || !data)
+            continue;
+          if (isArrangementCollection(data)) {
+            bucket.set(uid, data);
+          } else {
+            const arrangement = data;
+            const collection = {
+              arrangements: [{
+                arrangement,
+                savedAt: arrangement.ts || Date.now()
+              }]
+            };
+            bucket.set(uid, collection);
+            this.markDirty(workspaceId, uid);
+          }
+        } catch (e) {
+          Logger.warn(`Failed to load context file: ${file}`, e);
+        }
+      }
+    } catch (e) {
+      Logger.warn(`Failed to list workspace bucket ${workspaceId}:`, e);
+    }
+  }
+  // =========================================================================
+  // Workspace lifecycle
+  // =========================================================================
+  listWorkspaces() {
+    return Object.entries(this.workspaceManifest.workspaces).map(([id, info]) => ({
+      id,
+      displayName: info.displayName,
+      shared: info.shared
+    }));
+  }
+  getActiveWorkspace() {
+    return this.activeWorkspaceId;
+  }
+  setActiveWorkspace(workspaceId) {
+    this.activeWorkspaceId = workspaceId || DEFAULT_WORKSPACE_ID;
+  }
+  hasWorkspace(workspaceId) {
+    return workspaceId in this.workspaceManifest.workspaces;
+  }
+  /**
+   * Create a new workspace bucket (in the manifest + on disk).
+   * Returns the (possibly suffixed) id actually used.
+   */
+  async createWorkspaceBucket(displayName, requestedId) {
+    let baseId = requestedId != null ? requestedId : slugifyWorkspaceName(displayName);
+    let id = baseId;
+    let suffix = 2;
+    while (this.workspaceManifest.workspaces[id]) {
+      id = `${baseId}-${suffix}`;
+      suffix++;
+    }
+    this.workspaceManifest.workspaces[id] = { displayName, shared: false };
+    this.manifestDirty = true;
+    this.cache.set(id, /* @__PURE__ */ new Map());
+    const folder = this.getWorkspaceFolder(id);
+    if (!await this.adapter.exists(folder)) {
+      await this.adapter.mkdir(folder);
+    }
+    await this.writeManifest();
+    this.manifestDirty = false;
+    return id;
+  }
+  /**
+   * Rename a workspace bucket's display name. Folder id (slug) is immutable
+   * to avoid path churn — only the manifest's displayName changes.
+   */
+  async renameWorkspaceBucket(workspaceId, newDisplayName) {
+    const info = this.workspaceManifest.workspaces[workspaceId];
+    if (!info)
+      return;
+    info.displayName = newDisplayName;
+    await this.writeManifest();
+  }
+  /**
+   * Delete a workspace bucket and all its arrangements. Refuses for `default`.
+   */
+  async deleteWorkspaceBucket(workspaceId) {
+    if (workspaceId === DEFAULT_WORKSPACE_ID) {
+      throw new Error("Cannot delete the default workspace bucket");
+    }
+    const folder = this.getWorkspaceFolder(workspaceId);
+    try {
+      if (await this.adapter.exists(folder)) {
+        const listing = await this.adapter.list(folder);
+        for (const file of listing.files) {
+          try {
+            await this.adapter.remove(file);
+          } catch (e) {
+            Logger.warn(`Failed to remove ${file}:`, e);
+          }
+        }
+        try {
+          await this.adapter.rmdir(folder, false);
+        } catch (e) {
+          Logger.warn(`Failed to remove folder ${folder}:`, e);
+        }
+      }
+    } catch (e) {
+      Logger.warn(`Failed to delete workspace folder ${folder}:`, e);
+    }
+    delete this.workspaceManifest.workspaces[workspaceId];
+    this.cache.delete(workspaceId);
+    this.dirty.delete(workspaceId);
+    await this.writeManifest();
+  }
+  /**
+   * Toggle a workspace bucket between unshared (plugin-dir) and shared
+   * (vault). Physically moves the folder. Refuses for `default`.
+   */
+  async setWorkspaceShared(workspaceId, shared) {
+    if (workspaceId === DEFAULT_WORKSPACE_ID) {
+      throw new Error("Cannot share the default workspace bucket");
+    }
+    const info = this.workspaceManifest.workspaces[workspaceId];
+    if (!info)
+      return;
+    if (info.shared === shared)
+      return;
+    const oldFolder = this.getWorkspaceFolder(workspaceId);
+    info.shared = shared;
+    const newFolder = this.getWorkspaceFolder(workspaceId);
+    try {
+      if (await this.adapter.exists(oldFolder)) {
+        if (!await this.adapter.exists(newFolder)) {
+          const newParent = newFolder.substring(0, newFolder.lastIndexOf("/"));
+          if (newParent && !await this.adapter.exists(newParent)) {
+            await this.adapter.mkdir(newParent);
+          }
+          await this.adapter.mkdir(newFolder);
+        }
+        const listing = await this.adapter.list(oldFolder);
+        for (const file of listing.files) {
+          const name = file.split("/").pop();
+          if (!name)
+            continue;
+          const target = `${newFolder}/${name}`;
+          const content = await this.adapter.read(file);
+          await this.adapter.write(target, content);
+          await this.adapter.remove(file);
+        }
+        try {
+          await this.adapter.rmdir(oldFolder, false);
+        } catch (e) {
+        }
+      }
+    } catch (e) {
+      Logger.error(`Failed to ${shared ? "share" : "unshare"} workspace ${workspaceId}:`, e);
+      info.shared = !shared;
+      throw e;
+    }
+    await this.writeManifest();
+  }
+  // =========================================================================
+  // Arrangement access — workspace-aware
+  // All public methods accept an optional workspaceId; default = active.
+  // =========================================================================
+  bucketFor(workspaceId) {
+    let bucket = this.cache.get(workspaceId);
+    if (!bucket) {
+      bucket = /* @__PURE__ */ new Map();
+      this.cache.set(workspaceId, bucket);
+    }
+    return bucket;
+  }
+  markDirty(workspaceId, uid) {
+    let set = this.dirty.get(workspaceId);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.dirty.set(workspaceId, set);
+    }
+    set.add(uid);
+  }
+  /** Get all arrangements for a UID, sorted newest-first. */
+  get(uid, workspaceId = this.activeWorkspaceId) {
+    const collection = this.bucketFor(workspaceId).get(uid);
+    if (!collection || collection.arrangements.length === 0)
+      return null;
+    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+  }
+  getLatest(uid, workspaceId = this.activeWorkspaceId) {
+    const collection = this.bucketFor(workspaceId).get(uid);
+    if (!collection || collection.arrangements.length === 0)
+      return null;
+    const sorted = [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+    return sorted[0].arrangement;
+  }
+  getAll(uid, workspaceId = this.activeWorkspaceId) {
+    const collection = this.bucketFor(workspaceId).get(uid);
+    if (!collection)
+      return [];
+    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
+  }
+  getCount(uid, workspaceId = this.activeWorkspaceId) {
+    var _a, _b;
+    return (_b = (_a = this.bucketFor(workspaceId).get(uid)) == null ? void 0 : _a.arrangements.length) != null ? _b : 0;
+  }
+  has(uid, workspaceId = this.activeWorkspaceId) {
+    const collection = this.bucketFor(workspaceId).get(uid);
+    return collection !== void 0 && collection.arrangements.length > 0;
+  }
+  set(uid, context, maxArrangements = 1, workspaceId = this.activeWorkspaceId) {
+    const bucket = this.bucketFor(workspaceId);
+    let collection = bucket.get(uid);
+    if (!collection) {
+      collection = { arrangements: [] };
+    }
+    const timestamped = {
+      arrangement: context,
+      savedAt: Date.now()
+    };
+    collection.arrangements.push(timestamped);
+    collection.arrangements.sort((a, b) => a.savedAt - b.savedAt);
+    while (collection.arrangements.length > maxArrangements) {
+      collection.arrangements.shift();
+    }
+    bucket.set(uid, collection);
+    this.markDirty(workspaceId, uid);
+    this.scheduleSave();
+  }
+  deleteArrangement(uid, savedAt, workspaceId = this.activeWorkspaceId) {
+    const bucket = this.bucketFor(workspaceId);
+    const collection = bucket.get(uid);
+    if (!collection)
+      return;
+    collection.arrangements = collection.arrangements.filter((a) => a.savedAt !== savedAt);
+    if (collection.arrangements.length === 0) {
+      bucket.delete(uid);
+    } else {
+      bucket.set(uid, collection);
+    }
+    this.markDirty(workspaceId, uid);
+    this.scheduleSave();
+  }
+  async delete(uid, workspaceId = this.activeWorkspaceId) {
+    var _a;
+    const bucket = this.bucketFor(workspaceId);
+    bucket.delete(uid);
+    (_a = this.dirty.get(workspaceId)) == null ? void 0 : _a.delete(uid);
+    const filePath = `${this.getWorkspaceFolder(workspaceId)}/${uid}.json`;
+    try {
+      if (await this.adapter.exists(filePath)) {
+        await this.adapter.remove(filePath);
+      }
+    } catch (e) {
+      Logger.warn(`Failed to delete context file: ${filePath}`, e);
+    }
+  }
+  clearUid(uid, workspaceId = this.activeWorkspaceId) {
+    const bucket = this.bucketFor(workspaceId);
+    const collection = bucket.get(uid);
+    if (collection) {
+      collection.arrangements = [];
+      bucket.set(uid, collection);
+      this.markDirty(workspaceId, uid);
+    }
+  }
+  /**
+   * Clear all arrangements across all workspaces. Used by backup restore in
+   * overwrite mode.
+   */
+  async clearAll() {
+    for (const wsId of Array.from(this.cache.keys())) {
+      const bucket = this.cache.get(wsId);
+      if (!bucket)
+        continue;
+      for (const uid of Array.from(bucket.keys())) {
+        await this.delete(uid, wsId);
+      }
+      bucket.clear();
+      this.dirty.delete(wsId);
+    }
+  }
+  /** All UIDs in the active workspace. */
+  getAllUids(workspaceId = this.activeWorkspaceId) {
+    return Array.from(this.bucketFor(workspaceId).keys());
+  }
+  /** All UIDs across the listed workspaces (union; deduplicated). */
+  getAllUidsAcross(workspaceIds) {
+    const set = /* @__PURE__ */ new Set();
+    for (const wsId of workspaceIds) {
+      for (const uid of this.bucketFor(wsId).keys()) {
+        set.add(uid);
+      }
+    }
+    return Array.from(set);
+  }
+  /**
+   * Find which workspaces have arrangements for a given UID.
+   */
+  workspacesWithUid(uid) {
+    const result = [];
+    for (const [wsId, bucket] of this.cache.entries()) {
+      const c = bucket.get(uid);
+      if (c && c.arrangements.length > 0)
+        result.push(wsId);
+    }
+    return result;
+  }
+  // =========================================================================
+  // Copy / move arrangements between workspaces
+  // =========================================================================
+  /**
+   * Copy all arrangements for a UID from one workspace to another.
+   */
+  copyArrangements(uid, fromWs, toWs, policy, maxArrangements) {
+    var _a, _b;
+    const result = { copied: 0, skipped: 0, overwritten: 0 };
+    if (fromWs === toWs)
+      return result;
+    const source = this.bucketFor(fromWs).get(uid);
+    if (!source || source.arrangements.length === 0)
+      return result;
+    const targetBucket = this.bucketFor(toWs);
+    const existing = targetBucket.get(uid);
+    if (existing && existing.arrangements.length > 0) {
+      if (policy === "skip") {
+        result.skipped = source.arrangements.length;
+        return result;
+      }
+      if (policy === "overwrite") {
+        targetBucket.delete(uid);
+        result.overwritten = existing.arrangements.length;
+      }
+    }
+    const merged = [...(_b = (_a = targetBucket.get(uid)) == null ? void 0 : _a.arrangements) != null ? _b : []];
+    for (const ts of source.arrangements) {
+      if (!merged.some((m) => m.savedAt === ts.savedAt)) {
+        merged.push(ts);
+        result.copied++;
+      } else {
+        result.skipped++;
+      }
+    }
+    merged.sort((a, b) => a.savedAt - b.savedAt);
+    while (merged.length > maxArrangements) {
+      merged.shift();
+    }
+    targetBucket.set(uid, { arrangements: merged });
+    this.markDirty(toWs, uid);
+    this.scheduleSave();
+    return result;
+  }
+  moveArrangements(uid, fromWs, toWs, policy, maxArrangements) {
+    const result = this.copyArrangements(uid, fromWs, toWs, policy, maxArrangements);
+    if (fromWs !== toWs && (result.copied > 0 || result.overwritten > 0)) {
+      const sourceBucket = this.bucketFor(fromWs);
+      sourceBucket.delete(uid);
+      this.markDirty(fromWs, uid);
+      this.scheduleSave();
+    }
+    return result;
+  }
+  /**
+   * Bulk copy/move: every UID in fromWs → toWs.
+   */
+  bulkCopy(fromWs, toWs, policy, maxArrangements) {
+    const stats = { uids: 0, copied: 0, skipped: 0, overwritten: 0 };
+    const sourceBucket = this.bucketFor(fromWs);
+    for (const uid of Array.from(sourceBucket.keys())) {
+      const r = this.copyArrangements(uid, fromWs, toWs, policy, maxArrangements);
+      stats.uids++;
+      stats.copied += r.copied;
+      stats.skipped += r.skipped;
+      stats.overwritten += r.overwritten;
+    }
+    return stats;
+  }
+  bulkMove(fromWs, toWs, policy, maxArrangements) {
+    const stats = { uids: 0, copied: 0, skipped: 0, overwritten: 0 };
+    const sourceBucket = this.bucketFor(fromWs);
+    for (const uid of Array.from(sourceBucket.keys())) {
+      const r = this.moveArrangements(uid, fromWs, toWs, policy, maxArrangements);
+      stats.uids++;
+      stats.copied += r.copied;
+      stats.skipped += r.skipped;
+      stats.overwritten += r.overwritten;
+    }
+    return stats;
+  }
+  // =========================================================================
+  // Persistence
+  // =========================================================================
+  scheduleSave() {
+    if (this.saveTimeoutCleanup) {
+      this.saveTimeoutCleanup();
+      this.saveTimeoutCleanup = null;
+    }
+    this.debouncedFlush().catch((error) => {
+      Logger.error("Failed to flush dirty data:", error);
+    });
+  }
+  async flushDirty() {
+    if (this.dirty.size === 0 && !this.manifestDirty)
+      return;
+    if (this.manifestDirty) {
+      try {
+        await this.writeManifest();
+        this.manifestDirty = false;
+      } catch (e) {
+        Logger.error("Failed to flush manifest:", e);
+      }
+    }
+    let totalSaved = 0;
+    for (const [wsId, uidSet] of Array.from(this.dirty.entries())) {
+      const folder = this.getWorkspaceFolder(wsId);
+      try {
+        if (!await this.adapter.exists(folder)) {
+          const parent = folder.substring(0, folder.lastIndexOf("/"));
+          if (parent && !await this.adapter.exists(parent)) {
+            await this.adapter.mkdir(parent);
+          }
+          await this.adapter.mkdir(folder);
+        }
+      } catch (e) {
+        Logger.error(`Failed to ensure workspace folder ${folder}:`, e);
+        continue;
+      }
+      const toSave = Array.from(uidSet);
+      uidSet.clear();
+      for (const uid of toSave) {
+        const collection = this.bucketFor(wsId).get(uid);
+        const filePath = `${folder}/${uid}.json`;
+        if (collection && collection.arrangements.length > 0) {
+          try {
+            const json = JSON.stringify(collection);
+            await this.adapter.write(filePath, json);
+            totalSaved++;
+          } catch (e) {
+            Logger.error(`Failed to save context: ${wsId}/${uid}`, e);
+            uidSet.add(uid);
+          }
+        } else {
+          try {
+            if (await this.adapter.exists(filePath)) {
+              await this.adapter.remove(filePath);
+            }
+          } catch (e) {
+            Logger.warn(`Failed to delete empty context file: ${filePath}`, e);
+          }
+        }
+      }
+      if (uidSet.size === 0) {
+        this.dirty.delete(wsId);
+      }
+    }
+    if (PerfTimer.isEnabled()) {
+      Logger.info(`Saved ${totalSaved} context(s) to disk`);
+    }
+  }
+  async cleanup() {
+    if (this.saveTimeoutCleanup) {
+      this.saveTimeoutCleanup();
+      this.saveTimeoutCleanup = null;
+    }
+    await this.flushDirty();
+  }
+  isInitialized() {
+    return this.initialized;
+  }
+  async ensureInitialized() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+  }
+};
 
 // src/utils/coordinates.ts
 var MIN_WINDOW_SIZE = 100;
@@ -1071,6 +1741,21 @@ async function getContextFromCanvas(app, file) {
     return null;
   }
 }
+async function addUidToCanvas(app, file, uid) {
+  if (file.extension !== "canvas")
+    return;
+  try {
+    const content = await app.vault.read(file);
+    const data = JSON.parse(content);
+    if (!data.perspecta) {
+      data.perspecta = {};
+    }
+    data.perspecta.uid = uid;
+    await app.vault.modify(file, JSON.stringify(data, null, "	"));
+  } catch (e) {
+    Logger.error("Failed to add UID to canvas:", e);
+  }
+}
 async function saveContextToCanvas(app, file, context) {
   if (file.extension !== "canvas")
     return;
@@ -1085,6 +1770,23 @@ async function saveContextToCanvas(app, file, context) {
   } catch (e) {
     Logger.error("Failed to save context to canvas:", e);
     throw e;
+  }
+}
+async function removeContextFromCanvas(app, file) {
+  var _a;
+  if (file.extension !== "canvas")
+    return false;
+  try {
+    const content = await app.vault.read(file);
+    const data = JSON.parse(content);
+    if (!((_a = data.perspecta) == null ? void 0 : _a.context))
+      return false;
+    delete data.perspecta.context;
+    await app.vault.modify(file, JSON.stringify(data, null, "	"));
+    return true;
+  } catch (e) {
+    Logger.error("Failed to remove context from canvas:", e);
+    return false;
   }
 }
 async function canvasHasContext(app, file) {
@@ -1130,6 +1832,21 @@ async function getContextFromBase(app, file) {
     return null;
   }
 }
+async function addUidToBase(app, file, uid) {
+  if (file.extension !== "base")
+    return;
+  try {
+    const content = await app.vault.read(file);
+    const data = content.trim() ? (0, import_obsidian3.parseYaml)(content) : {};
+    if (!data.perspecta) {
+      data.perspecta = {};
+    }
+    data.perspecta.uid = uid;
+    await app.vault.modify(file, (0, import_obsidian3.stringifyYaml)(data));
+  } catch (e) {
+    Logger.error("Failed to add UID to base file:", e);
+  }
+}
 async function saveContextToBase(app, file, context) {
   if (file.extension !== "base")
     return;
@@ -1148,6 +1865,23 @@ async function saveContextToBase(app, file, context) {
     throw e;
   }
 }
+async function removeContextFromBase(app, file) {
+  var _a;
+  if (file.extension !== "base")
+    return false;
+  try {
+    const content = await app.vault.read(file);
+    const data = content.trim() ? (0, import_obsidian3.parseYaml)(content) : {};
+    if (!((_a = data == null ? void 0 : data.perspecta) == null ? void 0 : _a.context))
+      return false;
+    delete data.perspecta.context;
+    await app.vault.modify(file, (0, import_obsidian3.stringifyYaml)(data));
+    return true;
+  } catch (e) {
+    Logger.error("Failed to remove context from base file:", e);
+    return false;
+  }
+}
 async function baseHasContext(app, file) {
   var _a;
   if (file.extension !== "base")
@@ -1160,238 +1894,6 @@ async function baseHasContext(app, file) {
     return false;
   }
 }
-
-// src/storage/external-store.ts
-var CONTEXTS_FOLDER = "contexts";
-function isArrangementCollection(data) {
-  return typeof data === "object" && data !== null && "arrangements" in data && Array.isArray(data.arrangements);
-}
-var ExternalContextStore = class {
-  constructor(config2) {
-    this.cache = /* @__PURE__ */ new Map();
-    this.dirty = /* @__PURE__ */ new Set();
-    this.saveTimeoutCleanup = null;
-    this.initialized = false;
-    this.app = config2.app;
-    this.manifest = config2.manifest;
-    this.debouncedFlush = debounceAsync(async () => {
-      await this.flushDirty();
-    }, TIMING.EXTERNAL_STORE_DEBOUNCE);
-  }
-  get adapter() {
-    return this.app.vault.adapter;
-  }
-  getContextsPath() {
-    return `${this.manifest.dir}/${CONTEXTS_FOLDER}`;
-  }
-  async initialize() {
-    var _a;
-    if (this.initialized)
-      return;
-    const contextsPath = this.getContextsPath();
-    try {
-      if (!await this.adapter.exists(contextsPath)) {
-        await this.adapter.mkdir(contextsPath);
-      }
-      const files = await this.adapter.list(contextsPath);
-      for (const file of files.files) {
-        if (file.endsWith(".json")) {
-          try {
-            const content = await this.adapter.read(file);
-            const data = JSON.parse(content);
-            const uid = (_a = file.split("/").pop()) == null ? void 0 : _a.replace(".json", "");
-            if (uid && data) {
-              if (isArrangementCollection(data)) {
-                this.cache.set(uid, data);
-              } else {
-                const arrangement = data;
-                const collection = {
-                  arrangements: [{
-                    arrangement,
-                    savedAt: arrangement.ts || Date.now()
-                  }]
-                };
-                this.cache.set(uid, collection);
-                this.dirty.add(uid);
-              }
-            }
-          } catch (e) {
-            Logger.warn(`Failed to load context file: ${file}`, e);
-          }
-        }
-      }
-      this.initialized = true;
-      if (PerfTimer.isEnabled()) {
-        Logger.info(`External store initialized with ${this.cache.size} contexts`);
-      }
-    } catch (e) {
-      Logger.error("Failed to initialize external store:", e);
-    }
-  }
-  // Get the most recent arrangement (for backward compatibility)
-  get(uid) {
-    const collection = this.cache.get(uid);
-    if (!collection || collection.arrangements.length === 0)
-      return null;
-    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
-  }
-  // Get the latest arrangement only
-  getLatest(uid) {
-    const collection = this.cache.get(uid);
-    if (!collection || collection.arrangements.length === 0)
-      return null;
-    const sorted = [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
-    return sorted[0].arrangement;
-  }
-  // Get all arrangements for a UID
-  getAll(uid) {
-    const collection = this.cache.get(uid);
-    if (!collection)
-      return [];
-    return [...collection.arrangements].sort((a, b) => b.savedAt - a.savedAt);
-  }
-  // Get arrangement count for a UID
-  getCount(uid) {
-    var _a;
-    const collection = this.cache.get(uid);
-    return (_a = collection == null ? void 0 : collection.arrangements.length) != null ? _a : 0;
-  }
-  has(uid) {
-    const collection = this.cache.get(uid);
-    return collection !== void 0 && collection.arrangements.length > 0;
-  }
-  // Add a new arrangement, respecting the max limit
-  set(uid, context, maxArrangements = 1) {
-    let collection = this.cache.get(uid);
-    if (!collection) {
-      collection = { arrangements: [] };
-    }
-    const timestamped = {
-      arrangement: context,
-      savedAt: Date.now()
-    };
-    collection.arrangements.push(timestamped);
-    collection.arrangements.sort((a, b) => a.savedAt - b.savedAt);
-    while (collection.arrangements.length > maxArrangements) {
-      collection.arrangements.shift();
-    }
-    this.cache.set(uid, collection);
-    this.dirty.add(uid);
-    this.scheduleSave();
-  }
-  // Delete a specific arrangement by timestamp
-  deleteArrangement(uid, savedAt) {
-    const collection = this.cache.get(uid);
-    if (!collection)
-      return;
-    collection.arrangements = collection.arrangements.filter((a) => a.savedAt !== savedAt);
-    if (collection.arrangements.length === 0) {
-      this.cache.delete(uid);
-    } else {
-      this.cache.set(uid, collection);
-    }
-    this.dirty.add(uid);
-    this.scheduleSave();
-  }
-  async delete(uid) {
-    this.cache.delete(uid);
-    this.dirty.delete(uid);
-    const filePath = `${this.getContextsPath()}/${uid}.json`;
-    try {
-      if (await this.adapter.exists(filePath)) {
-        await this.adapter.remove(filePath);
-      }
-    } catch (e) {
-      Logger.warn(`Failed to delete context file: ${filePath}`, e);
-    }
-  }
-  // Clear all arrangements for a specific UID (without deleting the file yet)
-  clearUid(uid) {
-    const collection = this.cache.get(uid);
-    if (collection) {
-      collection.arrangements = [];
-      this.cache.set(uid, collection);
-      this.dirty.add(uid);
-    }
-  }
-  // Clear all arrangements (for overwrite restore mode)
-  async clearAll() {
-    const uids = Array.from(this.cache.keys());
-    for (const uid of uids) {
-      await this.delete(uid);
-    }
-    this.cache.clear();
-    this.dirty.clear();
-  }
-  getAllUids() {
-    return Array.from(this.cache.keys());
-  }
-  scheduleSave() {
-    if (this.saveTimeoutCleanup) {
-      this.saveTimeoutCleanup();
-      this.saveTimeoutCleanup = null;
-    }
-    this.debouncedFlush().catch((error) => {
-      Logger.error("Failed to flush dirty data:", error);
-    });
-  }
-  async flushDirty() {
-    if (this.dirty.size === 0)
-      return;
-    const contextsPath = this.getContextsPath();
-    if (!await this.adapter.exists(contextsPath)) {
-      await this.adapter.mkdir(contextsPath);
-    }
-    const toSave = Array.from(this.dirty);
-    this.dirty.clear();
-    for (const uid of toSave) {
-      const collection = this.cache.get(uid);
-      const filePath = `${contextsPath}/${uid}.json`;
-      if (collection && collection.arrangements.length > 0) {
-        try {
-          const json = JSON.stringify(collection);
-          await this.adapter.write(filePath, json);
-        } catch (e) {
-          Logger.error(`Failed to save context: ${uid}`, e);
-          this.dirty.add(uid);
-        }
-      } else {
-        try {
-          if (await this.adapter.exists(filePath)) {
-            await this.adapter.remove(filePath);
-          }
-        } catch (e) {
-          Logger.warn(`Failed to delete empty context file: ${filePath}`, e);
-        }
-      }
-    }
-    if (PerfTimer.isEnabled()) {
-      Logger.info(`Saved ${toSave.length} context(s) to disk`);
-    }
-  }
-  async cleanup() {
-    if (this.saveTimeoutCleanup) {
-      this.saveTimeoutCleanup();
-      this.saveTimeoutCleanup = null;
-    }
-    await this.flushDirty();
-  }
-  /**
-   * Check if the store has been initialized.
-   */
-  isInitialized() {
-    return this.initialized;
-  }
-  /**
-   * Ensure the store is initialized before use.
-   * Safe to call multiple times - will only initialize once.
-   */
-  async ensureInitialized() {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-  }
-};
 
 // src/storage/codec.ts
 function encodeArrangement(arr) {
@@ -1990,6 +2492,10 @@ function getArrangementSummary(arrangement) {
   return `${windowText}, ${tabText}`;
 }
 function showArrangementSelector(arrangements, fileName, onDelete, targetWindow = window) {
+  const opts = typeof onDelete === "function" ? { onDelete: (savedAt) => onDelete(savedAt) } : onDelete != null ? onDelete : {};
+  const deleteFn = opts.onDelete;
+  const labelFn = opts.getWorkspaceLabel;
+  const wsIdFn = opts.getWorkspaceId;
   return new Promise((resolve) => {
     const doc = targetWindow.document;
     const overlay = doc.createElement("div");
@@ -2031,6 +2537,12 @@ function showArrangementSelector(arrangements, fileName, onDelete, targetWindow 
           const badge = timeLabel.createSpan({ cls: "perspecta-arrangement-badge" });
           badge.setText("Latest");
         }
+        const wsLabel = labelFn == null ? void 0 : labelFn(arr.savedAt);
+        if (wsLabel) {
+          const wsBadge = timeLabel.createSpan({ cls: "perspecta-arrangement-badge perspecta-arrangement-ws-badge" });
+          wsBadge.setText(wsLabel);
+          wsBadge.style.marginLeft = "6px";
+        }
         const summary = info.createDiv({ cls: "perspecta-arrangement-summary" });
         summary.setText(getArrangementSummary(arr));
         const deleteBtn = item.createDiv({ cls: "perspecta-arrangement-delete" });
@@ -2039,8 +2551,8 @@ function showArrangementSelector(arrangements, fileName, onDelete, targetWindow 
         deleteBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           deletedTimestamps.add(arr.savedAt);
-          if (onDelete) {
-            onDelete(arr.savedAt);
+          if (deleteFn) {
+            deleteFn(arr.savedAt, wsIdFn == null ? void 0 : wsIdFn(arr.savedAt));
           }
           renderList();
         });
@@ -2196,6 +2708,143 @@ function showConfirmOverwrite(existingArrangement, fileName, targetWindow = wind
     confirmBtn.focus();
   });
 }
+function showWorkspacePicker(workspaces, action, currentWorkspaceId, targetWindow = window) {
+  return new Promise((resolve) => {
+    const doc = targetWindow.document;
+    const overlay = doc.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = doc.createElement("div");
+    modal.className = "perspecta-restore-modal";
+    const title = modal.createDiv({ cls: "perspecta-modal-title" });
+    title.setText(action === "copy" ? "Copy context to workspace" : "Move context to workspace");
+    const subtitle = modal.createDiv({ cls: "perspecta-modal-subtitle" });
+    subtitle.setText(action === "copy" ? "Pick a target workspace. The arrangement is duplicated there; the source is untouched." : "Pick a target workspace. The arrangement moves there; the source is removed.");
+    const options = modal.createDiv({ cls: "perspecta-restore-options" });
+    const cleanup = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    for (const ws of workspaces) {
+      const isCurrent = ws.id === currentWorkspaceId;
+      const row = options.createDiv({ cls: `perspecta-restore-option${isCurrent ? " is-disabled" : ""}` });
+      if (isCurrent) {
+        row.style.opacity = "0.55";
+        row.style.cursor = "not-allowed";
+      } else {
+        row.style.cursor = "pointer";
+      }
+      const content = row.createDiv({ cls: "perspecta-restore-option-content" });
+      content.createDiv({
+        cls: "perspecta-restore-option-title",
+        text: `${ws.displayName}${isCurrent ? "  (current workspace)" : ""}${ws.shared ? "  \xB7 shared" : ""}`
+      });
+      content.createDiv({
+        cls: "perspecta-restore-option-desc",
+        text: `Slug: ${ws.id}`
+      });
+      if (!isCurrent) {
+        row.addEventListener("click", () => {
+          cleanup();
+          resolve({ workspaceId: ws.id, cancelled: false });
+        });
+      }
+    }
+    const newRow = options.createDiv({ cls: "perspecta-restore-option" });
+    newRow.style.cursor = "pointer";
+    const newContent = newRow.createDiv({ cls: "perspecta-restore-option-content" });
+    newContent.createDiv({ cls: "perspecta-restore-option-title", text: "+ New workspace\u2026" });
+    newContent.createDiv({ cls: "perspecta-restore-option-desc", text: "Create a new bucket and copy/move into it." });
+    newRow.addEventListener("click", () => {
+      const name = targetWindow.prompt("New workspace name:");
+      if (!name || !name.trim()) {
+        return;
+      }
+      cleanup();
+      resolve({ createNew: name.trim(), cancelled: false });
+    });
+    const buttonRow = modal.createDiv({ cls: "perspecta-modal-buttons" });
+    const cancelBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-secondary",
+      text: "Cancel"
+    });
+    const cancel = () => {
+      cleanup();
+      resolve({ cancelled: true });
+    };
+    overlay.onclick = cancel;
+    cancelBtn.addEventListener("click", cancel);
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(modal);
+  });
+}
+function showCrossWorkspaceActionDialog(fileName, sources, activeWorkspaceDisplayName, targetWindow = window) {
+  return new Promise((resolve) => {
+    var _a, _b;
+    const doc = targetWindow.document;
+    const overlay = doc.createElement("div");
+    overlay.className = "perspecta-debug-overlay";
+    const modal = doc.createElement("div");
+    modal.className = "perspecta-restore-modal";
+    const title = modal.createDiv({ cls: "perspecta-modal-title" });
+    title.setText("Saved context in another workspace");
+    const subtitle = modal.createDiv({ cls: "perspecta-modal-subtitle" });
+    subtitle.setText(`"${fileName}" has a saved Perspecta context outside of ${activeWorkspaceDisplayName}.`);
+    const cleanup = () => {
+      modal.remove();
+      overlay.remove();
+    };
+    const cancel = () => {
+      cleanup();
+      resolve({ cancelled: true });
+    };
+    let selectedSource = (_b = (_a = sources[0]) == null ? void 0 : _a.id) != null ? _b : "";
+    if (sources.length > 1) {
+      const sourceLabel = modal.createDiv({ cls: "setting-item-description" });
+      sourceLabel.style.marginTop = "10px";
+      sourceLabel.setText("Source workspace:");
+      const select = modal.createEl("select", { cls: "dropdown" });
+      select.style.width = "100%";
+      select.style.marginBottom = "12px";
+      for (const ws of sources) {
+        const opt = select.createEl("option", { value: ws.id, text: `${ws.displayName}${ws.shared ? " (shared)" : ""}` });
+        if (ws.id === selectedSource)
+          opt.selected = true;
+      }
+      select.addEventListener("change", () => {
+        selectedSource = select.value;
+      });
+    } else if (sources.length === 1) {
+      const note = modal.createDiv({ cls: "setting-item-description" });
+      note.style.marginTop = "8px";
+      note.style.marginBottom = "8px";
+      note.setText(`Source: ${sources[0].displayName}${sources[0].shared ? " (shared)" : ""}`);
+    }
+    const options = modal.createDiv({ cls: "perspecta-restore-options" });
+    const addAction = (action, titleText, descText) => {
+      const row = options.createDiv({ cls: "perspecta-restore-option" });
+      row.style.cursor = "pointer";
+      const content = row.createDiv({ cls: "perspecta-restore-option-content" });
+      content.createDiv({ cls: "perspecta-restore-option-title", text: titleText });
+      content.createDiv({ cls: "perspecta-restore-option-desc", text: descText });
+      row.addEventListener("click", () => {
+        cleanup();
+        resolve({ action, sourceWorkspaceId: selectedSource, cancelled: false });
+      });
+    };
+    addAction("copy", "Copy here", `Duplicate the arrangement into ${activeWorkspaceDisplayName}. The source is untouched.`);
+    addAction("switch", "Switch to source workspace", "Load that Obsidian workspace so you can restore the arrangement normally.");
+    addAction("move", "Move here", `Bring the arrangement into ${activeWorkspaceDisplayName} and remove it from the source.`);
+    const buttonRow = modal.createDiv({ cls: "perspecta-modal-buttons" });
+    const cancelBtn = buttonRow.createEl("button", {
+      cls: "perspecta-modal-button perspecta-modal-button-secondary",
+      text: "Cancel"
+    });
+    overlay.onclick = cancel;
+    cancelBtn.addEventListener("click", cancel);
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(modal);
+  });
+}
 
 // src/services/backup.ts
 function getBackupFolderPath(perspectaFolderPath) {
@@ -2205,13 +2854,23 @@ function getBackupFolderPath(perspectaFolderPath) {
 async function backupArrangements(cfg) {
   const { app, externalStore, perspectaFolderPath } = cfg;
   await externalStore.ensureInitialized();
-  const allArrangements = {};
-  const uids = externalStore.getAllUids();
-  for (const uid of uids) {
-    const arrangements = externalStore.getAll(uid);
-    if (arrangements.length > 0) {
-      allArrangements[uid] = arrangements;
+  const workspaces = {};
+  let totalArrangements = 0;
+  for (const ws of externalStore.listWorkspaces()) {
+    const uids = externalStore.getAllUids(ws.id);
+    const arrangements = {};
+    for (const uid of uids) {
+      const items = externalStore.getAll(uid, ws.id);
+      if (items.length > 0) {
+        arrangements[uid] = items;
+        totalArrangements += items.length;
+      }
     }
+    workspaces[ws.id] = {
+      displayName: ws.displayName,
+      shared: ws.shared,
+      arrangements
+    };
   }
   const backupFolder = getBackupFolderPath(perspectaFolderPath);
   if (!await app.vault.adapter.exists(backupFolder)) {
@@ -2222,13 +2881,15 @@ async function backupArrangements(cfg) {
   const backupFileName = `arrangements-backup-${timestamp}.json`;
   const backupPath = `${backupFolder}/${backupFileName}`;
   const backupData = {
-    version: 1,
+    version: 2,
     createdAt: now.toISOString(),
-    arrangementCount: Object.keys(allArrangements).length,
-    arrangements: allArrangements
+    workspaceCount: Object.keys(workspaces).length,
+    totalArrangementCount: totalArrangements,
+    workspaces
   };
   await app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
-  return { count: Object.keys(allArrangements).length, path: backupPath };
+  const uidCount = Object.values(workspaces).reduce((sum, w) => sum + Object.keys(w.arrangements).length, 0);
+  return { count: uidCount, path: backupPath };
 }
 async function listBackups(cfg) {
   const { app, perspectaFolderPath } = cfg;
@@ -2252,6 +2913,12 @@ async function listBackups(cfg) {
   backups.sort((a, b) => b.date.getTime() - a.date.getTime());
   return backups;
 }
+function isV1(data) {
+  return typeof data === "object" && data !== null && data.version === 1;
+}
+function isV2(data) {
+  return typeof data === "object" && data !== null && data.version === 2;
+}
 async function restoreFromBackup(cfg, backupPath, mode) {
   const { app, externalStore, maxArrangementsPerNote, onAfterRestore } = cfg;
   const backupName = backupPath.split("/").pop() || "backup";
@@ -2262,52 +2929,66 @@ async function restoreFromBackup(cfg, backupPath, mode) {
     }
     mode = result.mode;
   }
-  let backupData;
+  let parsed;
   try {
     const content = await app.vault.adapter.read(backupPath);
-    backupData = JSON.parse(content);
+    parsed = JSON.parse(content);
   } catch (e) {
     Logger.error("Failed to parse backup file:", e);
     new import_obsidian5.Notice("Failed to parse backup file. The file may be corrupted.");
     return { restored: 0, errors: 1 };
   }
-  if (!backupData.arrangements || typeof backupData.arrangements !== "object") {
+  await externalStore.ensureInitialized();
+  const normalized = {};
+  if (isV2(parsed)) {
+    for (const [wsId, entry] of Object.entries(parsed.workspaces)) {
+      if (!externalStore.hasWorkspace(wsId)) {
+        try {
+          await externalStore.createWorkspaceBucket(entry.displayName, wsId);
+        } catch (e) {
+          Logger.warn(`Failed to recreate workspace ${wsId}:`, e);
+        }
+      }
+      normalized[wsId] = entry.arrangements;
+    }
+  } else if (isV1(parsed)) {
+    normalized[DEFAULT_WORKSPACE_ID] = parsed.arrangements;
+  } else {
     new import_obsidian5.Notice("Invalid backup file format");
     return { restored: 0, errors: 1 };
   }
-  await externalStore.ensureInitialized();
   let restored = 0;
   let errors = 0;
   if (mode === "overwrite") {
     await externalStore.clearAll();
   }
-  for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
-    try {
-      const backupArrangements2 = arrangements;
-      if (mode === "merge") {
-        const existing = externalStore.get(uid) || [];
-        const combined = [...existing];
-        for (const backupItem of backupArrangements2) {
-          const alreadyExists = combined.some((e) => e.savedAt === backupItem.savedAt);
-          if (!alreadyExists) {
-            combined.push(backupItem);
+  for (const [wsId, uidMap] of Object.entries(normalized)) {
+    for (const [uid, backupArrangements2] of Object.entries(uidMap)) {
+      try {
+        if (mode === "merge") {
+          const existing = externalStore.get(uid, wsId) || [];
+          const combined = [...existing];
+          for (const backupItem of backupArrangements2) {
+            if (!combined.some((e) => e.savedAt === backupItem.savedAt)) {
+              combined.push(backupItem);
+            }
+          }
+          combined.sort((a, b) => b.savedAt - a.savedAt);
+          const trimmed = combined.slice(0, maxArrangementsPerNote);
+          externalStore.clearUid(uid, wsId);
+          for (const item of trimmed) {
+            externalStore.set(uid, item.arrangement, maxArrangementsPerNote, wsId);
+          }
+        } else {
+          for (const item of backupArrangements2) {
+            externalStore.set(uid, item.arrangement, maxArrangementsPerNote, wsId);
           }
         }
-        combined.sort((a, b) => b.savedAt - a.savedAt);
-        const trimmed = combined.slice(0, maxArrangementsPerNote);
-        externalStore.clearUid(uid);
-        for (const item of trimmed) {
-          externalStore.set(uid, item.arrangement, maxArrangementsPerNote);
-        }
-      } else {
-        for (const item of backupArrangements2) {
-          externalStore.set(uid, item.arrangement, maxArrangementsPerNote);
-        }
+        restored++;
+      } catch (e) {
+        Logger.error(`Failed to restore arrangements for UID ${uid} in workspace ${wsId}:`, e);
+        errors++;
       }
-      restored++;
-    } catch (e) {
-      Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
-      errors++;
     }
   }
   await externalStore.flushDirty();
@@ -2410,6 +3091,59 @@ function normalizeToV2(arr) {
     leftSidebar: v1.leftSidebar,
     rightSidebar: v1.rightSidebar
   };
+}
+async function migrateInlineCanvasBaseContexts(cfg) {
+  const { app, externalStore, maxArrangementsPerNote } = cfg;
+  const result = { canvasMigrated: 0, baseMigrated: 0, errors: 0, uidsAdded: 0 };
+  await externalStore.ensureInitialized();
+  const canvasFiles = app.vault.getFiles().filter((f) => f.extension === "canvas");
+  for (const file of canvasFiles) {
+    try {
+      if (!await canvasHasContext(app, file))
+        continue;
+      let uid = await getUidFromCanvas(app, file);
+      if (!uid) {
+        uid = generateUid();
+        await addUidToCanvas(app, file, uid);
+        result.uidsAdded++;
+      }
+      const ctx = await getContextFromCanvas(app, file);
+      if (!ctx)
+        continue;
+      const v2 = normalizeToV2(ctx);
+      externalStore.set(uid, v2, maxArrangementsPerNote, DEFAULT_WORKSPACE_ID);
+      await removeContextFromCanvas(app, file);
+      result.canvasMigrated++;
+    } catch (e) {
+      Logger.error(`Failed to migrate inline canvas context: ${file.path}`, e);
+      result.errors++;
+    }
+  }
+  const baseFiles = app.vault.getFiles().filter((f) => f.extension === "base");
+  for (const file of baseFiles) {
+    try {
+      if (!await baseHasContext(app, file))
+        continue;
+      let uid = await getUidFromBase(app, file);
+      if (!uid) {
+        uid = generateUid();
+        await addUidToBase(app, file, uid);
+        result.uidsAdded++;
+      }
+      const ctx = await getContextFromBase(app, file);
+      if (!ctx)
+        continue;
+      const v2 = normalizeToV2(ctx);
+      externalStore.set(uid, v2, maxArrangementsPerNote, DEFAULT_WORKSPACE_ID);
+      await removeContextFromBase(app, file);
+      result.baseMigrated++;
+    } catch (e) {
+      Logger.error(`Failed to migrate inline base context: ${file.path}`, e);
+      result.errors++;
+    }
+  }
+  await externalStore.flushDirty();
+  return result;
 }
 
 // src/ui/proxy-view.ts
@@ -3269,6 +4003,7 @@ var PerspectaSettingTab = class extends import_obsidian7.PluginSettingTab {
       { id: "changelog", label: "Changelog" },
       { id: "context", label: "Context" },
       { id: "storage", label: "Storage" },
+      { id: "workspaces", label: "Workspaces" },
       { id: "backup", label: "Backup" },
       { id: "experimental", label: "Experimental" },
       { id: "debug", label: "Debug" }
@@ -3292,6 +4027,9 @@ var PerspectaSettingTab = class extends import_obsidian7.PluginSettingTab {
         break;
       case "storage":
         this.displayStorageSettings(containerEl);
+        break;
+      case "workspaces":
+        this.displayWorkspaceSettings(containerEl);
         break;
       case "backup":
         this.displayBackupSettings(containerEl);
@@ -3404,6 +4142,87 @@ var PerspectaSettingTab = class extends import_obsidian7.PluginSettingTab {
       btn.setDisabled(false);
       btn.setButtonText("Clean up");
     }));
+  }
+  displayWorkspaceSettings(containerEl) {
+    const desc = containerEl.createDiv({ cls: "setting-item-description" });
+    desc.style.marginBottom = "14px";
+    desc.setText(
+      "Perspecta context arrangements are scoped to the active Obsidian workspace. When you switch workspaces, save/restore reads and writes into that workspace's bucket. The Default bucket is always present and used as fallback when no workspace is active."
+    );
+    const workspacesInstance = getWorkspacesInstance(this.app);
+    const statusSetting = new import_obsidian7.Setting(containerEl).setName("Obsidian Workspaces core plugin").setDesc(workspacesInstance ? `Enabled. Active workspace: "${workspacesInstance.activeWorkspace || "(none loaded)"}"` : "Disabled. Perspecta will only use the Default bucket. Enable in Settings \u2192 Core plugins \u2192 Workspaces.");
+    if (!workspacesInstance) {
+      statusSetting.addButton((btn) => btn.setButtonText("Open core plugins").onClick(() => {
+        var _a;
+        (_a = this.app.setting) == null ? void 0 : _a.openTabById("core-plugins");
+      }));
+    }
+    new import_obsidian7.Setting(containerEl).setName("Fall back to Default on restore").setDesc("If the active workspace has no arrangement for a note, restore from the Default bucket instead.").addToggle((t) => t.setValue(this.plugin.settings.workspaceFallbackToDefault).onChange(async (v) => {
+      this.plugin.settings.workspaceFallbackToDefault = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian7.Setting(containerEl).setName("Cross-workspace arrangement selector").setDesc("When picking from multiple arrangements, also list arrangements stored in other workspaces.").addToggle((t) => t.setValue(this.plugin.settings.workspaceCrossSelector).onChange(async (v) => {
+      this.plugin.settings.workspaceCrossSelector = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian7.Setting(containerEl).setName("Show workspace in status bar").setDesc(workspacesInstance ? "Show the active Obsidian workspace in the status bar, with a dropdown to switch." : "Disabled \u2014 enable the Obsidian Workspaces core plugin first.").addToggle((t) => t.setValue(this.plugin.settings.enableWorkspaceStatusBar).setDisabled(!workspacesInstance).onChange(async (v) => {
+      this.plugin.settings.enableWorkspaceStatusBar = v;
+      await this.plugin.saveSettings();
+      this.plugin.refreshWorkspaceStatusBar();
+    }));
+    new import_obsidian7.Setting(containerEl).setName("Shared workspaces folder").setDesc("Vault-relative folder where shared workspace buckets live. Only used by buckets you mark as shared.").addText((t) => t.setValue(this.plugin.settings.workspaceSharedLocation).onChange(async (v) => {
+      const trimmed = v.trim().replace(/\/+$/, "") || "perspecta/workspaces";
+      this.plugin.settings.workspaceSharedLocation = trimmed;
+      this.plugin.externalStore.updateSharedLocation(trimmed);
+      await this.plugin.saveSettings();
+    }));
+    containerEl.createEl("h3", { text: "Workspace buckets" });
+    const renderBucketList = () => {
+      const existing = containerEl.querySelector(".perspecta-workspace-buckets");
+      if (existing)
+        existing.remove();
+      const list = containerEl.createDiv({ cls: "perspecta-workspace-buckets" });
+      if (!this.plugin.externalStore.isInitialized()) {
+        list.createDiv({ cls: "setting-item-description", text: "External store not initialized \u2014 switch storage mode to External to use workspace buckets." });
+        return;
+      }
+      const buckets = this.plugin.externalStore.listWorkspaces();
+      const activeId = this.plugin.externalStore.getActiveWorkspace();
+      if (buckets.length === 0) {
+        list.createDiv({ cls: "setting-item-description", text: "No workspace buckets yet \u2014 saving context in a workspace will auto-create one." });
+        return;
+      }
+      for (const bucket of buckets) {
+        const uidCount = this.plugin.externalStore.getAllUids(bucket.id).length;
+        const isDefault = bucket.id === DEFAULT_WORKSPACE_ID;
+        const isActive = bucket.id === activeId;
+        const setting = new import_obsidian7.Setting(list).setName(`${bucket.displayName}${isActive ? " (active)" : ""}${isDefault ? " (default)" : ""}`).setDesc(`Slug: ${bucket.id} \xB7 ${uidCount} note${uidCount === 1 ? "" : "s"} \xB7 ${bucket.shared ? "shared" : "plugin-dir"}`);
+        if (!isDefault) {
+          setting.addButton((btn) => btn.setButtonText(bucket.shared ? "Move to plugin" : "Mark shared").setTooltip(bucket.shared ? "Move this bucket back into the plugin folder (not synced with vault)" : "Move this bucket into the vault so it syncs via Obsidian Sync / git").onClick(async () => {
+            try {
+              await this.plugin.externalStore.setWorkspaceShared(bucket.id, !bucket.shared);
+              new import_obsidian7.Notice(`${bucket.displayName}: now ${!bucket.shared ? "shared" : "plugin-dir only"}`);
+              renderBucketList();
+            } catch (e) {
+              new import_obsidian7.Notice(`Failed to toggle shared: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }));
+          setting.addButton((btn) => btn.setButtonText("Delete").setWarning().setTooltip(`Delete all ${uidCount} arrangement${uidCount === 1 ? "" : "s"} in this workspace`).onClick(async () => {
+            if (uidCount > 0 && !confirm(`Delete workspace bucket "${bucket.displayName}" and all ${uidCount} arrangement${uidCount === 1 ? "" : "s"} inside it? This cannot be undone.`)) {
+              return;
+            }
+            try {
+              await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
+              new import_obsidian7.Notice(`Deleted workspace bucket: ${bucket.displayName}`);
+              renderBucketList();
+            } catch (e) {
+              new import_obsidian7.Notice(`Failed to delete bucket: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }));
+        }
+      }
+    };
+    renderBucketList();
   }
   displayBackupSettings(containerEl) {
     new import_obsidian7.Setting(containerEl).setName("Backup arrangements").setDesc(`Create a backup of all stored arrangements to the ${this.plugin.settings.perspectaFolderPath}/backups folder.`).addButton((btn) => btn.setButtonText("Create backup").onClick(async () => {
@@ -3529,6 +4348,34 @@ var PerspectaSettingTab = class extends import_obsidian7.PluginSettingTab {
       this.plugin.settings.enableDebugLogging = v;
       await this.plugin.saveSettings();
     }));
+    containerEl.createEl("h3", { text: "One-shot migrations" });
+    new import_obsidian7.Setting(containerEl).setName("Migrate inline canvas/base contexts \u2192 workspace storage").setDesc("Move embedded perspecta.context blobs out of .canvas and .base files into the Default workspace bucket. The perspecta.uid stays in place. Idempotent \u2014 safe to re-run.").addButton((btn) => btn.setButtonText("Migrate now").setCta().onClick(async () => {
+      if (this.plugin.settings.storageMode !== "external") {
+        new import_obsidian7.Notice("Switch storage mode to External first");
+        return;
+      }
+      if (!confirm("Move embedded perspecta contexts out of .canvas/.base files into the external store (Default bucket)?\n\nThe perspecta.uid stays in each file. Recommended to run on a backed-up vault.")) {
+        return;
+      }
+      btn.setDisabled(true);
+      btn.setButtonText("Migrating\u2026");
+      try {
+        const result = await this.plugin.migrateInlineCanvasBaseContexts();
+        const total = result.canvasMigrated + result.baseMigrated;
+        const extras = [];
+        if (result.uidsAdded > 0)
+          extras.push(`${result.uidsAdded} new UIDs`);
+        if (result.errors > 0)
+          extras.push(`${result.errors} errors`);
+        const suffix = extras.length > 0 ? ` (${extras.join(", ")})` : "";
+        new import_obsidian7.Notice(`Migrated ${total} file${total === 1 ? "" : "s"}: ${result.canvasMigrated} canvas, ${result.baseMigrated} base${suffix}`, 6e3);
+      } catch (e) {
+        new import_obsidian7.Notice(`Migration failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        btn.setDisabled(false);
+        btn.setButtonText("Migrate now");
+      }
+    }));
   }
   getHotkeyDisplay(commandId) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
@@ -3600,7 +4447,16 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     super(...arguments);
     this.focusedWindowIndex = -1;
     this.windowFocusListeners = /* @__PURE__ */ new Map();
-    this.filesWithContext = /* @__PURE__ */ new Set();
+    /**
+     * Map from file path → indicator tier:
+     *   - 'active': arrangement exists in the active workspace (or in Default
+     *     when fallback-to-default is on). Shows the strong target icon.
+     *   - 'other': arrangement exists ONLY in some other workspace. Shows the
+     *     weak dot indicator.
+     */
+    this.filesWithContext = /* @__PURE__ */ new Map();
+    /** For 'other'-tier files, which workspaces hold the arrangement. */
+    this.otherWorkspacesForFile = /* @__PURE__ */ new Map();
     this.refreshIndicatorsTimeout = null;
     this.isClosingWindow = false;
     // Guard against operations during window close
@@ -3609,6 +4465,12 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     this.pendingTimeouts = /* @__PURE__ */ new Set();
     // External context storage
     this.shiftCmdHeld = false;
+    // Track Cmd+Shift for context restore on link click
+    this.lastObservedWorkspaceName = "";
+    // Last Obsidian workspace name we synced from; '' means none / default
+    this.forceDefaultWorkspace = false;
+    // User explicitly picked Default via status-bar menu (overrides Obsidian's activeWorkspace)
+    this.workspaceStatusBarEl = null;
     // ============================================================================
     // Context Restore (Optimized)
     // ============================================================================
@@ -3622,7 +4484,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     // it tells the reader exactly what we touch.
     this.pendingTabActivations = [];
   }
-  // Track Cmd+Shift for context restore on link click
+  // Status-bar indicator (active workspace)
   async onload() {
     await this.loadSettings();
     try {
@@ -3633,10 +4495,16 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       Logger.info(`Loaded v${this.manifest.version}`);
     }
     this.checkVersionCompatibility();
-    this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
+    this.externalStore = new ExternalContextStore({
+      app: this.app,
+      manifest: this.manifest,
+      sharedLocation: this.settings.workspaceSharedLocation
+    });
     if (this.settings.storageMode === "external") {
       await this.externalStore.initialize();
     }
+    await this.syncActiveWorkspace();
+    this.setupWorkspaceStatusBar();
     this.hideInternalProperties();
     this.registerView(PROXY_VIEW_TYPE, (leaf) => new ProxyNoteView(leaf));
     this.addRibbonIcon("layout-grid", "Perspecta", () => {
@@ -3655,6 +4523,26 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       id: "show-context-details",
       name: "Show context details",
       callback: () => this.showContextDetails()
+    });
+    this.addCommand({
+      id: "copy-context-to-workspace",
+      name: "Copy context to workspace\u2026",
+      callback: () => this.copyOrMoveContextCommand("copy")
+    });
+    this.addCommand({
+      id: "move-context-to-workspace",
+      name: "Move context to workspace\u2026",
+      callback: () => this.copyOrMoveContextCommand("move")
+    });
+    this.addCommand({
+      id: "restore-context-from-any-workspace",
+      name: "Restore context from any workspace\u2026",
+      callback: () => this.restoreContext(
+        void 0,
+        false,
+        /* crossWorkspace */
+        true
+      )
     });
     this.addCommand({
       id: "convert-to-proxy",
@@ -3691,6 +4579,21 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
             item.setTitle("Remember note context").setIcon("target").onClick(() => this.saveContext(file));
           });
         }
+        if (file instanceof import_obsidian8.TFile && file.extension === "md" && this.settings.storageMode === "external") {
+          const uid = getUidFromCache(this.app, file);
+          if (uid && this.externalStore.workspacesWithUid(uid).length > 0) {
+            menu.addItem((item) => {
+              item.setTitle("Copy context to workspace\u2026").setIcon("copy").onClick(async () => {
+                await this.copyOrMoveForFile(file, "copy");
+              });
+            });
+            menu.addItem((item) => {
+              item.setTitle("Move context to workspace\u2026").setIcon("arrow-right").onClick(async () => {
+                await this.copyOrMoveForFile(file, "move");
+              });
+            });
+          }
+        }
       })
     );
     this.registerDomEvent(document, "auxclick", (evt) => {
@@ -3716,7 +4619,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
       if (!file || !this.shiftCmdHeld)
         return;
-      if (this.filesWithContext.has(file.path)) {
+      if (this.filesWithContext.get(file.path) === "active") {
         this.safeTimeout(() => {
           this.restoreContext(file, true);
         }, 50);
@@ -3798,6 +4701,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         if (this.isClosingWindow) {
           return;
         }
+        this.syncActiveWorkspace().catch((e) => Logger.warn("syncActiveWorkspace failed:", e));
       })
     );
     this.registerEvent(
@@ -4189,19 +5093,19 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       PerfTimer.mark("ensureUidsForContext");
     }
     let saved = true;
-    if (isCanvas) {
+    if (this.settings.storageMode === "external") {
+      saved = await this.saveContextExternal(targetFile, context);
+      PerfTimer.mark("saveContextExternal");
+    } else if (isCanvas) {
       await saveContextToCanvas(this.app, targetFile, context);
-      this.filesWithContext.add(targetFile.path);
+      this.filesWithContext.set(targetFile.path, "active");
       this.debouncedRefreshIndicators();
       PerfTimer.mark("saveContextToCanvas");
     } else if (isBase) {
       await saveContextToBase(this.app, targetFile, context);
-      this.filesWithContext.add(targetFile.path);
+      this.filesWithContext.set(targetFile.path, "active");
       this.debouncedRefreshIndicators();
       PerfTimer.mark("saveContextToBase");
-    } else if (this.settings.storageMode === "external") {
-      saved = await this.saveContextExternal(targetFile, context);
-      PerfTimer.mark("saveContextExternal");
     } else {
       await saveContextToFrontmatter(this.app, targetFile, context);
       PerfTimer.mark("saveArrangementToNote");
@@ -4216,13 +5120,421 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
     PerfTimer.end("saveContext");
   }
+  // ============================================================================
+  // Workspace integration
+  // ----------------------------------------------------------------------------
+  // Read the active Obsidian workspace (from the core Workspaces plugin) and
+  // project it onto the external store's active workspace id. Auto-creates the
+  // bucket on first encounter. Called on plugin load and on every
+  // layout-change event.
+  // ============================================================================
+  async syncActiveWorkspace() {
+    var _a;
+    const instance = getWorkspacesInstance(this.app);
+    const rawName = (_a = instance == null ? void 0 : instance.activeWorkspace) != null ? _a : "";
+    if (this.forceDefaultWorkspace) {
+      this.lastObservedWorkspaceName = rawName;
+      if (this.externalStore.getActiveWorkspace() !== DEFAULT_WORKSPACE_ID) {
+        this.externalStore.setActiveWorkspace(DEFAULT_WORKSPACE_ID);
+        await this.rescanFilesWithContext();
+      }
+      this.updateWorkspaceStatusBar();
+      return;
+    }
+    const expectedStoreWs = rawName ? slugifyWorkspaceName(rawName) : DEFAULT_WORKSPACE_ID;
+    const currentStoreWs = this.externalStore.getActiveWorkspace();
+    if (rawName === this.lastObservedWorkspaceName && currentStoreWs === expectedStoreWs) {
+      this.updateWorkspaceStatusBar();
+      return;
+    }
+    this.lastObservedWorkspaceName = rawName;
+    if (!rawName) {
+      if (this.externalStore.getActiveWorkspace() !== DEFAULT_WORKSPACE_ID) {
+        this.externalStore.setActiveWorkspace(DEFAULT_WORKSPACE_ID);
+        await this.rescanFilesWithContext();
+      }
+      return;
+    }
+    const wsId = slugifyWorkspaceName(rawName);
+    if (this.settings.storageMode === "external" && this.externalStore.isInitialized()) {
+      if (!this.externalStore.hasWorkspace(wsId)) {
+        try {
+          await this.externalStore.createWorkspaceBucket(rawName, wsId);
+          Logger.info(`Auto-created Perspecta workspace bucket: ${wsId} (${rawName})`);
+        } catch (e) {
+          Logger.warn(`Failed to auto-create workspace bucket ${wsId}:`, e);
+        }
+      }
+    }
+    if (this.externalStore.getActiveWorkspace() !== wsId) {
+      this.externalStore.setActiveWorkspace(wsId);
+      await this.rescanFilesWithContext();
+    }
+    this.updateWorkspaceStatusBar();
+  }
+  // ============================================================================
+  // Status-bar workspace indicator
+  // ----------------------------------------------------------------------------
+  // Shows the currently active Obsidian workspace (or "Default" when none is
+  // loaded). Clicking opens a Menu with the workspace list, save/new entries,
+  // and a link into the Workspaces settings tab. Opt-in via
+  // settings.enableWorkspaceStatusBar; auto-hidden when the core plugin is
+  // disabled.
+  // ============================================================================
+  /** Public re-entry point (called from settings tab when toggle changes). */
+  refreshWorkspaceStatusBar() {
+    this.setupWorkspaceStatusBar();
+  }
+  setupWorkspaceStatusBar() {
+    const instance = getWorkspacesInstance(this.app);
+    const wanted = this.settings.enableWorkspaceStatusBar && !!instance;
+    if (wanted && !this.workspaceStatusBarEl) {
+      this.workspaceStatusBarEl = this.addStatusBarItem();
+      this.workspaceStatusBarEl.addClass("perspecta-workspace-status");
+      this.workspaceStatusBarEl.style.cursor = "pointer";
+      this.workspaceStatusBarEl.addEventListener("click", (evt) => {
+        this.openWorkspaceStatusBarMenu(evt);
+      });
+    } else if (!wanted && this.workspaceStatusBarEl) {
+      this.workspaceStatusBarEl.remove();
+      this.workspaceStatusBarEl = null;
+    }
+    this.updateWorkspaceStatusBar();
+  }
+  updateWorkspaceStatusBar() {
+    if (!this.workspaceStatusBarEl)
+      return;
+    const instance = getWorkspacesInstance(this.app);
+    const rawName = ((instance == null ? void 0 : instance.activeWorkspace) || "").trim();
+    const showingDefault = this.forceDefaultWorkspace || !rawName;
+    const label = showingDefault ? "Default" : rawName;
+    this.workspaceStatusBarEl.empty();
+    const icon = this.workspaceStatusBarEl.createSpan({ cls: "perspecta-workspace-status-icon" });
+    (0, import_obsidian8.setIcon)(icon, "layout-grid");
+    icon.style.marginRight = "4px";
+    this.workspaceStatusBarEl.createSpan({ text: label });
+  }
+  openWorkspaceStatusBarMenu(evt) {
+    const instance = getWorkspacesInstance(this.app);
+    if (!instance) {
+      new import_obsidian8.Notice("Workspaces core plugin is disabled");
+      return;
+    }
+    const menu = new import_obsidian8.Menu();
+    const rawActive = (instance.activeWorkspace || "").trim();
+    const active = this.forceDefaultWorkspace ? "" : rawActive;
+    const names = Object.keys(instance.workspaces).sort((a, b) => a.localeCompare(b));
+    menu.addItem((item) => {
+      item.setTitle("Default");
+      if (this.forceDefaultWorkspace || !rawActive)
+        item.setIcon("check");
+      item.onClick(() => {
+        this.forceDefaultWorkspace = true;
+        this.syncActiveWorkspace().catch((e) => Logger.warn("syncActiveWorkspace failed:", e));
+      });
+    });
+    if (names.length > 0) {
+      menu.addSeparator();
+      for (const name of names) {
+        menu.addItem((item) => {
+          item.setTitle(name);
+          if (name === active)
+            item.setIcon("check");
+          item.onClick(() => {
+            try {
+              this.forceDefaultWorkspace = false;
+              instance.loadWorkspace(name);
+              this.syncActiveWorkspace().catch((e) => Logger.warn("syncActiveWorkspace failed:", e));
+            } catch (e) {
+              new import_obsidian8.Notice(`Failed to load workspace: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          });
+        });
+      }
+    }
+    menu.addSeparator();
+    menu.addItem((item) => item.setTitle("New workspace\u2026").setIcon("plus").onClick(() => this.promptCreateWorkspace(instance)));
+    menu.addItem((item) => item.setTitle("Manage workspaces").setIcon("settings").onClick(() => {
+      const setting = this.app.setting;
+      if (setting) {
+        setting.open();
+        setting.openTabById(this.manifest.id);
+      }
+    }));
+    menu.showAtMouseEvent(evt);
+  }
+  promptCreateWorkspace(instance) {
+    if (!instance)
+      return;
+    const name = window.prompt("New workspace name:");
+    const trimmed = name == null ? void 0 : name.trim();
+    if (!trimmed)
+      return;
+    if (instance.workspaces[trimmed]) {
+      new import_obsidian8.Notice(`Workspace "${trimmed}" already exists`);
+      return;
+    }
+    try {
+      instance.saveWorkspace(trimmed);
+      instance.loadWorkspace(trimmed);
+      new import_obsidian8.Notice(`Created workspace: ${trimmed}`);
+    } catch (e) {
+      new import_obsidian8.Notice(`Failed to create workspace: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  /**
+   * Re-scan all files for context indicators after a workspace switch. The
+   * set of "files with context" is workspace-dependent, so swapping workspaces
+   * means rebuilding it from scratch (cheaper than tracking which entries
+   * came from which bucket).
+   */
+  async rescanFilesWithContext() {
+    this.filesWithContext.clear();
+    this.otherWorkspacesForFile.clear();
+    await this.scanFilesWithContext();
+    this.debouncedRefreshIndicators();
+  }
+  /**
+   * Scan the vault and populate this.filesWithContext. Pure data — no event
+   * registration, so it is safe to re-run (e.g. on workspace switch).
+   *
+   * Tier policy:
+   *   - Canvas/base files with embedded context: always 'active' (single-bucket).
+   *   - Markdown frontmatter context: always 'active' (workspace-agnostic).
+   *   - External-store arrangement in active workspace: 'active'.
+   *   - External-store arrangement in Default (when fallback is on): 'active'.
+   *   - External-store arrangement only in other workspaces: 'other'.
+   */
+  async scanFilesWithContext() {
+    const mdFiles = this.app.vault.getMarkdownFiles();
+    PerfTimer.mark(`getMarkdownFiles (${mdFiles.length} files)`);
+    for (const file of mdFiles) {
+      if (hasContextInFrontmatter(this.app, file)) {
+        this.filesWithContext.set(file.path, "active");
+      }
+    }
+    PerfTimer.mark("scanForContextFiles (frontmatter)");
+    const canvasFiles = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
+    const baseFiles = this.app.vault.getFiles().filter((f) => f.extension === "base");
+    if (this.settings.storageMode === "external") {
+      await this.externalStore.ensureInitialized();
+      const activeWs = this.externalStore.getActiveWorkspace();
+      const classifyByUid = (filePath, uid) => {
+        const wsList = this.externalStore.workspacesWithUid(uid);
+        if (wsList.length === 0)
+          return false;
+        const inActive = wsList.includes(activeWs);
+        const otherWs = wsList.filter((ws) => ws !== activeWs);
+        if (inActive) {
+          this.filesWithContext.set(filePath, "active");
+          if (otherWs.length > 0)
+            this.otherWorkspacesForFile.set(filePath, otherWs);
+        } else {
+          if (this.filesWithContext.get(filePath) !== "active") {
+            this.filesWithContext.set(filePath, "other");
+          }
+          this.otherWorkspacesForFile.set(filePath, otherWs);
+        }
+        return true;
+      };
+      for (const file of mdFiles) {
+        const uid = getUidFromCache(this.app, file);
+        if (uid)
+          classifyByUid(file.path, uid);
+      }
+      for (const file of canvasFiles) {
+        const uid = await getUidFromCanvas(this.app, file);
+        const classified = uid ? classifyByUid(file.path, uid) : false;
+        if (!classified && await canvasHasContext(this.app, file)) {
+          this.filesWithContext.set(file.path, "active");
+        }
+      }
+      for (const file of baseFiles) {
+        const uid = await getUidFromBase(this.app, file);
+        const classified = uid ? classifyByUid(file.path, uid) : false;
+        if (!classified && await baseHasContext(this.app, file)) {
+          this.filesWithContext.set(file.path, "active");
+        }
+      }
+      PerfTimer.mark("scanForContextFiles (external)");
+    } else {
+      for (const file of canvasFiles) {
+        if (await canvasHasContext(this.app, file)) {
+          this.filesWithContext.set(file.path, "active");
+        }
+      }
+      for (const file of baseFiles) {
+        if (await baseHasContext(this.app, file)) {
+          this.filesWithContext.set(file.path, "active");
+        }
+      }
+      PerfTimer.mark(`scanForContextFiles (inline canvas/base)`);
+    }
+  }
+  /**
+   * Copy or move all arrangements for the active file from its source
+   * workspace to a user-picked target workspace. Used by the palette
+   * command (operates on the active file).
+   */
+  async copyOrMoveContextCommand(action) {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "md") {
+      new import_obsidian8.Notice("Open a markdown file with a saved context first");
+      return;
+    }
+    await this.copyOrMoveForFile(file, action);
+  }
+  /**
+   * Dialog opened when the user clicks the weak "saved elsewhere" indicator.
+   * Offers three actions for a file whose arrangement(s) live only in other
+   * workspaces: copy here, switch to source workspace, or move here.
+   */
+  async showCrossWorkspaceActionDialog(file, sourceWorkspaceIds) {
+    var _a, _b, _c, _d;
+    if (sourceWorkspaceIds.length === 0)
+      return;
+    const allWs = this.externalStore.listWorkspaces();
+    const sources = sourceWorkspaceIds.map((id) => allWs.find((w) => w.id === id)).filter((w) => !!w);
+    if (sources.length === 0)
+      return;
+    const activeWs = this.externalStore.getActiveWorkspace();
+    const activeDisplayName = (_b = (_a = allWs.find((w) => w.id === activeWs)) == null ? void 0 : _a.displayName) != null ? _b : activeWs;
+    const result = await showCrossWorkspaceActionDialog(file.name, sources, activeDisplayName);
+    if (result.cancelled || !result.action || !result.sourceWorkspaceId)
+      return;
+    const sourceWs = result.sourceWorkspaceId;
+    const uid = getUidFromCache(this.app, file);
+    if (!uid) {
+      new import_obsidian8.Notice("Note has no Perspecta UID");
+      return;
+    }
+    if (result.action === "switch") {
+      const instance = getWorkspacesInstance(this.app);
+      const sourceDisplayName = (_d = (_c = sources.find((s) => s.id === sourceWs)) == null ? void 0 : _c.displayName) != null ? _d : sourceWs;
+      if (sourceWs === DEFAULT_WORKSPACE_ID) {
+        this.forceDefaultWorkspace = true;
+        await this.syncActiveWorkspace();
+        new import_obsidian8.Notice("Switched to Default workspace");
+        await this.restoreContext(
+          file,
+          /* forceLatest */
+          true
+        );
+        return;
+      }
+      if (!instance) {
+        new import_obsidian8.Notice("Workspaces core plugin is disabled \u2014 cannot switch");
+        return;
+      }
+      if (!instance.workspaces[sourceDisplayName]) {
+        new import_obsidian8.Notice(`Obsidian workspace "${sourceDisplayName}" does not exist`);
+        return;
+      }
+      try {
+        this.forceDefaultWorkspace = false;
+        instance.loadWorkspace(sourceDisplayName);
+        await this.syncActiveWorkspace();
+        await this.restoreContext(
+          file,
+          /* forceLatest */
+          true
+        );
+      } catch (e) {
+        new import_obsidian8.Notice(`Failed to load workspace: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return;
+    }
+    const max = this.settings.maxArrangementsPerNote;
+    const opResult = result.action === "copy" ? this.externalStore.copyArrangements(uid, sourceWs, activeWs, "merge", max) : this.externalStore.moveArrangements(uid, sourceWs, activeWs, "merge", max);
+    const verb = result.action === "copy" ? "Copied" : "Moved";
+    new import_obsidian8.Notice(`${verb} to ${activeDisplayName}: ${opResult.copied} new, ${opResult.skipped} duplicate${opResult.overwritten ? `, ${opResult.overwritten} replaced` : ""}`);
+    await this.externalStore.flushDirty();
+    await this.rescanFilesWithContext();
+  }
+  /**
+   * Copy/move arrangements for a specific file. Used by file-menu entries
+   * (which already provide the file) and by the palette command above.
+   */
+  async copyOrMoveForFile(file, action) {
+    var _a, _b;
+    if (this.settings.storageMode !== "external") {
+      new import_obsidian8.Notice("Copy/move requires external storage mode");
+      return;
+    }
+    const uid = getUidFromCache(this.app, file);
+    if (!uid) {
+      new import_obsidian8.Notice("This note has no Perspecta UID \u2014 save a context first");
+      return;
+    }
+    await this.externalStore.ensureInitialized();
+    const activeWs = this.externalStore.getActiveWorkspace();
+    const wsWithUid = this.externalStore.workspacesWithUid(uid);
+    if (wsWithUid.length === 0) {
+      new import_obsidian8.Notice("No saved arrangement to copy/move for this note");
+      return;
+    }
+    const sourceWs = wsWithUid.includes(activeWs) ? activeWs : wsWithUid[0];
+    if (action === "move" && sourceWs === DEFAULT_WORKSPACE_ID && !this.settings.workspaceFallbackToDefault) {
+      const proceed = confirm("You are about to move this note's arrangement out of Default. With fallback-to-Default off, the arrangement will be unreachable from workspaces that don't have a copy. Continue?");
+      if (!proceed)
+        return;
+    }
+    const picker = await showWorkspacePicker(
+      this.externalStore.listWorkspaces(),
+      action,
+      sourceWs
+    );
+    if (picker.cancelled)
+      return;
+    let targetWs = picker.workspaceId;
+    if (picker.createNew) {
+      try {
+        targetWs = await this.externalStore.createWorkspaceBucket(picker.createNew);
+        new import_obsidian8.Notice(`Created workspace: ${picker.createNew}`);
+      } catch (e) {
+        new import_obsidian8.Notice(`Failed to create workspace: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+    if (!targetWs)
+      return;
+    const max = this.settings.maxArrangementsPerNote;
+    const result = action === "copy" ? this.externalStore.copyArrangements(uid, sourceWs, targetWs, "merge", max) : this.externalStore.moveArrangements(uid, sourceWs, targetWs, "merge", max);
+    const wsLabel = (_b = (_a = this.externalStore.listWorkspaces().find((w) => w.id === targetWs)) == null ? void 0 : _a.displayName) != null ? _b : targetWs;
+    const verb = action === "copy" ? "Copied" : "Moved";
+    new import_obsidian8.Notice(`${verb} to ${wsLabel}: ${result.copied} new, ${result.skipped} duplicate${result.overwritten ? `, ${result.overwritten} replaced` : ""}`);
+    await this.externalStore.flushDirty();
+    await this.rescanFilesWithContext();
+  }
   // Save context to external store (using file's UID as key)
   // Returns true if save was successful, false if cancelled
+  /**
+   * Read the Perspecta UID from a file, dispatching by extension.
+   * Markdown: frontmatter cache. Canvas: data.perspecta.uid in the JSON.
+   * Base: data.perspecta.uid in the YAML.
+   */
+  async getUidForFile(file) {
+    if (file.extension === "canvas")
+      return getUidFromCanvas(this.app, file);
+    if (file.extension === "base")
+      return getUidFromBase(this.app, file);
+    return getUidFromCache(this.app, file);
+  }
+  /**
+   * Write a Perspecta UID into a file, dispatching by extension.
+   */
+  async setUidForFile(file, uid) {
+    if (file.extension === "canvas")
+      return addUidToCanvas(this.app, file, uid);
+    if (file.extension === "base")
+      return addUidToBase(this.app, file, uid);
+    return addUidToFile(this.app, file, uid);
+  }
   async saveContextExternal(file, context) {
-    let uid = getUidFromCache(this.app, file);
+    let uid = await this.getUidForFile(file);
     if (!uid) {
       uid = generateUid();
-      await addUidToFile(this.app, file, uid);
+      await this.setUidForFile(file, uid);
       await delay(TIMING.TAB_ACTIVATION_DELAY);
     }
     await this.externalStore.ensureInitialized();
@@ -4238,8 +5550,10 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       }
     }
     this.externalStore.set(uid, context, maxArrangements);
-    await removeContextFromFrontmatter(this.app, file);
-    this.filesWithContext.add(file.path);
+    if (file.extension === "md") {
+      await removeContextFromFrontmatter(this.app, file);
+    }
+    this.filesWithContext.set(file.path, "active");
     this.debouncedRefreshIndicators();
     return true;
   }
@@ -4306,6 +5620,20 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
         await this.setupFileExplorerIndicators();
       }
     });
+  }
+  /**
+   * Migrate embedded perspecta.context blobs from .canvas/.base files into
+   * the external store (Default bucket). One-shot, idempotent. UIDs are
+   * preserved; only the inline context blobs are removed.
+   */
+  async migrateInlineCanvasBaseContexts() {
+    const result = await migrateInlineCanvasBaseContexts({
+      app: this.app,
+      externalStore: this.externalStore,
+      maxArrangementsPerNote: this.settings.maxArrangementsPerNote
+    });
+    await this.rescanFilesWithContext();
+    return result;
   }
   // Backup operations live in src/services/backup.ts; thin shims keep the
   // settings-tab callsites unchanged.
@@ -4384,7 +5712,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     }
   }
   // Guard against concurrent restores
-  async restoreContext(file, forceLatest = false) {
+  async restoreContext(file, forceLatest = false, crossWorkspace = false) {
     if (this.isRestoring) {
       Logger.debug("Skipping restoreContext - already restoring");
       return;
@@ -4401,7 +5729,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       return;
     }
     try {
-      const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
+      const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest, crossWorkspace);
       PerfTimer.mark("getContextForFileWithSelection");
       if (!contextResult || contextResult.cancelled) {
         PerfTimer.end("restoreContext");
@@ -4437,36 +5765,86 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   }
   // Get context with potential user selection for multiple arrangements
   // If forceLatest is true, always use the most recent arrangement without showing selector
-  async getContextForFileWithSelection(file, forceLatest = false) {
-    if (file.extension === "canvas") {
-      return { context: await getContextFromCanvas(this.app, file), cancelled: false };
-    }
-    if (file.extension === "base") {
-      return { context: await getContextFromBase(this.app, file), cancelled: false };
-    }
+  async getContextForFileWithSelection(file, forceLatest = false, crossWorkspace = false) {
+    var _a;
     if (this.settings.storageMode === "external") {
-      const uid = getUidFromCache(this.app, file);
+      const uid = await this.getUidForFile(file);
       if (uid) {
         await this.externalStore.ensureInitialized();
-        const arrangements = this.externalStore.getAll(uid);
-        if (arrangements.length === 0) {
+        const activeWs = this.externalStore.getActiveWorkspace();
+        const useCrossWorkspace = crossWorkspace || this.settings.workspaceCrossSelector;
+        const entries = [];
+        let usedFallback = false;
+        if (useCrossWorkspace) {
+          for (const wsId of this.externalStore.workspacesWithUid(uid)) {
+            const wsInfo = this.externalStore.listWorkspaces().find((w) => w.id === wsId);
+            const label = (_a = wsInfo == null ? void 0 : wsInfo.displayName) != null ? _a : wsId;
+            for (const ts of this.externalStore.getAll(uid, wsId)) {
+              entries.push({ ts, wsId, wsLabel: label });
+            }
+          }
+        } else {
+          for (const ts of this.externalStore.getAll(uid)) {
+            entries.push({ ts, wsId: activeWs, wsLabel: "" });
+          }
+          if (entries.length === 0 && this.settings.workspaceFallbackToDefault && activeWs !== DEFAULT_WORKSPACE_ID) {
+            for (const ts of this.externalStore.getAll(uid, DEFAULT_WORKSPACE_ID)) {
+              entries.push({ ts, wsId: DEFAULT_WORKSPACE_ID, wsLabel: "Default" });
+              usedFallback = true;
+            }
+          }
+        }
+        if (entries.length === 0) {
+          if (file.extension === "canvas") {
+            return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+          }
+          if (file.extension === "base") {
+            return { context: await getContextFromBase(this.app, file), cancelled: false };
+          }
           return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
         }
-        if (arrangements.length === 1 || forceLatest) {
-          return { context: arrangements[0].arrangement, cancelled: false };
+        if (entries.length === 1 || forceLatest) {
+          if (usedFallback) {
+            new import_obsidian8.Notice(`Restored from Default \u2014 save to remember in this workspace`, 4e3);
+          }
+          return { context: entries[0].ts.arrangement, cancelled: false };
+        }
+        const showLabels = useCrossWorkspace || usedFallback;
+        const byTs = /* @__PURE__ */ new Map();
+        for (const e of entries)
+          byTs.set(e.ts.savedAt, e.wsId);
+        const labelByTs = /* @__PURE__ */ new Map();
+        if (showLabels) {
+          for (const e of entries)
+            labelByTs.set(e.ts.savedAt, e.wsLabel || "active");
         }
         const result = await showArrangementSelector(
-          arrangements,
+          entries.map((e) => e.ts),
           file.name,
-          (savedAt) => {
-            this.externalStore.deleteArrangement(uid, savedAt);
+          {
+            onDelete: (savedAt, wsId) => {
+              var _a2;
+              const target = (_a2 = wsId != null ? wsId : byTs.get(savedAt)) != null ? _a2 : activeWs;
+              this.externalStore.deleteArrangement(uid, savedAt, target);
+            },
+            getWorkspaceId: (savedAt) => byTs.get(savedAt),
+            getWorkspaceLabel: showLabels ? (savedAt) => labelByTs.get(savedAt) : void 0
           }
         );
         if (result.cancelled) {
           return { context: null, cancelled: true };
         }
+        if (usedFallback) {
+          new import_obsidian8.Notice(`Restored from Default \u2014 save to remember in this workspace`, 4e3);
+        }
         return { context: result.arrangement.arrangement, cancelled: false };
       }
+    }
+    if (file.extension === "canvas") {
+      return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+    }
+    if (file.extension === "base") {
+      return { context: await getContextFromBase(this.app, file), cancelled: false };
     }
     return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
   }
@@ -5950,7 +7328,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       this.updateFileExplorerIndicator(file);
     }));
   }
-  updateContextIndicator(file) {
+  async updateContextIndicator(file) {
     PerfTimer.begin("updateContextIndicator");
     const allDocs = this.getAllWindowDocuments();
     for (const doc of allDocs) {
@@ -5961,15 +7339,22 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       PerfTimer.end("updateContextIndicator");
       return;
     }
-    const hasContextFrontmatter = hasContextInFrontmatter(this.app, file);
+    let hasContextInline = false;
+    if (file.extension === "md") {
+      hasContextInline = hasContextInFrontmatter(this.app, file);
+    } else if (file.extension === "canvas") {
+      hasContextInline = await canvasHasContext(this.app, file);
+    } else if (file.extension === "base") {
+      hasContextInline = await baseHasContext(this.app, file);
+    }
     let hasContextExternal = false;
     if (this.settings.storageMode === "external") {
-      const uid = getUidFromCache(this.app, file);
+      const uid = await this.getUidForFile(file);
       if (uid && this.externalStore.has(uid)) {
         hasContextExternal = true;
       }
     }
-    const hasContext = hasContextFrontmatter || hasContextExternal;
+    const hasContext = hasContextInline || hasContextExternal;
     PerfTimer.mark("checkHasContext");
     if (hasContext) {
       for (const doc of allDocs) {
@@ -6005,44 +7390,23 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     (0, import_obsidian8.setIcon)(el, "target");
     return el;
   }
+  /**
+   * Build the weak "saved in another workspace" indicator — a distinct icon
+   * (circle-dashed) at the same size as the strong target indicator. Reads
+   * as "context exists, but not anchored here yet."
+   */
+  createOtherWorkspaceIcon(doc = document) {
+    const el = doc.createElement("span");
+    el.className = "perspecta-context-indicator-weak";
+    (0, import_obsidian8.setIcon)(el, "circle-dashed");
+    return el;
+  }
   // ============================================================================
   // File Explorer Indicators
   // ============================================================================
   async setupFileExplorerIndicators() {
     PerfTimer.begin("setupFileExplorerIndicators");
-    const mdFiles = this.app.vault.getMarkdownFiles();
-    PerfTimer.mark(`getMarkdownFiles (${mdFiles.length} files)`);
-    for (const file of mdFiles) {
-      if (hasContextInFrontmatter(this.app, file)) {
-        this.filesWithContext.add(file.path);
-      }
-    }
-    PerfTimer.mark("scanForContextFiles (frontmatter)");
-    const canvasFiles = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
-    for (const file of canvasFiles) {
-      if (await canvasHasContext(this.app, file)) {
-        this.filesWithContext.add(file.path);
-      }
-    }
-    PerfTimer.mark(`scanForContextFiles (canvas: ${canvasFiles.length} files)`);
-    const baseFiles = this.app.vault.getFiles().filter((f) => f.extension === "base");
-    for (const file of baseFiles) {
-      if (await baseHasContext(this.app, file)) {
-        this.filesWithContext.add(file.path);
-      }
-    }
-    PerfTimer.mark(`scanForContextFiles (base: ${baseFiles.length} files)`);
-    if (this.settings.storageMode === "external") {
-      await this.externalStore.ensureInitialized();
-      const uidsWithContext = this.externalStore.getAllUids();
-      for (const file of mdFiles) {
-        const uid = getUidFromCache(this.app, file);
-        if (uid && uidsWithContext.includes(uid)) {
-          this.filesWithContext.add(file.path);
-        }
-      }
-      PerfTimer.mark("scanForContextFiles (external)");
-    }
+    await this.scanFilesWithContext();
     this.registerEvent(this.app.workspace.on("layout-change", () => this.debouncedRefreshIndicators()));
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
@@ -6057,9 +7421,15 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
       this.app.vault.on("rename", (file, oldPath) => {
         if (this.isClosingWindow || this.isUnloading)
           return;
-        if (this.filesWithContext.has(oldPath)) {
+        const tier = this.filesWithContext.get(oldPath);
+        if (tier) {
           this.filesWithContext.delete(oldPath);
-          this.filesWithContext.add(file.path);
+          this.filesWithContext.set(file.path, tier);
+          const otherWs = this.otherWorkspacesForFile.get(oldPath);
+          if (otherWs) {
+            this.otherWorkspacesForFile.delete(oldPath);
+            this.otherWorkspacesForFile.set(file.path, otherWs);
+          }
           this.debouncedRefreshIndicators();
         }
       })
@@ -6070,6 +7440,7 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
           return;
         if (this.filesWithContext.has(file.path)) {
           this.filesWithContext.delete(file.path);
+          this.otherWorkspacesForFile.delete(file.path);
           this.debouncedRefreshIndicators();
         }
       })
@@ -6078,21 +7449,48 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
     PerfTimer.end("setupFileExplorerIndicators");
   }
   async updateFileExplorerIndicator(file) {
-    let hasContext = false;
-    if (file.extension === "canvas") {
-      hasContext = await canvasHasContext(this.app, file);
-    } else if (file.extension === "base") {
-      hasContext = await baseHasContext(this.app, file);
-    } else {
-      hasContext = hasContextInFrontmatter(this.app, file);
-      if (!hasContext && this.settings.storageMode === "external") {
-        const uid = getUidFromCache(this.app, file);
-        if (uid && this.externalStore.has(uid)) {
-          hasContext = true;
+    let tier = null;
+    let otherWs = null;
+    if (this.settings.storageMode === "external") {
+      const uid = await this.getUidForFile(file);
+      if (uid) {
+        const wsList = this.externalStore.workspacesWithUid(uid);
+        if (wsList.length > 0) {
+          const activeWs = this.externalStore.getActiveWorkspace();
+          const inActive = wsList.includes(activeWs);
+          const others = wsList.filter((ws) => ws !== activeWs);
+          if (inActive) {
+            tier = "active";
+            otherWs = others.length > 0 ? others : null;
+          } else {
+            tier = "other";
+            otherWs = others;
+          }
         }
       }
     }
-    hasContext ? this.filesWithContext.add(file.path) : this.filesWithContext.delete(file.path);
+    if (!tier) {
+      let hasInline = false;
+      if (file.extension === "md")
+        hasInline = hasContextInFrontmatter(this.app, file);
+      else if (file.extension === "canvas")
+        hasInline = await canvasHasContext(this.app, file);
+      else if (file.extension === "base")
+        hasInline = await baseHasContext(this.app, file);
+      if (hasInline)
+        tier = "active";
+    }
+    if (tier) {
+      this.filesWithContext.set(file.path, tier);
+      if (otherWs) {
+        this.otherWorkspacesForFile.set(file.path, otherWs);
+      } else {
+        this.otherWorkspacesForFile.delete(file.path);
+      }
+    } else {
+      this.filesWithContext.delete(file.path);
+      this.otherWorkspacesForFile.delete(file.path);
+    }
     this.debouncedRefreshIndicators();
   }
   debouncedRefreshIndicators() {
@@ -6109,15 +7507,37 @@ var PerspectaPlugin = class extends import_obsidian8.Plugin {
   }
   refreshFileExplorerIndicators() {
     PerfTimer.begin("refreshFileExplorerIndicators");
-    document.querySelectorAll(".nav-file-title .perspecta-context-indicator").forEach((el) => el.remove());
+    document.querySelectorAll(".nav-file-title .perspecta-context-indicator, .nav-file-title .perspecta-context-indicator-weak").forEach((el) => el.remove());
     PerfTimer.mark("removeOldIndicators");
-    this.filesWithContext.forEach((path) => {
+    this.filesWithContext.forEach((tier, path) => {
+      var _a;
       const el = document.querySelector(`.nav-file-title[data-path="${CSS.escape(path)}"]`);
-      if (el && !el.querySelector(".perspecta-context-indicator")) {
-        const icon = this.createTargetIcon();
+      if (!el)
+        return;
+      if (el.querySelector(".perspecta-context-indicator, .perspecta-context-indicator-weak"))
+        return;
+      let icon;
+      if (tier === "active") {
+        icon = this.createTargetIcon();
         icon.setAttribute("aria-label", "Has saved context");
-        el.insertBefore(icon, el.firstChild);
+      } else {
+        icon = this.createOtherWorkspaceIcon();
+        const otherWs = (_a = this.otherWorkspacesForFile.get(path)) != null ? _a : [];
+        const labels = otherWs.map((id) => {
+          var _a2, _b;
+          return (_b = (_a2 = this.externalStore.listWorkspaces().find((w) => w.id === id)) == null ? void 0 : _a2.displayName) != null ? _b : id;
+        });
+        icon.setAttribute("aria-label", `Saved in: ${labels.join(", ")}`);
+        icon.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          evt.preventDefault();
+          const file = this.app.vault.getAbstractFileByPath(path);
+          if (file instanceof import_obsidian8.TFile) {
+            this.showCrossWorkspaceActionDialog(file, otherWs);
+          }
+        });
       }
+      el.insertBefore(icon, el.firstChild);
     });
     PerfTimer.mark(`addIndicators (${this.filesWithContext.size} files)`);
     PerfTimer.end("refreshFileExplorerIndicators");

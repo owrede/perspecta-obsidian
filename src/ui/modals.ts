@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { setIcon } from 'obsidian';
-import { TimestampedArrangement, WindowStateV2, WorkspaceNodeState } from '../types';
+import { TimestampedArrangement, WindowStateV2, WorkspaceNodeState, WorkspaceInfo, WorkspaceId } from '../types';
 
 // SVG namespace
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -510,14 +510,34 @@ export interface ArrangementSelectorResult {
 }
 
 /**
+ * Optional per-entry labelling for the arrangement selector (e.g. workspace
+ * tag). Keyed by `savedAt`.
+ */
+export interface ArrangementSelectorOptions {
+	/** Optional callback to render a per-entry workspace label badge. */
+	getWorkspaceLabel?: (savedAt: number) => string | undefined;
+	/** Optional callback to delete a specific arrangement (savedAt + workspace). */
+	onDelete?: (savedAt: number, workspaceId?: WorkspaceId) => void;
+	/** Optional callback to find which workspace an entry came from (used for delete). */
+	getWorkspaceId?: (savedAt: number) => WorkspaceId | undefined;
+}
+
+/**
  * Show a modal to select which arrangement to restore
  */
 export function showArrangementSelector(
 	arrangements: TimestampedArrangement[],
 	fileName: string,
-	onDelete?: (savedAt: number) => void,
+	onDelete?: ((savedAt: number) => void) | ArrangementSelectorOptions,
 	targetWindow: Window = window
 ): Promise<ArrangementSelectorResult> {
+	// Backwards-compat: third arg may be a plain delete callback OR an options object.
+	const opts: ArrangementSelectorOptions = typeof onDelete === 'function'
+		? { onDelete: (savedAt) => onDelete(savedAt) }
+		: (onDelete ?? {});
+	const deleteFn = opts.onDelete;
+	const labelFn = opts.getWorkspaceLabel;
+	const wsIdFn = opts.getWorkspaceId;
 	return new Promise((resolve) => {
 		const doc = targetWindow.document;
 
@@ -581,6 +601,13 @@ export function showArrangementSelector(
 					badge.setText('Latest');
 				}
 
+				const wsLabel = labelFn?.(arr.savedAt);
+				if (wsLabel) {
+					const wsBadge = timeLabel.createSpan({ cls: 'perspecta-arrangement-badge perspecta-arrangement-ws-badge' });
+					wsBadge.setText(wsLabel);
+					wsBadge.style.marginLeft = '6px';
+				}
+
 				const summary = info.createDiv({ cls: 'perspecta-arrangement-summary' });
 				summary.setText(getArrangementSummary(arr));
 
@@ -592,8 +619,8 @@ export function showArrangementSelector(
 				deleteBtn.addEventListener('click', (e) => {
 					e.stopPropagation();
 					deletedTimestamps.add(arr.savedAt);
-					if (onDelete) {
-						onDelete(arr.savedAt);
+					if (deleteFn) {
+						deleteFn(arr.savedAt, wsIdFn?.(arr.savedAt));
 					}
 					renderList();
 				});
@@ -821,5 +848,208 @@ export function showConfirmOverwrite(
 
 		// Focus the confirm button for keyboard accessibility
 		confirmBtn.focus();
+	});
+}
+
+// ============================================================================
+// Workspace picker (copy/move target selection)
+// ============================================================================
+
+export interface WorkspacePickerResult {
+	workspaceId?: WorkspaceId;
+	createNew?: string;
+	cancelled: boolean;
+}
+
+/**
+ * Modal that lists workspace buckets and lets the user pick one as the
+ * copy/move target — or create a new bucket.
+ */
+export function showWorkspacePicker(
+	workspaces: WorkspaceInfo[],
+	action: 'copy' | 'move',
+	currentWorkspaceId: WorkspaceId,
+	targetWindow: Window = window
+): Promise<WorkspacePickerResult> {
+	return new Promise((resolve) => {
+		const doc = targetWindow.document;
+
+		const overlay = doc.createElement('div');
+		overlay.className = 'perspecta-debug-overlay';
+
+		const modal = doc.createElement('div');
+		modal.className = 'perspecta-restore-modal';
+
+		const title = modal.createDiv({ cls: 'perspecta-modal-title' });
+		title.setText(action === 'copy' ? 'Copy context to workspace' : 'Move context to workspace');
+
+		const subtitle = modal.createDiv({ cls: 'perspecta-modal-subtitle' });
+		subtitle.setText(action === 'copy'
+			? 'Pick a target workspace. The arrangement is duplicated there; the source is untouched.'
+			: 'Pick a target workspace. The arrangement moves there; the source is removed.');
+
+		const options = modal.createDiv({ cls: 'perspecta-restore-options' });
+
+		const cleanup = () => {
+			modal.remove();
+			overlay.remove();
+		};
+
+		for (const ws of workspaces) {
+			const isCurrent = ws.id === currentWorkspaceId;
+			const row = options.createDiv({ cls: `perspecta-restore-option${isCurrent ? ' is-disabled' : ''}` });
+			if (isCurrent) {
+				row.style.opacity = '0.55';
+				row.style.cursor = 'not-allowed';
+			} else {
+				row.style.cursor = 'pointer';
+			}
+			const content = row.createDiv({ cls: 'perspecta-restore-option-content' });
+			content.createDiv({
+				cls: 'perspecta-restore-option-title',
+				text: `${ws.displayName}${isCurrent ? '  (current workspace)' : ''}${ws.shared ? '  · shared' : ''}`
+			});
+			content.createDiv({
+				cls: 'perspecta-restore-option-desc',
+				text: `Slug: ${ws.id}`
+			});
+			if (!isCurrent) {
+				row.addEventListener('click', () => {
+					cleanup();
+					resolve({ workspaceId: ws.id, cancelled: false });
+				});
+			}
+		}
+
+		// New-workspace entry.
+		const newRow = options.createDiv({ cls: 'perspecta-restore-option' });
+		newRow.style.cursor = 'pointer';
+		const newContent = newRow.createDiv({ cls: 'perspecta-restore-option-content' });
+		newContent.createDiv({ cls: 'perspecta-restore-option-title', text: '+ New workspace…' });
+		newContent.createDiv({ cls: 'perspecta-restore-option-desc', text: 'Create a new bucket and copy/move into it.' });
+		newRow.addEventListener('click', () => {
+			const name = targetWindow.prompt('New workspace name:');
+			if (!name || !name.trim()) {
+				return; // Stay open.
+			}
+			cleanup();
+			resolve({ createNew: name.trim(), cancelled: false });
+		});
+
+		const buttonRow = modal.createDiv({ cls: 'perspecta-modal-buttons' });
+		const cancelBtn = buttonRow.createEl('button', {
+			cls: 'perspecta-modal-button perspecta-modal-button-secondary',
+			text: 'Cancel'
+		});
+
+		const cancel = () => {
+			cleanup();
+			resolve({ cancelled: true });
+		};
+		overlay.onclick = cancel;
+		cancelBtn.addEventListener('click', cancel);
+
+		doc.body.appendChild(overlay);
+		doc.body.appendChild(modal);
+	});
+}
+
+// ============================================================================
+// Cross-workspace action dialog
+// ----------------------------------------------------------------------------
+// Shown when the user clicks the weak "other-workspace" indicator dot.
+// Lets them pick a source workspace (if multiple) and an action: copy here,
+// switch to it, or move here.
+// ============================================================================
+
+export type CrossWorkspaceAction = 'copy' | 'switch' | 'move';
+
+export interface CrossWorkspaceActionResult {
+	action?: CrossWorkspaceAction;
+	sourceWorkspaceId?: WorkspaceId;
+	cancelled: boolean;
+}
+
+export function showCrossWorkspaceActionDialog(
+	fileName: string,
+	sources: WorkspaceInfo[],
+	activeWorkspaceDisplayName: string,
+	targetWindow: Window = window
+): Promise<CrossWorkspaceActionResult> {
+	return new Promise((resolve) => {
+		const doc = targetWindow.document;
+
+		const overlay = doc.createElement('div');
+		overlay.className = 'perspecta-debug-overlay';
+
+		const modal = doc.createElement('div');
+		modal.className = 'perspecta-restore-modal';
+
+		const title = modal.createDiv({ cls: 'perspecta-modal-title' });
+		title.setText('Saved context in another workspace');
+
+		const subtitle = modal.createDiv({ cls: 'perspecta-modal-subtitle' });
+		subtitle.setText(`"${fileName}" has a saved Perspecta context outside of ${activeWorkspaceDisplayName}.`);
+
+		const cleanup = () => {
+			modal.remove();
+			overlay.remove();
+		};
+		const cancel = () => {
+			cleanup();
+			resolve({ cancelled: true });
+		};
+
+		// Source workspace selection (only if more than one).
+		let selectedSource: WorkspaceId = sources[0]?.id ?? '';
+		if (sources.length > 1) {
+			const sourceLabel = modal.createDiv({ cls: 'setting-item-description' });
+			sourceLabel.style.marginTop = '10px';
+			sourceLabel.setText('Source workspace:');
+			const select = modal.createEl('select', { cls: 'dropdown' });
+			select.style.width = '100%';
+			select.style.marginBottom = '12px';
+			for (const ws of sources) {
+				const opt = select.createEl('option', { value: ws.id, text: `${ws.displayName}${ws.shared ? ' (shared)' : ''}` });
+				if (ws.id === selectedSource) opt.selected = true;
+			}
+			select.addEventListener('change', () => {
+				selectedSource = select.value;
+			});
+		} else if (sources.length === 1) {
+			const note = modal.createDiv({ cls: 'setting-item-description' });
+			note.style.marginTop = '8px';
+			note.style.marginBottom = '8px';
+			note.setText(`Source: ${sources[0].displayName}${sources[0].shared ? ' (shared)' : ''}`);
+		}
+
+		const options = modal.createDiv({ cls: 'perspecta-restore-options' });
+
+		const addAction = (action: CrossWorkspaceAction, titleText: string, descText: string) => {
+			const row = options.createDiv({ cls: 'perspecta-restore-option' });
+			row.style.cursor = 'pointer';
+			const content = row.createDiv({ cls: 'perspecta-restore-option-content' });
+			content.createDiv({ cls: 'perspecta-restore-option-title', text: titleText });
+			content.createDiv({ cls: 'perspecta-restore-option-desc', text: descText });
+			row.addEventListener('click', () => {
+				cleanup();
+				resolve({ action, sourceWorkspaceId: selectedSource, cancelled: false });
+			});
+		};
+
+		addAction('copy', 'Copy here', `Duplicate the arrangement into ${activeWorkspaceDisplayName}. The source is untouched.`);
+		addAction('switch', 'Switch to source workspace', 'Load that Obsidian workspace so you can restore the arrangement normally.');
+		addAction('move', 'Move here', `Bring the arrangement into ${activeWorkspaceDisplayName} and remove it from the source.`);
+
+		const buttonRow = modal.createDiv({ cls: 'perspecta-modal-buttons' });
+		const cancelBtn = buttonRow.createEl('button', {
+			cls: 'perspecta-modal-button perspecta-modal-button-secondary',
+			text: 'Cancel'
+		});
+		overlay.onclick = cancel;
+		cancelBtn.addEventListener('click', cancel);
+
+		doc.body.appendChild(overlay);
+		doc.body.appendChild(modal);
 	});
 }

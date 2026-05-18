@@ -17,9 +17,10 @@ import { App, Notice, Platform, PluginSettingTab, Setting, setIcon } from 'obsid
 import type PerspectaPlugin from '../main';
 import { renderChangelogToContainer } from '../changelog';
 import { getWallpaperPlatformNotes } from '../utils/wallpaper';
-import { ExtendedApp } from '../types/obsidian-internal';
+import { ExtendedApp, getWorkspacesInstance } from '../types/obsidian-internal';
+import { DEFAULT_WORKSPACE_ID } from '../types';
 
-type SettingsTab = 'changelog' | 'context' | 'storage' | 'backup' | 'experimental' | 'debug';
+type SettingsTab = 'changelog' | 'context' | 'storage' | 'workspaces' | 'backup' | 'experimental' | 'debug';
 
 export class PerspectaSettingTab extends PluginSettingTab {
 	plugin: PerspectaPlugin;
@@ -55,6 +56,7 @@ export class PerspectaSettingTab extends PluginSettingTab {
 			{ id: 'changelog', label: 'Changelog' },
 			{ id: 'context', label: 'Context' },
 			{ id: 'storage', label: 'Storage' },
+			{ id: 'workspaces', label: 'Workspaces' },
 			{ id: 'backup', label: 'Backup' },
 			{ id: 'experimental', label: 'Experimental' },
 			{ id: 'debug', label: 'Debug' }
@@ -81,6 +83,9 @@ export class PerspectaSettingTab extends PluginSettingTab {
 				break;
 			case 'storage':
 				this.displayStorageSettings(containerEl);
+				break;
+			case 'workspaces':
+				this.displayWorkspaceSettings(containerEl);
 				break;
 			case 'backup':
 				this.displayBackupSettings(containerEl);
@@ -251,6 +256,149 @@ export class PerspectaSettingTab extends PluginSettingTab {
 					btn.setDisabled(false);
 					btn.setButtonText('Clean up');
 				}));
+	}
+
+	private displayWorkspaceSettings(containerEl: HTMLElement): void {
+		const desc = containerEl.createDiv({ cls: 'setting-item-description' });
+		desc.style.marginBottom = '14px';
+		desc.setText(
+			'Perspecta context arrangements are scoped to the active Obsidian workspace. ' +
+			'When you switch workspaces, save/restore reads and writes into that workspace\'s bucket. ' +
+			'The Default bucket is always present and used as fallback when no workspace is active.'
+		);
+
+		// --- Core-plugin status ---
+		const workspacesInstance = getWorkspacesInstance(this.app);
+		const statusSetting = new Setting(containerEl)
+			.setName('Obsidian Workspaces core plugin')
+			.setDesc(workspacesInstance
+				? `Enabled. Active workspace: "${workspacesInstance.activeWorkspace || '(none loaded)'}"`
+				: 'Disabled. Perspecta will only use the Default bucket. Enable in Settings → Core plugins → Workspaces.');
+		if (!workspacesInstance) {
+			statusSetting.addButton(btn => btn
+				.setButtonText('Open core plugins')
+				.onClick(() => {
+					(this.app as ExtendedApp & { setting?: { open(): void; openTabById(id: string): void } })
+						.setting?.openTabById('core-plugins');
+				}));
+		}
+
+		// --- Behavior toggles ---
+		new Setting(containerEl)
+			.setName('Fall back to Default on restore')
+			.setDesc('If the active workspace has no arrangement for a note, restore from the Default bucket instead.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.workspaceFallbackToDefault)
+				.onChange(async v => {
+					this.plugin.settings.workspaceFallbackToDefault = v;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Cross-workspace arrangement selector')
+			.setDesc('When picking from multiple arrangements, also list arrangements stored in other workspaces.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.workspaceCrossSelector)
+				.onChange(async v => {
+					this.plugin.settings.workspaceCrossSelector = v;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Show workspace in status bar')
+			.setDesc(workspacesInstance
+				? 'Show the active Obsidian workspace in the status bar, with a dropdown to switch.'
+				: 'Disabled — enable the Obsidian Workspaces core plugin first.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.enableWorkspaceStatusBar)
+				.setDisabled(!workspacesInstance)
+				.onChange(async v => {
+					this.plugin.settings.enableWorkspaceStatusBar = v;
+					await this.plugin.saveSettings();
+					this.plugin.refreshWorkspaceStatusBar();
+				}));
+
+		new Setting(containerEl)
+			.setName('Shared workspaces folder')
+			.setDesc('Vault-relative folder where shared workspace buckets live. Only used by buckets you mark as shared.')
+			.addText(t => t
+				.setValue(this.plugin.settings.workspaceSharedLocation)
+				.onChange(async v => {
+					const trimmed = v.trim().replace(/\/+$/, '') || 'perspecta/workspaces';
+					this.plugin.settings.workspaceSharedLocation = trimmed;
+					this.plugin.externalStore.updateSharedLocation(trimmed);
+					await this.plugin.saveSettings();
+				}));
+
+		// --- Bucket list ---
+		containerEl.createEl('h3', { text: 'Workspace buckets' });
+
+		const renderBucketList = () => {
+			// Clear any previous bucket-list section before re-rendering.
+			const existing = containerEl.querySelector('.perspecta-workspace-buckets');
+			if (existing) existing.remove();
+
+			const list = containerEl.createDiv({ cls: 'perspecta-workspace-buckets' });
+
+			if (!this.plugin.externalStore.isInitialized()) {
+				list.createDiv({ cls: 'setting-item-description', text: 'External store not initialized — switch storage mode to External to use workspace buckets.' });
+				return;
+			}
+
+			const buckets = this.plugin.externalStore.listWorkspaces();
+			const activeId = this.plugin.externalStore.getActiveWorkspace();
+
+			if (buckets.length === 0) {
+				list.createDiv({ cls: 'setting-item-description', text: 'No workspace buckets yet — saving context in a workspace will auto-create one.' });
+				return;
+			}
+
+			for (const bucket of buckets) {
+				const uidCount = this.plugin.externalStore.getAllUids(bucket.id).length;
+				const isDefault = bucket.id === DEFAULT_WORKSPACE_ID;
+				const isActive = bucket.id === activeId;
+
+				const setting = new Setting(list)
+					.setName(`${bucket.displayName}${isActive ? ' (active)' : ''}${isDefault ? ' (default)' : ''}`)
+					.setDesc(`Slug: ${bucket.id} · ${uidCount} note${uidCount === 1 ? '' : 's'} · ${bucket.shared ? 'shared' : 'plugin-dir'}`);
+
+				if (!isDefault) {
+					setting.addButton(btn => btn
+						.setButtonText(bucket.shared ? 'Move to plugin' : 'Mark shared')
+						.setTooltip(bucket.shared
+							? 'Move this bucket back into the plugin folder (not synced with vault)'
+							: 'Move this bucket into the vault so it syncs via Obsidian Sync / git')
+						.onClick(async () => {
+							try {
+								await this.plugin.externalStore.setWorkspaceShared(bucket.id, !bucket.shared);
+								new Notice(`${bucket.displayName}: now ${!bucket.shared ? 'shared' : 'plugin-dir only'}`);
+								renderBucketList();
+							} catch (e) {
+								new Notice(`Failed to toggle shared: ${e instanceof Error ? e.message : String(e)}`);
+							}
+						}));
+
+					setting.addButton(btn => btn
+						.setButtonText('Delete')
+						.setWarning()
+						.setTooltip(`Delete all ${uidCount} arrangement${uidCount === 1 ? '' : 's'} in this workspace`)
+						.onClick(async () => {
+							if (uidCount > 0 && !confirm(`Delete workspace bucket "${bucket.displayName}" and all ${uidCount} arrangement${uidCount === 1 ? '' : 's'} inside it? This cannot be undone.`)) {
+								return;
+							}
+							try {
+								await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
+								new Notice(`Deleted workspace bucket: ${bucket.displayName}`);
+								renderBucketList();
+							} catch (e) {
+								new Notice(`Failed to delete bucket: ${e instanceof Error ? e.message : String(e)}`);
+							}
+						}));
+				}
+			}
+		};
+
+		renderBucketList();
 	}
 
 	private displayBackupSettings(containerEl: HTMLElement): void {
@@ -442,6 +590,40 @@ export class PerspectaSettingTab extends PluginSettingTab {
 			.addToggle(t => t.setValue(this.plugin.settings.enableDebugLogging).onChange(async v => {
 				this.plugin.settings.enableDebugLogging = v; await this.plugin.saveSettings();
 			}));
+
+		containerEl.createEl('h3', { text: 'One-shot migrations' });
+
+		new Setting(containerEl)
+			.setName('Migrate inline canvas/base contexts → workspace storage')
+			.setDesc('Move embedded perspecta.context blobs out of .canvas and .base files into the Default workspace bucket. The perspecta.uid stays in place. Idempotent — safe to re-run.')
+			.addButton(btn => btn
+				.setButtonText('Migrate now')
+				.setCta()
+				.onClick(async () => {
+					if (this.plugin.settings.storageMode !== 'external') {
+						new Notice('Switch storage mode to External first');
+						return;
+					}
+					if (!confirm('Move embedded perspecta contexts out of .canvas/.base files into the external store (Default bucket)?\n\nThe perspecta.uid stays in each file. Recommended to run on a backed-up vault.')) {
+						return;
+					}
+					btn.setDisabled(true);
+					btn.setButtonText('Migrating…');
+					try {
+						const result = await this.plugin.migrateInlineCanvasBaseContexts();
+						const total = result.canvasMigrated + result.baseMigrated;
+						const extras: string[] = [];
+						if (result.uidsAdded > 0) extras.push(`${result.uidsAdded} new UIDs`);
+						if (result.errors > 0) extras.push(`${result.errors} errors`);
+						const suffix = extras.length > 0 ? ` (${extras.join(', ')})` : '';
+						new Notice(`Migrated ${total} file${total === 1 ? '' : 's'}: ${result.canvasMigrated} canvas, ${result.baseMigrated} base${suffix}`, 6000);
+					} catch (e) {
+						new Notice(`Migration failed: ${e instanceof Error ? e.message : String(e)}`);
+					} finally {
+						btn.setDisabled(false);
+						btn.setButtonText('Migrate now');
+					}
+				}));
 	}
 
 	private getHotkeyDisplay(commandId: string): string {

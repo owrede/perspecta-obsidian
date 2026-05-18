@@ -69,8 +69,13 @@ import {
 	WindowArrangement,
 	PerspectaSettings,
 	DEFAULT_SETTINGS,
-	UID_FRONTMATTER_KEY
+	UID_FRONTMATTER_KEY,
+	DEFAULT_WORKSPACE_ID,
+	WorkspaceId,
+	TimestampedArrangement
 } from './types';
+import { getWorkspacesInstance } from './types/obsidian-internal';
+import { slugifyWorkspaceName } from './storage/external-store';
 
 // Import internal API type definitions
 import {
@@ -142,11 +147,13 @@ import {
 	cleanupOldUidProperties as cleanupOldUidPropertiesOp,
 	migrateToExternalStorage as migrateToExternalStorageOp,
 	migrateToFrontmatter as migrateToFrontmatterOp,
+	migrateInlineCanvasBaseContexts as migrateInlineCanvasBaseContextsOp,
 	normalizeToV2,
 } from './services/migrations';
+import type { InlineMigrationResult } from './services/migrations';
 
 // Import UI components
-import { showArrangementSelector, showConfirmOverwrite, RestoreMode } from './ui/modals';
+import { showArrangementSelector, showConfirmOverwrite, RestoreMode, showWorkspacePicker, showCrossWorkspaceActionDialog } from './ui/modals';
 import { ProxyNoteView, PROXY_VIEW_TYPE, ProxyViewState } from './ui/proxy-view';
 import { PerspectaSettingTab } from './ui/settings-tab';
 
@@ -245,13 +252,25 @@ export default class PerspectaPlugin extends Plugin {
 	settings: PerspectaSettings;
 	private focusedWindowIndex = -1;
 	private windowFocusListeners: Map<Window, () => void> = new Map();
-	private filesWithContext = new Set<string>();
+	/**
+	 * Map from file path → indicator tier:
+	 *   - 'active': arrangement exists in the active workspace (or in Default
+	 *     when fallback-to-default is on). Shows the strong target icon.
+	 *   - 'other': arrangement exists ONLY in some other workspace. Shows the
+	 *     weak dot indicator.
+	 */
+	private filesWithContext = new Map<string, 'active' | 'other'>();
+	/** For 'other'-tier files, which workspaces hold the arrangement. */
+	private otherWorkspacesForFile = new Map<string, WorkspaceId[]>();
 	private refreshIndicatorsTimeout: ReturnType<typeof setTimeout> | null = null;
 	private isClosingWindow = false; // Guard against operations during window close
 	private isUnloading = false; // Guard against operations during plugin unload
 	private pendingTimeouts = new Set<ReturnType<typeof setTimeout>>(); // Track timeouts for cleanup
 	externalStore: ExternalContextStore;  // External context storage
 	private shiftCmdHeld = false; // Track Cmd+Shift for context restore on link click
+	private lastObservedWorkspaceName = ''; // Last Obsidian workspace name we synced from; '' means none / default
+	private forceDefaultWorkspace = false; // User explicitly picked Default via status-bar menu (overrides Obsidian's activeWorkspace)
+	private workspaceStatusBarEl: HTMLElement | null = null; // Status-bar indicator (active workspace)
 
 	async onload() {
 		await this.loadSettings();
@@ -268,10 +287,20 @@ export default class PerspectaPlugin extends Plugin {
 		this.checkVersionCompatibility();
 
 		// Initialize external store
-		this.externalStore = new ExternalContextStore({ app: this.app, manifest: this.manifest });
+		this.externalStore = new ExternalContextStore({
+			app: this.app,
+			manifest: this.manifest,
+			sharedLocation: this.settings.workspaceSharedLocation
+		});
 		if (this.settings.storageMode === 'external') {
 			await this.externalStore.initialize();
 		}
+
+		// Sync the active Obsidian workspace into the store before any save/restore.
+		await this.syncActiveWorkspace();
+
+		// Status-bar workspace indicator (after sync so the initial label is correct).
+		this.setupWorkspaceStatusBar();
 
 		// Hide perspecta-uid from the Properties view (keep it visible in source mode)
 		this.hideInternalProperties();
@@ -297,6 +326,24 @@ export default class PerspectaPlugin extends Plugin {
 			id: 'show-context-details',
 			name: 'Show context details',
 			callback: () => this.showContextDetails()
+		});
+
+		this.addCommand({
+			id: 'copy-context-to-workspace',
+			name: 'Copy context to workspace…',
+			callback: () => this.copyOrMoveContextCommand('copy')
+		});
+
+		this.addCommand({
+			id: 'move-context-to-workspace',
+			name: 'Move context to workspace…',
+			callback: () => this.copyOrMoveContextCommand('move')
+		});
+
+		this.addCommand({
+			id: 'restore-context-from-any-workspace',
+			name: 'Restore context from any workspace…',
+			callback: () => this.restoreContext(undefined, false, /* crossWorkspace */ true)
 		});
 
 		this.addCommand({
@@ -342,6 +389,28 @@ export default class PerspectaPlugin extends Plugin {
 							.onClick(() => this.saveContext(file));
 					});
 				}
+
+				// Copy/Move context to workspace — only for markdown files with at
+				// least one saved arrangement (external mode only).
+				if (file instanceof TFile && file.extension === 'md' && this.settings.storageMode === 'external') {
+					const uid = getUidFromCache(this.app, file);
+					if (uid && this.externalStore.workspacesWithUid(uid).length > 0) {
+						menu.addItem((item: MenuItem) => {
+							item.setTitle('Copy context to workspace…').setIcon('copy')
+								.onClick(async () => {
+									// Temporarily set the active file so copyOrMoveContextCommand
+									// targets it even if the user right-clicked from the explorer.
+									await this.copyOrMoveForFile(file, 'copy');
+								});
+						});
+						menu.addItem((item: MenuItem) => {
+							item.setTitle('Move context to workspace…').setIcon('arrow-right')
+								.onClick(async () => {
+									await this.copyOrMoveForFile(file, 'move');
+								});
+						});
+					}
+				}
 			})
 		);
 
@@ -374,7 +443,7 @@ export default class PerspectaPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on('file-open', (file) => {
 			if (!file || !this.shiftCmdHeld) return;
 			
-			if (this.filesWithContext.has(file.path)) {
+			if (this.filesWithContext.get(file.path) === 'active') {
 				// Small delay to let Obsidian finish its navigation, then restore.
 				// Use forceLatest=true to skip the arrangement selector modal.
 				// safeTimeout: don't fire after unload.
@@ -489,6 +558,8 @@ export default class PerspectaPlugin extends Plugin {
 				if (this.isClosingWindow) {
 					return;
 				}
+				// Detect workspace switch via Obsidian's core Workspaces plugin.
+				this.syncActiveWorkspace().catch(e => Logger.warn('syncActiveWorkspace failed:', e));
 			})
 		);
 		this.registerEvent(
@@ -971,23 +1042,24 @@ export default class PerspectaPlugin extends Plugin {
 			PerfTimer.mark('ensureUidsForContext');
 		}
 
-		// Save based on file type and storage mode
+		// Save based on storage mode. In external mode all file types — markdown,
+		// canvas, and base — go through the external store so they get the same
+		// workspace-scoped, multi-arrangement treatment. In frontmatter mode
+		// canvas/base fall back to inline storage (no external store available).
 		let saved = true;
-		if (isCanvas) {
-			// Canvas files always store context in the JSON
+		if (this.settings.storageMode === 'external') {
+			saved = await this.saveContextExternal(targetFile, context);
+			PerfTimer.mark('saveContextExternal');
+		} else if (isCanvas) {
 			await saveContextToCanvas(this.app, targetFile, context);
-			this.filesWithContext.add(targetFile.path);
+			this.filesWithContext.set(targetFile.path, 'active');
 			this.debouncedRefreshIndicators();
 			PerfTimer.mark('saveContextToCanvas');
 		} else if (isBase) {
-			// Base files always store context in the YAML
 			await saveContextToBase(this.app, targetFile, context);
-			this.filesWithContext.add(targetFile.path);
+			this.filesWithContext.set(targetFile.path, 'active');
 			this.debouncedRefreshIndicators();
 			PerfTimer.mark('saveContextToBase');
-		} else if (this.settings.storageMode === 'external') {
-			saved = await this.saveContextExternal(targetFile, context);
-			PerfTimer.mark('saveContextExternal');
 		} else {
 			await saveContextToFrontmatter(this.app, targetFile, context);
 			PerfTimer.mark('saveArrangementToNote');
@@ -1006,16 +1078,501 @@ export default class PerspectaPlugin extends Plugin {
 		PerfTimer.end('saveContext');
 	}
 
+	// ============================================================================
+	// Workspace integration
+	// ----------------------------------------------------------------------------
+	// Read the active Obsidian workspace (from the core Workspaces plugin) and
+	// project it onto the external store's active workspace id. Auto-creates the
+	// bucket on first encounter. Called on plugin load and on every
+	// layout-change event.
+	// ============================================================================
+
+	private async syncActiveWorkspace(): Promise<void> {
+		const instance = getWorkspacesInstance(this.app);
+		const rawName = instance?.activeWorkspace ?? '';
+
+		// If the user explicitly picked Default from the status-bar menu, that
+		// overrides whatever Obsidian still thinks is the active workspace.
+		// While the override is on, the store stays on the Default bucket.
+		if (this.forceDefaultWorkspace) {
+			this.lastObservedWorkspaceName = rawName;
+			if (this.externalStore.getActiveWorkspace() !== DEFAULT_WORKSPACE_ID) {
+				this.externalStore.setActiveWorkspace(DEFAULT_WORKSPACE_ID);
+				await this.rescanFilesWithContext();
+			}
+			this.updateWorkspaceStatusBar();
+			return;
+		}
+
+		// Compute what the store *should* be on. Compare against current store
+		// state, not just the cached last-observed name — the user may have
+		// just released a forceDefault override without `rawName` changing.
+		const expectedStoreWs = rawName ? slugifyWorkspaceName(rawName) : DEFAULT_WORKSPACE_ID;
+		const currentStoreWs = this.externalStore.getActiveWorkspace();
+		if (rawName === this.lastObservedWorkspaceName && currentStoreWs === expectedStoreWs) {
+			this.updateWorkspaceStatusBar();
+			return;
+		}
+		this.lastObservedWorkspaceName = rawName;
+
+		// No workspace active (plugin disabled, or none loaded) → default bucket.
+		if (!rawName) {
+			if (this.externalStore.getActiveWorkspace() !== DEFAULT_WORKSPACE_ID) {
+				this.externalStore.setActiveWorkspace(DEFAULT_WORKSPACE_ID);
+				await this.rescanFilesWithContext();
+			}
+			return;
+		}
+
+		const wsId = slugifyWorkspaceName(rawName);
+
+		// Auto-create bucket if first encounter (requires external store to be
+		// initialized — only relevant in external storage mode).
+		if (this.settings.storageMode === 'external' && this.externalStore.isInitialized()) {
+			if (!this.externalStore.hasWorkspace(wsId)) {
+				try {
+					await this.externalStore.createWorkspaceBucket(rawName, wsId);
+					Logger.info(`Auto-created Perspecta workspace bucket: ${wsId} (${rawName})`);
+				} catch (e) {
+					Logger.warn(`Failed to auto-create workspace bucket ${wsId}:`, e);
+				}
+			}
+		}
+
+		if (this.externalStore.getActiveWorkspace() !== wsId) {
+			this.externalStore.setActiveWorkspace(wsId);
+			await this.rescanFilesWithContext();
+		}
+
+		this.updateWorkspaceStatusBar();
+	}
+
+	// ============================================================================
+	// Status-bar workspace indicator
+	// ----------------------------------------------------------------------------
+	// Shows the currently active Obsidian workspace (or "Default" when none is
+	// loaded). Clicking opens a Menu with the workspace list, save/new entries,
+	// and a link into the Workspaces settings tab. Opt-in via
+	// settings.enableWorkspaceStatusBar; auto-hidden when the core plugin is
+	// disabled.
+	// ============================================================================
+
+	/** Public re-entry point (called from settings tab when toggle changes). */
+	refreshWorkspaceStatusBar(): void {
+		this.setupWorkspaceStatusBar();
+	}
+
+	private setupWorkspaceStatusBar(): void {
+		const instance = getWorkspacesInstance(this.app);
+		const wanted = this.settings.enableWorkspaceStatusBar && !!instance;
+
+		if (wanted && !this.workspaceStatusBarEl) {
+			this.workspaceStatusBarEl = this.addStatusBarItem();
+			this.workspaceStatusBarEl.addClass('perspecta-workspace-status');
+			this.workspaceStatusBarEl.style.cursor = 'pointer';
+			this.workspaceStatusBarEl.addEventListener('click', (evt: MouseEvent) => {
+				this.openWorkspaceStatusBarMenu(evt);
+			});
+		} else if (!wanted && this.workspaceStatusBarEl) {
+			this.workspaceStatusBarEl.remove();
+			this.workspaceStatusBarEl = null;
+		}
+
+		this.updateWorkspaceStatusBar();
+	}
+
+	private updateWorkspaceStatusBar(): void {
+		if (!this.workspaceStatusBarEl) return;
+		const instance = getWorkspacesInstance(this.app);
+		const rawName = (instance?.activeWorkspace || '').trim();
+		// Label = Default when (a) the user explicitly picked it, (b) no
+		// Obsidian workspace is loaded, or (c) the core plugin is disabled.
+		const showingDefault = this.forceDefaultWorkspace || !rawName;
+		const label = showingDefault ? 'Default' : rawName;
+		this.workspaceStatusBarEl.empty();
+		const icon = this.workspaceStatusBarEl.createSpan({ cls: 'perspecta-workspace-status-icon' });
+		setIcon(icon, 'layout-grid');
+		icon.style.marginRight = '4px';
+		this.workspaceStatusBarEl.createSpan({ text: label });
+	}
+
+	private openWorkspaceStatusBarMenu(evt: MouseEvent): void {
+		const instance = getWorkspacesInstance(this.app);
+		if (!instance) {
+			new Notice('Workspaces core plugin is disabled');
+			return;
+		}
+
+		const menu = new Menu();
+		const rawActive = (instance.activeWorkspace || '').trim();
+		const active = this.forceDefaultWorkspace ? '' : rawActive;
+		const names = Object.keys(instance.workspaces).sort((a, b) => a.localeCompare(b));
+
+		// "Default" is always first — Perspecta's own fallback namespace.
+		menu.addItem(item => {
+			item.setTitle('Default');
+			if (this.forceDefaultWorkspace || !rawActive) item.setIcon('check');
+			item.onClick(() => {
+				this.forceDefaultWorkspace = true;
+				// Don't touch instance.activeWorkspace — leave Obsidian's state
+				// alone. Re-run sync; the override flag steers us to Default.
+				this.syncActiveWorkspace().catch(e => Logger.warn('syncActiveWorkspace failed:', e));
+			});
+		});
+
+		if (names.length > 0) {
+			menu.addSeparator();
+			for (const name of names) {
+				menu.addItem(item => {
+					item.setTitle(name);
+					if (name === active) item.setIcon('check');
+					item.onClick(() => {
+						try {
+							this.forceDefaultWorkspace = false;
+							instance.loadWorkspace(name);
+							// loadWorkspace fires layout-change → syncActiveWorkspace,
+							// but if Obsidian's `activeWorkspace` was already `name`
+							// (e.g. we just released a Default override), no
+							// name change fires the listener — call sync explicitly.
+							this.syncActiveWorkspace().catch(e => Logger.warn('syncActiveWorkspace failed:', e));
+						} catch (e) {
+							new Notice(`Failed to load workspace: ${e instanceof Error ? e.message : String(e)}`);
+						}
+					});
+				});
+			}
+		}
+
+		menu.addSeparator();
+		menu.addItem(item => item
+			.setTitle('New workspace…')
+			.setIcon('plus')
+			.onClick(() => this.promptCreateWorkspace(instance)));
+		menu.addItem(item => item
+			.setTitle('Manage workspaces')
+			.setIcon('settings')
+			.onClick(() => {
+				const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+				if (setting) {
+					setting.open();
+					setting.openTabById(this.manifest.id);
+				}
+			}));
+
+		menu.showAtMouseEvent(evt);
+	}
+
+	private promptCreateWorkspace(instance: ReturnType<typeof getWorkspacesInstance>): void {
+		if (!instance) return;
+		const name = window.prompt('New workspace name:');
+		const trimmed = name?.trim();
+		if (!trimmed) return;
+		if (instance.workspaces[trimmed]) {
+			new Notice(`Workspace "${trimmed}" already exists`);
+			return;
+		}
+		try {
+			instance.saveWorkspace(trimmed);
+			instance.loadWorkspace(trimmed);
+			new Notice(`Created workspace: ${trimmed}`);
+		} catch (e) {
+			new Notice(`Failed to create workspace: ${e instanceof Error ? e.message : String(e)}`);
+		}
+	}
+
+	/**
+	 * Re-scan all files for context indicators after a workspace switch. The
+	 * set of "files with context" is workspace-dependent, so swapping workspaces
+	 * means rebuilding it from scratch (cheaper than tracking which entries
+	 * came from which bucket).
+	 */
+	private async rescanFilesWithContext(): Promise<void> {
+		this.filesWithContext.clear();
+		this.otherWorkspacesForFile.clear();
+		await this.scanFilesWithContext();
+		this.debouncedRefreshIndicators();
+	}
+
+	/**
+	 * Scan the vault and populate this.filesWithContext. Pure data — no event
+	 * registration, so it is safe to re-run (e.g. on workspace switch).
+	 *
+	 * Tier policy:
+	 *   - Canvas/base files with embedded context: always 'active' (single-bucket).
+	 *   - Markdown frontmatter context: always 'active' (workspace-agnostic).
+	 *   - External-store arrangement in active workspace: 'active'.
+	 *   - External-store arrangement in Default (when fallback is on): 'active'.
+	 *   - External-store arrangement only in other workspaces: 'other'.
+	 */
+	private async scanFilesWithContext(): Promise<void> {
+		const mdFiles = this.app.vault.getMarkdownFiles();
+		PerfTimer.mark(`getMarkdownFiles (${mdFiles.length} files)`);
+
+		// Markdown files with frontmatter context — always 'active'.
+		for (const file of mdFiles) {
+			if (hasContextInFrontmatter(this.app, file)) {
+				this.filesWithContext.set(file.path, 'active');
+			}
+		}
+		PerfTimer.mark('scanForContextFiles (frontmatter)');
+
+		// All non-markdown files share the same logic as markdown when in
+		// external mode: prefer external-store classification, fall back to
+		// inline context (canvas JSON / base YAML) when external is empty.
+		const canvasFiles = this.app.vault.getFiles().filter(f => f.extension === 'canvas');
+		const baseFiles = this.app.vault.getFiles().filter(f => f.extension === 'base');
+
+		// External storage: classify each file by tier.
+		// Policy: only the active workspace counts as "strong". Default-when-
+		// not-active = "other", regardless of the fallback-to-default setting.
+		// Fallback still affects restore behavior; this is purely a visual cue.
+		if (this.settings.storageMode === 'external') {
+			await this.externalStore.ensureInitialized();
+			const activeWs = this.externalStore.getActiveWorkspace();
+
+			const classifyByUid = (filePath: string, uid: string): boolean => {
+				const wsList = this.externalStore.workspacesWithUid(uid);
+				if (wsList.length === 0) return false;
+				const inActive = wsList.includes(activeWs);
+				const otherWs = wsList.filter(ws => ws !== activeWs);
+				if (inActive) {
+					this.filesWithContext.set(filePath, 'active');
+					if (otherWs.length > 0) this.otherWorkspacesForFile.set(filePath, otherWs);
+				} else {
+					if (this.filesWithContext.get(filePath) !== 'active') {
+						this.filesWithContext.set(filePath, 'other');
+					}
+					this.otherWorkspacesForFile.set(filePath, otherWs);
+				}
+				return true;
+			};
+
+			// Markdown.
+			for (const file of mdFiles) {
+				const uid = getUidFromCache(this.app, file);
+				if (uid) classifyByUid(file.path, uid);
+			}
+
+			// Canvas.
+			for (const file of canvasFiles) {
+				const uid = await getUidFromCanvas(this.app, file);
+				const classified = uid ? classifyByUid(file.path, uid) : false;
+				if (!classified && await canvasHasContext(this.app, file)) {
+					// Legacy inline-only canvas (no external entry yet) — strong icon.
+					this.filesWithContext.set(file.path, 'active');
+				}
+			}
+
+			// Base.
+			for (const file of baseFiles) {
+				const uid = await getUidFromBase(this.app, file);
+				const classified = uid ? classifyByUid(file.path, uid) : false;
+				if (!classified && await baseHasContext(this.app, file)) {
+					this.filesWithContext.set(file.path, 'active');
+				}
+			}
+			PerfTimer.mark('scanForContextFiles (external)');
+		} else {
+			// Frontmatter / non-external mode: inline storage is authoritative.
+			for (const file of canvasFiles) {
+				if (await canvasHasContext(this.app, file)) {
+					this.filesWithContext.set(file.path, 'active');
+				}
+			}
+			for (const file of baseFiles) {
+				if (await baseHasContext(this.app, file)) {
+					this.filesWithContext.set(file.path, 'active');
+				}
+			}
+			PerfTimer.mark(`scanForContextFiles (inline canvas/base)`);
+		}
+	}
+
+	/**
+	 * Copy or move all arrangements for the active file from its source
+	 * workspace to a user-picked target workspace. Used by the palette
+	 * command (operates on the active file).
+	 */
+	async copyOrMoveContextCommand(action: 'copy' | 'move'): Promise<void> {
+		const file = this.app.workspace.getActiveFile();
+		if (!file || file.extension !== 'md') {
+			new Notice('Open a markdown file with a saved context first');
+			return;
+		}
+		await this.copyOrMoveForFile(file, action);
+	}
+
+	/**
+	 * Dialog opened when the user clicks the weak "saved elsewhere" indicator.
+	 * Offers three actions for a file whose arrangement(s) live only in other
+	 * workspaces: copy here, switch to source workspace, or move here.
+	 */
+	async showCrossWorkspaceActionDialog(file: TFile, sourceWorkspaceIds: WorkspaceId[]): Promise<void> {
+		if (sourceWorkspaceIds.length === 0) return;
+
+		const allWs = this.externalStore.listWorkspaces();
+		const sources = sourceWorkspaceIds
+			.map(id => allWs.find(w => w.id === id))
+			.filter((w): w is typeof allWs[number] => !!w);
+		if (sources.length === 0) return;
+
+		const activeWs = this.externalStore.getActiveWorkspace();
+		const activeDisplayName = allWs.find(w => w.id === activeWs)?.displayName ?? activeWs;
+
+		const result = await showCrossWorkspaceActionDialog(file.name, sources, activeDisplayName);
+		if (result.cancelled || !result.action || !result.sourceWorkspaceId) return;
+
+		const sourceWs = result.sourceWorkspaceId;
+		const uid = getUidFromCache(this.app, file);
+		if (!uid) {
+			new Notice('Note has no Perspecta UID');
+			return;
+		}
+
+		if (result.action === 'switch') {
+			const instance = getWorkspacesInstance(this.app);
+			const sourceDisplayName = sources.find(s => s.id === sourceWs)?.displayName ?? sourceWs;
+			if (sourceWs === DEFAULT_WORKSPACE_ID) {
+				// Switch Perspecta to its Default bucket. Don't touch Obsidian's state.
+				this.forceDefaultWorkspace = true;
+				await this.syncActiveWorkspace();
+				new Notice('Switched to Default workspace');
+				// Then restore the arrangement so the user actually lands in it.
+				await this.restoreContext(file, /* forceLatest */ true);
+				return;
+			}
+			if (!instance) {
+				new Notice('Workspaces core plugin is disabled — cannot switch');
+				return;
+			}
+			if (!instance.workspaces[sourceDisplayName]) {
+				new Notice(`Obsidian workspace "${sourceDisplayName}" does not exist`);
+				return;
+			}
+			try {
+				this.forceDefaultWorkspace = false;
+				instance.loadWorkspace(sourceDisplayName);
+				await this.syncActiveWorkspace();
+				// Restore the Perspecta arrangement in the new workspace context.
+				// forceLatest=true so we don't show the selector — the user just
+				// asked for "the one in that workspace", give it to them.
+				await this.restoreContext(file, /* forceLatest */ true);
+			} catch (e) {
+				new Notice(`Failed to load workspace: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			return;
+		}
+
+		// copy or move into the active workspace.
+		const max = this.settings.maxArrangementsPerNote;
+		const opResult = result.action === 'copy'
+			? this.externalStore.copyArrangements(uid, sourceWs, activeWs, 'merge', max)
+			: this.externalStore.moveArrangements(uid, sourceWs, activeWs, 'merge', max);
+
+		const verb = result.action === 'copy' ? 'Copied' : 'Moved';
+		new Notice(`${verb} to ${activeDisplayName}: ${opResult.copied} new, ${opResult.skipped} duplicate${opResult.overwritten ? `, ${opResult.overwritten} replaced` : ''}`);
+
+		await this.externalStore.flushDirty();
+		await this.rescanFilesWithContext();
+	}
+
+	/**
+	 * Copy/move arrangements for a specific file. Used by file-menu entries
+	 * (which already provide the file) and by the palette command above.
+	 */
+	private async copyOrMoveForFile(file: TFile, action: 'copy' | 'move'): Promise<void> {
+		if (this.settings.storageMode !== 'external') {
+			new Notice('Copy/move requires external storage mode');
+			return;
+		}
+
+		const uid = getUidFromCache(this.app, file);
+		if (!uid) {
+			new Notice('This note has no Perspecta UID — save a context first');
+			return;
+		}
+
+		await this.externalStore.ensureInitialized();
+
+		// Determine the source workspace: prefer the one the user is in if it
+		// has arrangements; otherwise fall back to whichever workspace owns the
+		// note's arrangements.
+		const activeWs = this.externalStore.getActiveWorkspace();
+		const wsWithUid = this.externalStore.workspacesWithUid(uid);
+		if (wsWithUid.length === 0) {
+			new Notice('No saved arrangement to copy/move for this note');
+			return;
+		}
+
+		const sourceWs = wsWithUid.includes(activeWs) ? activeWs : wsWithUid[0];
+
+		// Warn when moving the only copy out of Default and fallback is disabled.
+		if (action === 'move' && sourceWs === DEFAULT_WORKSPACE_ID && !this.settings.workspaceFallbackToDefault) {
+			const proceed = confirm('You are about to move this note\'s arrangement out of Default. With fallback-to-Default off, the arrangement will be unreachable from workspaces that don\'t have a copy. Continue?');
+			if (!proceed) return;
+		}
+
+		const picker = await showWorkspacePicker(
+			this.externalStore.listWorkspaces(),
+			action,
+			sourceWs
+		);
+		if (picker.cancelled) return;
+
+		let targetWs: WorkspaceId | undefined = picker.workspaceId;
+		if (picker.createNew) {
+			try {
+				targetWs = await this.externalStore.createWorkspaceBucket(picker.createNew);
+				new Notice(`Created workspace: ${picker.createNew}`);
+			} catch (e) {
+				new Notice(`Failed to create workspace: ${e instanceof Error ? e.message : String(e)}`);
+				return;
+			}
+		}
+		if (!targetWs) return;
+
+		const max = this.settings.maxArrangementsPerNote;
+		const result = action === 'copy'
+			? this.externalStore.copyArrangements(uid, sourceWs, targetWs, 'merge', max)
+			: this.externalStore.moveArrangements(uid, sourceWs, targetWs, 'merge', max);
+
+		const wsLabel = this.externalStore.listWorkspaces().find(w => w.id === targetWs)?.displayName ?? targetWs;
+		const verb = action === 'copy' ? 'Copied' : 'Moved';
+		new Notice(`${verb} to ${wsLabel}: ${result.copied} new, ${result.skipped} duplicate${result.overwritten ? `, ${result.overwritten} replaced` : ''}`);
+
+		await this.externalStore.flushDirty();
+		await this.rescanFilesWithContext();
+	}
+
 	// Save context to external store (using file's UID as key)
 	// Returns true if save was successful, false if cancelled
+	/**
+	 * Read the Perspecta UID from a file, dispatching by extension.
+	 * Markdown: frontmatter cache. Canvas: data.perspecta.uid in the JSON.
+	 * Base: data.perspecta.uid in the YAML.
+	 */
+	private async getUidForFile(file: TFile): Promise<string | undefined> {
+		if (file.extension === 'canvas') return getUidFromCanvas(this.app, file);
+		if (file.extension === 'base') return getUidFromBase(this.app, file);
+		return getUidFromCache(this.app, file);
+	}
+
+	/**
+	 * Write a Perspecta UID into a file, dispatching by extension.
+	 */
+	private async setUidForFile(file: TFile, uid: string): Promise<void> {
+		if (file.extension === 'canvas') return addUidToCanvas(this.app, file, uid);
+		if (file.extension === 'base') return addUidToBase(this.app, file, uid);
+		return addUidToFile(this.app, file, uid);
+	}
+
 	private async saveContextExternal(file: TFile, context: WindowArrangementV2): Promise<boolean> {
-		// Get the file's UID (must exist since we ensured UIDs above)
-		let uid = getUidFromCache(this.app, file);
+		// Get the file's UID — read from the right place depending on file type.
+		let uid = await this.getUidForFile(file);
 		if (!uid) {
-			// Fallback: add UID now if somehow missing
+			// Fallback: generate and persist a UID.
 			uid = generateUid();
-			await addUidToFile(this.app, file, uid);
-			// Wait for cache update
+			await this.setUidForFile(file, uid);
 			await delay(TIMING.TAB_ACTIVATION_DELAY);
 		}
 
@@ -1038,10 +1595,14 @@ export default class PerspectaPlugin extends Plugin {
 
 		this.externalStore.set(uid, context, maxArrangements);
 
-		// Remove perspecta-arrangement from frontmatter (if present) to avoid duplication
-		await removeContextFromFrontmatter(this.app, file);
+		// For markdown files: clean up any stale inline frontmatter context to
+		// avoid duplication. Canvas/base inline cleanup is handled by the
+		// explicit migration button (see Debug settings).
+		if (file.extension === 'md') {
+			await removeContextFromFrontmatter(this.app, file);
+		}
 
-		this.filesWithContext.add(file.path);
+		this.filesWithContext.set(file.path, 'active');
 		this.debouncedRefreshIndicators();
 		return true;
 	}
@@ -1123,6 +1684,21 @@ export default class PerspectaPlugin extends Plugin {
 				await this.setupFileExplorerIndicators();
 			},
 		});
+	}
+
+	/**
+	 * Migrate embedded perspecta.context blobs from .canvas/.base files into
+	 * the external store (Default bucket). One-shot, idempotent. UIDs are
+	 * preserved; only the inline context blobs are removed.
+	 */
+	async migrateInlineCanvasBaseContexts(): Promise<InlineMigrationResult> {
+		const result = await migrateInlineCanvasBaseContextsOp({
+			app: this.app,
+			externalStore: this.externalStore,
+			maxArrangementsPerNote: this.settings.maxArrangementsPerNote,
+		});
+		await this.rescanFilesWithContext();
+		return result;
 	}
 
 	// Backup operations live in src/services/backup.ts; thin shims keep the
@@ -1230,7 +1806,7 @@ export default class PerspectaPlugin extends Plugin {
 	private pathCorrections: Map<string, { newPath: string; newName: string }> = new Map();
 	private isRestoring = false;  // Guard against concurrent restores
 
-	async restoreContext(file?: TFile, forceLatest = false) {
+	async restoreContext(file?: TFile, forceLatest = false, crossWorkspace = false) {
 		// Prevent concurrent restores which can cause duplicate windows
 		if (this.isRestoring) {
 			Logger.debug('Skipping restoreContext - already restoring');
@@ -1255,7 +1831,7 @@ export default class PerspectaPlugin extends Plugin {
 
 		try {
 			// Get context - may show selector if multiple arrangements exist (unless forceLatest)
-			const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest);
+			const contextResult = await this.getContextForFileWithSelection(targetFile, forceLatest, crossWorkspace);
 			PerfTimer.mark('getContextForFileWithSelection');
 
 			if (!contextResult || contextResult.cancelled) {
@@ -1300,54 +1876,108 @@ export default class PerspectaPlugin extends Plugin {
 
 	// Get context with potential user selection for multiple arrangements
 	// If forceLatest is true, always use the most recent arrangement without showing selector
-	private async getContextForFileWithSelection(file: TFile, forceLatest = false): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
-		// Canvas files store context directly in their JSON (single arrangement)
-		if (file.extension === 'canvas') {
-			return { context: await getContextFromCanvas(this.app, file), cancelled: false };
-		}
-
-		// Base files store context directly in their YAML (single arrangement)
-		if (file.extension === 'base') {
-			return { context: await getContextFromBase(this.app, file), cancelled: false };
-		}
-
-		// For markdown files with external storage, check for multiple arrangements
+	private async getContextForFileWithSelection(file: TFile, forceLatest = false, crossWorkspace = false): Promise<{ context: WindowArrangement | null; cancelled: boolean }> {
+		// External storage: all file types (markdown, canvas, base) flow through
+		// the workspace-scoped store. Inline-canvas/inline-base storage is used
+		// only as a backwards-compat fallback when the external store is empty.
 		if (this.settings.storageMode === 'external') {
-			const uid = getUidFromCache(this.app, file);
+			const uid = await this.getUidForFile(file);
 			if (uid) {
 				// Initialize store if needed
 				await this.externalStore.ensureInitialized();
 
-				const arrangements = this.externalStore.getAll(uid);
+				const activeWs = this.externalStore.getActiveWorkspace();
+				const useCrossWorkspace = crossWorkspace || this.settings.workspaceCrossSelector;
 
-				if (arrangements.length === 0) {
-					// No arrangements in external store, fall back to frontmatter
+				// Build the arrangement set. In single-workspace mode, just the active
+				// bucket (with optional Default fallback). In cross-workspace mode,
+				// gather from every workspace that has arrangements for this UID.
+				type Entry = { ts: TimestampedArrangement; wsId: WorkspaceId; wsLabel: string };
+				const entries: Entry[] = [];
+				let usedFallback = false;
+
+				if (useCrossWorkspace) {
+					for (const wsId of this.externalStore.workspacesWithUid(uid)) {
+						const wsInfo = this.externalStore.listWorkspaces().find(w => w.id === wsId);
+						const label = wsInfo?.displayName ?? wsId;
+						for (const ts of this.externalStore.getAll(uid, wsId)) {
+							entries.push({ ts, wsId, wsLabel: label });
+						}
+					}
+				} else {
+					for (const ts of this.externalStore.getAll(uid)) {
+						entries.push({ ts, wsId: activeWs, wsLabel: '' });
+					}
+					if (entries.length === 0 && this.settings.workspaceFallbackToDefault && activeWs !== DEFAULT_WORKSPACE_ID) {
+						for (const ts of this.externalStore.getAll(uid, DEFAULT_WORKSPACE_ID)) {
+							entries.push({ ts, wsId: DEFAULT_WORKSPACE_ID, wsLabel: 'Default' });
+							usedFallback = true;
+						}
+					}
+				}
+
+				if (entries.length === 0) {
+					// External store empty for this UID — fall back to the
+					// file's inline storage if it has one (legacy canvas/base
+					// data, or pre-external-mode markdown frontmatter).
+					if (file.extension === 'canvas') {
+						return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+					}
+					if (file.extension === 'base') {
+						return { context: await getContextFromBase(this.app, file), cancelled: false };
+					}
 					return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 				}
 
-				if (arrangements.length === 1 || forceLatest) {
-					// Single arrangement or forceLatest - use the most recent one
-					// Arrangements are sorted by savedAt descending, so first is most recent
-					return { context: arrangements[0].arrangement, cancelled: false };
+				if (entries.length === 1 || forceLatest) {
+					if (usedFallback) {
+						new Notice(`Restored from Default — save to remember in this workspace`, 4000);
+					}
+					return { context: entries[0].ts.arrangement, cancelled: false };
 				}
 
-				// Multiple arrangements - show selector with delete callback
+				// Multiple arrangements — show selector. Label each row with its
+				// source workspace when in cross-workspace mode (or always, if any
+				// entry came from a non-active bucket).
+				const showLabels = useCrossWorkspace || usedFallback;
+				const byTs = new Map<number, WorkspaceId>();
+				for (const e of entries) byTs.set(e.ts.savedAt, e.wsId);
+				const labelByTs = new Map<number, string>();
+				if (showLabels) {
+					for (const e of entries) labelByTs.set(e.ts.savedAt, e.wsLabel || 'active');
+				}
+
 				const result = await showArrangementSelector(
-					arrangements,
+					entries.map(e => e.ts),
 					file.name,
-					(savedAt: number) => {
-						// Delete the arrangement from the store
-						this.externalStore.deleteArrangement(uid, savedAt);
+					{
+						onDelete: (savedAt, wsId) => {
+							const target = wsId ?? byTs.get(savedAt) ?? activeWs;
+							this.externalStore.deleteArrangement(uid, savedAt, target);
+						},
+						getWorkspaceId: (savedAt) => byTs.get(savedAt),
+						getWorkspaceLabel: showLabels ? (savedAt) => labelByTs.get(savedAt) : undefined,
 					}
 				);
 				if (result.cancelled) {
 					return { context: null, cancelled: true };
 				}
+				if (usedFallback) {
+					new Notice(`Restored from Default — save to remember in this workspace`, 4000);
+				}
 				return { context: result.arrangement.arrangement, cancelled: false };
 			}
 		}
 
-		// Fall back to frontmatter (for backward compatibility or frontmatter mode)
+		// Frontmatter mode (or external mode + no UID): pull from inline storage
+		// per file type. Canvas/base get their JSON/YAML embed; markdown gets
+		// its frontmatter.
+		if (file.extension === 'canvas') {
+			return { context: await getContextFromCanvas(this.app, file), cancelled: false };
+		}
+		if (file.extension === 'base') {
+			return { context: await getContextFromBase(this.app, file), cancelled: false };
+		}
 		return { context: getContextFromFrontmatter(this.app, file), cancelled: false };
 	}
 
@@ -3223,7 +3853,7 @@ export default class PerspectaPlugin extends Plugin {
 		}));
 	}
 
-	private updateContextIndicator(file: TFile | null) {
+	private async updateContextIndicator(file: TFile | null) {
 		PerfTimer.begin('updateContextIndicator');
 
 		// Remove old indicators from all windows (main + popouts)
@@ -3238,19 +3868,26 @@ export default class PerspectaPlugin extends Plugin {
 			return;
 		}
 
-		// Check frontmatter
-		const hasContextFrontmatter = hasContextInFrontmatter(this.app, file);
+		// Check inline storage per file type (frontmatter / canvas JSON / base YAML).
+		let hasContextInline = false;
+		if (file.extension === 'md') {
+			hasContextInline = hasContextInFrontmatter(this.app, file);
+		} else if (file.extension === 'canvas') {
+			hasContextInline = await canvasHasContext(this.app, file);
+		} else if (file.extension === 'base') {
+			hasContextInline = await baseHasContext(this.app, file);
+		}
 
-		// Check external storage
+		// Check external storage (workspace-aware).
 		let hasContextExternal = false;
 		if (this.settings.storageMode === 'external') {
-			const uid = getUidFromCache(this.app, file);
+			const uid = await this.getUidForFile(file);
 			if (uid && this.externalStore.has(uid)) {
 				hasContextExternal = true;
 			}
 		}
 
-		const hasContext = hasContextFrontmatter || hasContextExternal;
+		const hasContext = hasContextInline || hasContextExternal;
 		PerfTimer.mark('checkHasContext');
 
 		if (hasContext) {
@@ -3291,53 +3928,25 @@ export default class PerspectaPlugin extends Plugin {
 		return el;
 	}
 
+	/**
+	 * Build the weak "saved in another workspace" indicator — a distinct icon
+	 * (circle-dashed) at the same size as the strong target indicator. Reads
+	 * as "context exists, but not anchored here yet."
+	 */
+	private createOtherWorkspaceIcon(doc: Document = document): HTMLElement {
+		const el = doc.createElement('span');
+		el.className = 'perspecta-context-indicator-weak';
+		setIcon(el, 'circle-dashed');
+		return el;
+	}
+
 	// ============================================================================
 	// File Explorer Indicators
 	// ============================================================================
 
 	private async setupFileExplorerIndicators() {
 		PerfTimer.begin('setupFileExplorerIndicators');
-		const mdFiles = this.app.vault.getMarkdownFiles();
-		PerfTimer.mark(`getMarkdownFiles (${mdFiles.length} files)`);
-
-		// Scan for markdown files with context in frontmatter
-		for (const file of mdFiles) {
-			if (hasContextInFrontmatter(this.app, file)) {
-				this.filesWithContext.add(file.path);
-			}
-		}
-		PerfTimer.mark('scanForContextFiles (frontmatter)');
-
-		// Scan for canvas files with context
-		const canvasFiles = this.app.vault.getFiles().filter(f => f.extension === 'canvas');
-		for (const file of canvasFiles) {
-			if (await canvasHasContext(this.app, file)) {
-				this.filesWithContext.add(file.path);
-			}
-		}
-		PerfTimer.mark(`scanForContextFiles (canvas: ${canvasFiles.length} files)`);
-
-		// Scan for base files with context
-		const baseFiles = this.app.vault.getFiles().filter(f => f.extension === 'base');
-		for (const file of baseFiles) {
-			if (await baseHasContext(this.app, file)) {
-				this.filesWithContext.add(file.path);
-			}
-		}
-		PerfTimer.mark(`scanForContextFiles (base: ${baseFiles.length} files)`);
-
-		// If using external storage, also check for files whose UIDs have saved contexts
-		if (this.settings.storageMode === 'external') {
-			await this.externalStore.ensureInitialized();
-			const uidsWithContext = this.externalStore.getAllUids();
-			for (const file of mdFiles) {
-				const uid = getUidFromCache(this.app, file);
-				if (uid && uidsWithContext.includes(uid)) {
-					this.filesWithContext.add(file.path);
-				}
-			}
-			PerfTimer.mark('scanForContextFiles (external)');
-		}
+		await this.scanFilesWithContext();
 
 		this.registerEvent(this.app.workspace.on('layout-change', () => this.debouncedRefreshIndicators()));
 		
@@ -3356,9 +3965,15 @@ export default class PerspectaPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('rename', (file, oldPath) => {
 				if (this.isClosingWindow || this.isUnloading) return;
-				if (this.filesWithContext.has(oldPath)) {
+				const tier = this.filesWithContext.get(oldPath);
+				if (tier) {
 					this.filesWithContext.delete(oldPath);
-					this.filesWithContext.add(file.path);
+					this.filesWithContext.set(file.path, tier);
+					const otherWs = this.otherWorkspacesForFile.get(oldPath);
+					if (otherWs) {
+						this.otherWorkspacesForFile.delete(oldPath);
+						this.otherWorkspacesForFile.set(file.path, otherWs);
+					}
 					this.debouncedRefreshIndicators();
 				}
 			})
@@ -3370,6 +3985,7 @@ export default class PerspectaPlugin extends Plugin {
 				if (this.isClosingWindow || this.isUnloading) return;
 				if (this.filesWithContext.has(file.path)) {
 					this.filesWithContext.delete(file.path);
+					this.otherWorkspacesForFile.delete(file.path);
 					this.debouncedRefreshIndicators();
 				}
 			})
@@ -3380,28 +3996,49 @@ export default class PerspectaPlugin extends Plugin {
 	}
 
 	private async updateFileExplorerIndicator(file: TFile) {
-		let hasContext = false;
+		let tier: 'active' | 'other' | null = null;
+		let otherWs: WorkspaceId[] | null = null;
 
-		if (file.extension === 'canvas') {
-			// Canvas files store context in their JSON
-			hasContext = await canvasHasContext(this.app, file);
-		} else if (file.extension === 'base') {
-			// Base files store context in their YAML
-			hasContext = await baseHasContext(this.app, file);
-		} else {
-			// Markdown files: check frontmatter
-			hasContext = hasContextInFrontmatter(this.app, file);
-
-			// Also check external storage if enabled
-			if (!hasContext && this.settings.storageMode === 'external') {
-				const uid = getUidFromCache(this.app, file);
-				if (uid && this.externalStore.has(uid)) {
-					hasContext = true;
+		// 1. External store (workspace-aware) — preferred for all file types.
+		if (this.settings.storageMode === 'external') {
+			const uid = await this.getUidForFile(file);
+			if (uid) {
+				const wsList = this.externalStore.workspacesWithUid(uid);
+				if (wsList.length > 0) {
+					const activeWs = this.externalStore.getActiveWorkspace();
+					const inActive = wsList.includes(activeWs);
+					const others = wsList.filter(ws => ws !== activeWs);
+					if (inActive) {
+						tier = 'active';
+						otherWs = others.length > 0 ? others : null;
+					} else {
+						tier = 'other';
+						otherWs = others;
+					}
 				}
 			}
 		}
 
-		hasContext ? this.filesWithContext.add(file.path) : this.filesWithContext.delete(file.path);
+		// 2. Inline storage fallback (legacy data, or frontmatter mode).
+		if (!tier) {
+			let hasInline = false;
+			if (file.extension === 'md') hasInline = hasContextInFrontmatter(this.app, file);
+			else if (file.extension === 'canvas') hasInline = await canvasHasContext(this.app, file);
+			else if (file.extension === 'base') hasInline = await baseHasContext(this.app, file);
+			if (hasInline) tier = 'active';
+		}
+
+		if (tier) {
+			this.filesWithContext.set(file.path, tier);
+			if (otherWs) {
+				this.otherWorkspacesForFile.set(file.path, otherWs);
+			} else {
+				this.otherWorkspacesForFile.delete(file.path);
+			}
+		} else {
+			this.filesWithContext.delete(file.path);
+			this.otherWorkspacesForFile.delete(file.path);
+		}
 		this.debouncedRefreshIndicators();
 	}
 
@@ -3420,16 +4057,34 @@ export default class PerspectaPlugin extends Plugin {
 
 	private refreshFileExplorerIndicators() {
 		PerfTimer.begin('refreshFileExplorerIndicators');
-		document.querySelectorAll('.nav-file-title .perspecta-context-indicator').forEach(el => el.remove());
+		document.querySelectorAll('.nav-file-title .perspecta-context-indicator, .nav-file-title .perspecta-context-indicator-weak')
+			.forEach(el => el.remove());
 		PerfTimer.mark('removeOldIndicators');
 
-		this.filesWithContext.forEach(path => {
+		this.filesWithContext.forEach((tier, path) => {
 			const el = document.querySelector(`.nav-file-title[data-path="${CSS.escape(path)}"]`);
-			if (el && !el.querySelector('.perspecta-context-indicator')) {
-				const icon = this.createTargetIcon();
+			if (!el) return;
+			if (el.querySelector('.perspecta-context-indicator, .perspecta-context-indicator-weak')) return;
+
+			let icon: HTMLElement;
+			if (tier === 'active') {
+				icon = this.createTargetIcon();
 				icon.setAttribute('aria-label', 'Has saved context');
-				el.insertBefore(icon, el.firstChild);
+			} else {
+				icon = this.createOtherWorkspaceIcon();
+				const otherWs = this.otherWorkspacesForFile.get(path) ?? [];
+				const labels = otherWs.map(id => this.externalStore.listWorkspaces().find(w => w.id === id)?.displayName ?? id);
+				icon.setAttribute('aria-label', `Saved in: ${labels.join(', ')}`);
+				icon.addEventListener('click', (evt) => {
+					evt.stopPropagation();
+					evt.preventDefault();
+					const file = this.app.vault.getAbstractFileByPath(path);
+					if (file instanceof TFile) {
+						this.showCrossWorkspaceActionDialog(file, otherWs);
+					}
+				});
 			}
+			el.insertBefore(icon, el.firstChild);
 		});
 		PerfTimer.mark(`addIndicators (${this.filesWithContext.size} files)`);
 		PerfTimer.end('refreshFileExplorerIndicators');
