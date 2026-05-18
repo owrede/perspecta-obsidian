@@ -68,6 +68,25 @@ export async function saveContextToCanvas(app: App, file: TFile, context: Window
 	}
 }
 
+// Remove inline context from a canvas file's JSON (keeps perspecta.uid intact).
+// Returns true if the file was actually modified.
+export async function removeContextFromCanvas(app: App, file: TFile): Promise<boolean> {
+	if (file.extension !== 'canvas') return false;
+	try {
+		const content = await app.vault.read(file);
+		const data = JSON.parse(content) as CanvasData;
+		if (!data.perspecta?.context) return false;
+		delete data.perspecta.context;
+		// If the perspecta block has nothing left worth keeping, leave the
+		// uid alone — it's still needed to look up arrangements externally.
+		await app.vault.modify(file, JSON.stringify(data, null, '\t'));
+		return true;
+	} catch (e) {
+		Logger.error('Failed to remove context from canvas:', e);
+		return false;
+	}
+}
+
 // Check if a canvas file has a context stored
 export async function canvasHasContext(app: App, file: TFile): Promise<boolean> {
 	if (file.extension !== 'canvas') return false;

@@ -78,6 +78,23 @@ export async function saveContextToBase(app: App, file: TFile, context: WindowAr
 	}
 }
 
+// Remove inline context from a base file's YAML (keeps perspecta.uid intact).
+// Returns true if the file was actually modified.
+export async function removeContextFromBase(app: App, file: TFile): Promise<boolean> {
+	if (file.extension !== 'base') return false;
+	try {
+		const content = await app.vault.read(file);
+		const data = (content.trim() ? parseYaml(content) : {}) as BaseData;
+		if (!data?.perspecta?.context) return false;
+		delete data.perspecta.context;
+		await app.vault.modify(file, stringifyYaml(data));
+		return true;
+	} catch (e) {
+		Logger.error('Failed to remove context from base file:', e);
+		return false;
+	}
+}
+
 // Check if a base file has a context stored
 export async function baseHasContext(app: App, file: TFile): Promise<boolean> {
 	if (file.extension !== 'base') return false;
