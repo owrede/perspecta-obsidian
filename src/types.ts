@@ -165,6 +165,33 @@ export interface CompactArrangement {
 
 export type StorageMode = 'frontmatter' | 'external';
 
+// ============================================================================
+// Workspace types
+// ----------------------------------------------------------------------------
+// A "workspace" here is a bucket of context arrangements scoped to Obsidian's
+// active core-plugin Workspace. The bucket id is a slug derived from the
+// workspace's display name; the manifest maps slug → display metadata.
+// The `default` bucket is always present, never shareable, and used as
+// fallback when no Obsidian workspace is active or the core plugin is
+// disabled.
+// ============================================================================
+
+export type WorkspaceId = string;
+
+export const DEFAULT_WORKSPACE_ID: WorkspaceId = 'default';
+export const DEFAULT_WORKSPACE_DISPLAY_NAME = 'Default';
+
+export interface WorkspaceInfo {
+	id: WorkspaceId;
+	displayName: string;
+	shared: boolean;
+}
+
+export interface WorkspaceManifest {
+	v: 1;
+	workspaces: Record<WorkspaceId, { displayName: string; shared: boolean }>;
+}
+
 export interface PerspectaSettings {
 	enableVisualMapping: boolean;
 	enableAutomation: boolean;
@@ -186,6 +213,11 @@ export interface PerspectaSettings {
 	storeWallpapersLocally: boolean;  // Copy wallpapers to perspecta/wallpapers folder
 	// Performance settings
 	enableParallelPopoutCreation: boolean;  // Create popout windows in parallel for faster restoration
+	// Workspace integration
+	workspaceFallbackToDefault: boolean;    // On restore, fall back to `default` bucket if active workspace has no arrangement
+	workspaceCrossSelector: boolean;        // In arrangement selector, show arrangements from other workspaces too
+	workspaceSharedLocation: string;        // Vault-relative folder for shared workspace buckets
+	enableWorkspaceStatusBar: boolean;      // Show the active workspace in the status bar (ignored when core plugin disabled)
 }
 
 export const DEFAULT_SETTINGS: PerspectaSettings = {
@@ -208,7 +240,12 @@ export const DEFAULT_SETTINGS: PerspectaSettings = {
 	enableWallpaperRestore: false,
 	storeWallpapersLocally: true,  // Default to local storage for portability
 	// Performance settings
-	enableParallelPopoutCreation: false  // Default to sequential for safety
+	enableParallelPopoutCreation: false,  // Default to sequential for safety
+	// Workspace integration
+	workspaceFallbackToDefault: true,
+	workspaceCrossSelector: false,
+	workspaceSharedLocation: 'perspecta/workspaces',
+	enableWorkspaceStatusBar: true
 };
 
 // Timestamped arrangement for multi-arrangement storage

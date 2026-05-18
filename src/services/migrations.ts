@@ -16,7 +16,21 @@ import {
 	removeContextFromFrontmatter,
 	saveContextToFrontmatter,
 } from '../storage/frontmatter-store';
-import { WindowArrangement, WindowArrangementV1, WindowArrangementV2 } from '../types';
+import {
+	getUidFromCanvas,
+	getContextFromCanvas,
+	addUidToCanvas,
+	removeContextFromCanvas,
+	canvasHasContext,
+} from '../storage/canvas';
+import {
+	getUidFromBase,
+	getContextFromBase,
+	addUidToBase,
+	removeContextFromBase,
+	baseHasContext,
+} from '../storage/base';
+import { WindowArrangement, WindowArrangementV1, WindowArrangementV2, DEFAULT_WORKSPACE_ID } from '../types';
 import { briefPause } from '../utils/async-utils';
 import { Logger } from '../utils/logger';
 import { addUidToFile, cleanupOldUid, generateUid, getUidFromCache } from '../utils/uid';
@@ -167,4 +181,75 @@ export function normalizeToV2(arr: WindowArrangement): WindowArrangementV2 {
 		leftSidebar: v1.leftSidebar,
 		rightSidebar: v1.rightSidebar,
 	};
+}
+
+// ============================================================================
+// Inline canvas/base context migration
+// ----------------------------------------------------------------------------
+// Moves embedded perspecta.context blobs out of .canvas and .base files into
+// the external store (Default workspace bucket). Idempotent — re-running on
+// already-migrated files is a no-op. UIDs are preserved.
+// ============================================================================
+
+export interface InlineMigrationResult {
+	canvasMigrated: number;
+	baseMigrated: number;
+	errors: number;
+	uidsAdded: number;
+}
+
+export async function migrateInlineCanvasBaseContexts(
+	cfg: Pick<MigrationConfig, 'app' | 'externalStore'> & { maxArrangementsPerNote: number }
+): Promise<InlineMigrationResult> {
+	const { app, externalStore, maxArrangementsPerNote } = cfg;
+	const result: InlineMigrationResult = { canvasMigrated: 0, baseMigrated: 0, errors: 0, uidsAdded: 0 };
+
+	await externalStore.ensureInitialized();
+
+	const canvasFiles = app.vault.getFiles().filter(f => f.extension === 'canvas');
+	for (const file of canvasFiles) {
+		try {
+			if (!(await canvasHasContext(app, file))) continue;
+			let uid = await getUidFromCanvas(app, file);
+			if (!uid) {
+				uid = generateUid();
+				await addUidToCanvas(app, file, uid);
+				result.uidsAdded++;
+			}
+			const ctx = await getContextFromCanvas(app, file);
+			if (!ctx) continue;
+			const v2 = normalizeToV2(ctx) as WindowArrangementV2;
+			externalStore.set(uid, v2, maxArrangementsPerNote, DEFAULT_WORKSPACE_ID);
+			await removeContextFromCanvas(app, file);
+			result.canvasMigrated++;
+		} catch (e) {
+			Logger.error(`Failed to migrate inline canvas context: ${file.path}`, e);
+			result.errors++;
+		}
+	}
+
+	const baseFiles = app.vault.getFiles().filter(f => f.extension === 'base');
+	for (const file of baseFiles) {
+		try {
+			if (!(await baseHasContext(app, file))) continue;
+			let uid = await getUidFromBase(app, file);
+			if (!uid) {
+				uid = generateUid();
+				await addUidToBase(app, file, uid);
+				result.uidsAdded++;
+			}
+			const ctx = await getContextFromBase(app, file);
+			if (!ctx) continue;
+			const v2 = normalizeToV2(ctx) as WindowArrangementV2;
+			externalStore.set(uid, v2, maxArrangementsPerNote, DEFAULT_WORKSPACE_ID);
+			await removeContextFromBase(app, file);
+			result.baseMigrated++;
+		} catch (e) {
+			Logger.error(`Failed to migrate inline base context: ${file.path}`, e);
+			result.errors++;
+		}
+	}
+
+	await externalStore.flushDirty();
+	return result;
 }

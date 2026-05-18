@@ -381,6 +381,55 @@ export interface ExtendedApp extends App {
 	 * Hotkey manager for accessing configured hotkeys.
 	 */
 	hotkeyManager?: HotkeyManager;
+
+	/**
+	 * Internal-plugins registry. Used to detect and read state from
+	 * Obsidian core plugins that have no public API.
+	 *
+	 * @availability Present in all recent Obsidian versions
+	 * @fallback Treat as undefined and skip workspace integration
+	 */
+	internalPlugins?: {
+		plugins: {
+			workspaces?: WorkspacesPlugin;
+			[key: string]: unknown;
+		};
+	};
+}
+
+/**
+ * Obsidian's built-in Workspaces core plugin.
+ *
+ * @internal
+ */
+export interface WorkspacesPlugin {
+	enabled: boolean;
+	instance?: WorkspacesInstance;
+}
+
+/**
+ * Instance of the Workspaces core plugin.
+ *
+ * @internal
+ */
+export interface WorkspacesInstance {
+	/** Name of the currently loaded workspace, or empty string if none. */
+	activeWorkspace: string;
+	/** Map of workspace name → saved layout. */
+	workspaces: Record<string, unknown>;
+	loadWorkspace(name: string): void;
+	saveWorkspace(name: string): void;
+	deleteWorkspace(name: string): void;
+}
+
+/**
+ * Type guard for workspaces plugin presence.
+ */
+export function getWorkspacesInstance(app: App): WorkspacesInstance | null {
+	const ext = app as ExtendedApp;
+	const plugin = ext.internalPlugins?.plugins.workspaces;
+	if (!plugin || !plugin.enabled || !plugin.instance) return null;
+	return plugin.instance;
 }
 
 /**

@@ -9,11 +9,19 @@
 // the external store (.obsidian/plugins/perspecta-obsidian/contexts/) is
 // vulnerable to plugin removal/reinstall, which is why a backup feature
 // exists in the first place.
+//
+// Format v2 (current) is workspace-aware:
+//   { version: 2, createdAt, workspaces: {
+//       <wsId>: { displayName, shared, arrangements: { <uid>: [...] } }
+//   } }
+//
+// Format v1 (legacy) is read-only: all UIDs restored into the `default`
+// bucket.
 // ============================================================================
 
 import { App, Notice } from 'obsidian';
 import { ExternalContextStore } from '../storage/external-store';
-import { WindowArrangementV2 } from '../types';
+import { WindowArrangementV2, DEFAULT_WORKSPACE_ID, WorkspaceId } from '../types';
 import { showRestoreModeSelector, RestoreMode } from '../ui/modals';
 import { Logger } from '../utils/logger';
 
@@ -28,6 +36,27 @@ export interface BackupConfig {
 	onAfterRestore: () => Promise<void>;
 }
 
+interface BackupV1 {
+	version: 1;
+	createdAt: string;
+	arrangementCount: number;
+	arrangements: Record<string, Array<{ arrangement: WindowArrangementV2; savedAt: number }>>;
+}
+
+interface BackupV2WorkspaceEntry {
+	displayName: string;
+	shared: boolean;
+	arrangements: Record<string, Array<{ arrangement: WindowArrangementV2; savedAt: number }>>;
+}
+
+interface BackupV2 {
+	version: 2;
+	createdAt: string;
+	workspaceCount: number;
+	totalArrangementCount: number;
+	workspaces: Record<WorkspaceId, BackupV2WorkspaceEntry>;
+}
+
 function getBackupFolderPath(perspectaFolderPath: string): string {
 	const basePath = perspectaFolderPath.replace(/\/+$/, '');
 	return `${basePath}/backups`;
@@ -35,7 +64,6 @@ function getBackupFolderPath(perspectaFolderPath: string): string {
 
 /**
  * Write all external-store arrangements to a timestamped JSON file.
- * Returns the file path and the count of UIDs backed up.
  */
 export async function backupArrangements(
 	cfg: Pick<BackupConfig, 'app' | 'externalStore' | 'perspectaFolderPath'>
@@ -44,14 +72,24 @@ export async function backupArrangements(
 
 	await externalStore.ensureInitialized();
 
-	const allArrangements: Record<string, unknown> = {};
-	const uids = externalStore.getAllUids();
+	const workspaces: Record<WorkspaceId, BackupV2WorkspaceEntry> = {};
+	let totalArrangements = 0;
 
-	for (const uid of uids) {
-		const arrangements = externalStore.getAll(uid);
-		if (arrangements.length > 0) {
-			allArrangements[uid] = arrangements;
+	for (const ws of externalStore.listWorkspaces()) {
+		const uids = externalStore.getAllUids(ws.id);
+		const arrangements: Record<string, Array<{ arrangement: WindowArrangementV2; savedAt: number }>> = {};
+		for (const uid of uids) {
+			const items = externalStore.getAll(uid, ws.id);
+			if (items.length > 0) {
+				arrangements[uid] = items;
+				totalArrangements += items.length;
+			}
 		}
+		workspaces[ws.id] = {
+			displayName: ws.displayName,
+			shared: ws.shared,
+			arrangements,
+		};
 	}
 
 	const backupFolder = getBackupFolderPath(perspectaFolderPath);
@@ -64,20 +102,22 @@ export async function backupArrangements(
 	const backupFileName = `arrangements-backup-${timestamp}.json`;
 	const backupPath = `${backupFolder}/${backupFileName}`;
 
-	const backupData = {
-		version: 1,
+	const backupData: BackupV2 = {
+		version: 2,
 		createdAt: now.toISOString(),
-		arrangementCount: Object.keys(allArrangements).length,
-		arrangements: allArrangements,
+		workspaceCount: Object.keys(workspaces).length,
+		totalArrangementCount: totalArrangements,
+		workspaces,
 	};
 
 	await app.vault.create(backupPath, JSON.stringify(backupData, null, 2));
 
-	return { count: Object.keys(allArrangements).length, path: backupPath };
+	const uidCount = Object.values(workspaces).reduce((sum, w) => sum + Object.keys(w.arrangements).length, 0);
+	return { count: uidCount, path: backupPath };
 }
 
 /**
- * List all backup files in the backups folder, newest first.
+ * List all backup files, newest first.
  */
 export async function listBackups(
 	cfg: Pick<BackupConfig, 'app' | 'perspectaFolderPath'>
@@ -96,7 +136,6 @@ export async function listBackups(
 		if (!filePath.endsWith('.json')) continue;
 
 		const fileName = filePath.split('/').pop() || '';
-		// arrangements-backup-YYYY-MM-DDTHH-MM-SS.json
 		const match = fileName.match(/arrangements-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.json/);
 		if (!match) continue;
 
@@ -109,13 +148,17 @@ export async function listBackups(
 	return backups;
 }
 
+function isV1(data: unknown): data is BackupV1 {
+	return typeof data === 'object' && data !== null && (data as { version?: number }).version === 1;
+}
+
+function isV2(data: unknown): data is BackupV2 {
+	return typeof data === 'object' && data !== null && (data as { version?: number }).version === 2;
+}
+
 /**
- * Restore arrangements from a backup file.
- *
- * - `mode = 'overwrite'`: clears the external store first, then restores.
- * - `mode = 'merge'`: combines backup with existing per UID, keeping the
- *   newest `maxArrangementsPerNote` entries.
- * - `mode` undefined: shows the mode selector modal.
+ * Restore arrangements from a backup file. Both v1 (legacy, single bucket) and
+ * v2 (workspace-aware) are supported.
  */
 export async function restoreFromBackup(
 	cfg: BackupConfig,
@@ -133,22 +176,40 @@ export async function restoreFromBackup(
 		mode = result.mode;
 	}
 
-	let backupData: { arrangements?: Record<string, unknown> };
+	let parsed: unknown;
 	try {
 		const content = await app.vault.adapter.read(backupPath);
-		backupData = JSON.parse(content);
+		parsed = JSON.parse(content);
 	} catch (e) {
 		Logger.error('Failed to parse backup file:', e);
 		new Notice('Failed to parse backup file. The file may be corrupted.');
 		return { restored: 0, errors: 1 };
 	}
 
-	if (!backupData.arrangements || typeof backupData.arrangements !== 'object') {
+	await externalStore.ensureInitialized();
+
+	// Normalize either format into a workspace → uid → arrangements map.
+	const normalized: Record<WorkspaceId, Record<string, Array<{ arrangement: WindowArrangementV2; savedAt: number }>>> = {};
+
+	if (isV2(parsed)) {
+		// Ensure all workspaces in the backup exist (recreate if missing).
+		for (const [wsId, entry] of Object.entries(parsed.workspaces)) {
+			if (!externalStore.hasWorkspace(wsId)) {
+				try {
+					await externalStore.createWorkspaceBucket(entry.displayName, wsId);
+				} catch (e) {
+					Logger.warn(`Failed to recreate workspace ${wsId}:`, e);
+				}
+			}
+			normalized[wsId] = entry.arrangements;
+		}
+	} else if (isV1(parsed)) {
+		// Legacy: everything goes into default.
+		normalized[DEFAULT_WORKSPACE_ID] = parsed.arrangements;
+	} else {
 		new Notice('Invalid backup file format');
 		return { restored: 0, errors: 1 };
 	}
-
-	await externalStore.ensureInitialized();
 
 	let restored = 0;
 	let errors = 0;
@@ -157,38 +218,33 @@ export async function restoreFromBackup(
 		await externalStore.clearAll();
 	}
 
-	for (const [uid, arrangements] of Object.entries(backupData.arrangements)) {
-		try {
-			const backupArrangements = arrangements as Array<{ arrangement: WindowArrangementV2; savedAt: number }>;
-
-			if (mode === 'merge') {
-				const existing = externalStore.get(uid) || [];
-				const combined = [...existing];
-
-				for (const backupItem of backupArrangements) {
-					const alreadyExists = combined.some(e => e.savedAt === backupItem.savedAt);
-					if (!alreadyExists) {
-						combined.push(backupItem);
+	for (const [wsId, uidMap] of Object.entries(normalized)) {
+		for (const [uid, backupArrangements] of Object.entries(uidMap)) {
+			try {
+				if (mode === 'merge') {
+					const existing = externalStore.get(uid, wsId) || [];
+					const combined = [...existing];
+					for (const backupItem of backupArrangements) {
+						if (!combined.some(e => e.savedAt === backupItem.savedAt)) {
+							combined.push(backupItem);
+						}
+					}
+					combined.sort((a, b) => b.savedAt - a.savedAt);
+					const trimmed = combined.slice(0, maxArrangementsPerNote);
+					externalStore.clearUid(uid, wsId);
+					for (const item of trimmed) {
+						externalStore.set(uid, item.arrangement, maxArrangementsPerNote, wsId);
+					}
+				} else {
+					for (const item of backupArrangements) {
+						externalStore.set(uid, item.arrangement, maxArrangementsPerNote, wsId);
 					}
 				}
-
-				combined.sort((a, b) => b.savedAt - a.savedAt);
-				const trimmed = combined.slice(0, maxArrangementsPerNote);
-
-				externalStore.clearUid(uid);
-				for (const item of trimmed) {
-					externalStore.set(uid, item.arrangement, maxArrangementsPerNote);
-				}
-			} else {
-				// overwrite: just restore from backup
-				for (const item of backupArrangements) {
-					externalStore.set(uid, item.arrangement, maxArrangementsPerNote);
-				}
+				restored++;
+			} catch (e) {
+				Logger.error(`Failed to restore arrangements for UID ${uid} in workspace ${wsId}:`, e);
+				errors++;
 			}
-			restored++;
-		} catch (e) {
-			Logger.error(`Failed to restore arrangements for UID ${uid}:`, e);
-			errors++;
 		}
 	}
 
