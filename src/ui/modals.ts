@@ -1053,3 +1053,115 @@ export function showCrossWorkspaceActionDialog(
 		doc.body.appendChild(modal);
 	});
 }
+
+// ============================================================================
+// Workspace deletion dialog
+// ----------------------------------------------------------------------------
+// Three-way choice when the user clicks Delete on a workspace bucket: move
+// its arrangements somewhere else, delete them outright, or cancel.
+// ============================================================================
+
+export type WorkspaceDeleteAction = 'move' | 'delete';
+
+export interface WorkspaceDeleteResult {
+	action?: WorkspaceDeleteAction;
+	targetWorkspaceId?: WorkspaceId;
+	cancelled: boolean;
+}
+
+export function showWorkspaceDeleteDialog(
+	workspace: WorkspaceInfo,
+	uidCount: number,
+	otherWorkspaces: WorkspaceInfo[],
+	isOrphan: boolean,
+	targetWindow: Window = window
+): Promise<WorkspaceDeleteResult> {
+	return new Promise((resolve) => {
+		const doc = targetWindow.document;
+
+		const overlay = doc.createElement('div');
+		overlay.className = 'perspecta-debug-overlay';
+
+		const modal = doc.createElement('div');
+		modal.className = 'perspecta-restore-modal';
+
+		const title = modal.createDiv({ cls: 'perspecta-modal-title' });
+		title.setText(`Delete workspace "${workspace.displayName}"?`);
+
+		const subtitle = modal.createDiv({ cls: 'perspecta-modal-subtitle' });
+		const arrText = `${uidCount} arrangement${uidCount === 1 ? '' : 's'}`;
+		subtitle.setText(isOrphan
+			? `This workspace bucket is orphaned — the underlying Obsidian workspace no longer exists. It still holds ${arrText}.`
+			: `This bucket holds ${arrText}. Pick what to do with them.`);
+
+		const cleanup = () => { modal.remove(); overlay.remove(); };
+		const cancel = () => { cleanup(); resolve({ cancelled: true }); };
+
+		// Build options.
+		const options = modal.createDiv({ cls: 'perspecta-restore-options' });
+
+		if (uidCount === 0) {
+			// Nothing to preserve — just confirm the delete.
+			const onlyOption = options.createDiv({ cls: 'perspecta-restore-option' });
+			onlyOption.style.cursor = 'pointer';
+			const c = onlyOption.createDiv({ cls: 'perspecta-restore-option-content' });
+			c.createDiv({ cls: 'perspecta-restore-option-title', text: 'Delete workspace' });
+			c.createDiv({ cls: 'perspecta-restore-option-desc', text: 'The bucket is empty. Delete the folder.' });
+			onlyOption.addEventListener('click', () => {
+				cleanup();
+				resolve({ action: 'delete', cancelled: false });
+			});
+		} else {
+			// Move option (only if there's a target available).
+			let selectedTarget: WorkspaceId | undefined = otherWorkspaces[0]?.id;
+			if (otherWorkspaces.length > 0) {
+				const moveRow = options.createDiv({ cls: 'perspecta-restore-option' });
+				moveRow.style.cursor = 'pointer';
+				const c = moveRow.createDiv({ cls: 'perspecta-restore-option-content' });
+				c.createDiv({ cls: 'perspecta-restore-option-title', text: `Move arrangements to another workspace` });
+				c.createDiv({ cls: 'perspecta-restore-option-desc', text: `All ${arrText} are moved before this bucket is deleted.` });
+
+				const select = c.createEl('select', { cls: 'dropdown' });
+				select.style.marginTop = '8px';
+				select.style.width = '100%';
+				for (const ws of otherWorkspaces) {
+					const opt = select.createEl('option', { value: ws.id, text: `→ ${ws.displayName}${ws.shared ? ' (shared)' : ''}` });
+					if (ws.id === selectedTarget) opt.selected = true;
+				}
+				select.addEventListener('change', (e) => {
+					e.stopPropagation();
+					selectedTarget = select.value;
+				});
+				select.addEventListener('click', (e) => e.stopPropagation());
+
+				moveRow.addEventListener('click', () => {
+					if (!selectedTarget) return;
+					cleanup();
+					resolve({ action: 'move', targetWorkspaceId: selectedTarget, cancelled: false });
+				});
+			}
+
+			// Delete option.
+			const deleteRow = options.createDiv({ cls: 'perspecta-restore-option' });
+			deleteRow.style.cursor = 'pointer';
+			const dc = deleteRow.createDiv({ cls: 'perspecta-restore-option-content' });
+			dc.createDiv({ cls: 'perspecta-restore-option-title', text: `Delete arrangements` });
+			dc.createDiv({ cls: 'perspecta-restore-option-desc', text: `All ${arrText} are permanently lost. This cannot be undone.` });
+			deleteRow.addEventListener('click', () => {
+				cleanup();
+				resolve({ action: 'delete', cancelled: false });
+			});
+		}
+
+		const buttonRow = modal.createDiv({ cls: 'perspecta-modal-buttons' });
+		const cancelBtn = buttonRow.createEl('button', {
+			cls: 'perspecta-modal-button perspecta-modal-button-secondary',
+			text: 'Cancel'
+		});
+		overlay.onclick = cancel;
+		cancelBtn.addEventListener('click', cancel);
+
+		doc.body.appendChild(overlay);
+		doc.body.appendChild(modal);
+	});
+}

@@ -19,6 +19,8 @@ import { renderChangelogToContainer } from '../changelog';
 import { getWallpaperPlatformNotes } from '../utils/wallpaper';
 import { ExtendedApp, getWorkspacesInstance } from '../types/obsidian-internal';
 import { DEFAULT_WORKSPACE_ID } from '../types';
+import { slugifyWorkspaceName } from '../storage/external-store';
+import { showWorkspaceDeleteDialog } from './modals';
 
 type SettingsTab = 'changelog' | 'context' | 'storage' | 'workspaces' | 'backup' | 'experimental' | 'debug';
 
@@ -353,14 +355,89 @@ export class PerspectaSettingTab extends PluginSettingTab {
 				return;
 			}
 
-			for (const bucket of buckets) {
+			// Build the set of "live" Perspecta workspace slugs — those that still
+			// correspond to an Obsidian workspace (plus Default which is always live).
+			const liveSlugs = new Set<string>([DEFAULT_WORKSPACE_ID]);
+			const obsidianInstance = getWorkspacesInstance(this.app);
+			if (obsidianInstance) {
+				for (const name of Object.keys(obsidianInstance.workspaces)) {
+					liveSlugs.add(slugifyWorkspaceName(name));
+				}
+			}
+
+			// Sort orphans last for readability; otherwise keep manifest order.
+			const sorted = [...buckets].sort((a, b) => {
+				const ao = !liveSlugs.has(a.id) ? 1 : 0;
+				const bo = !liveSlugs.has(b.id) ? 1 : 0;
+				return ao - bo;
+			});
+
+			for (const bucket of sorted) {
 				const uidCount = this.plugin.externalStore.getAllUids(bucket.id).length;
 				const isDefault = bucket.id === DEFAULT_WORKSPACE_ID;
 				const isActive = bucket.id === activeId;
+				const isOrphan = !isDefault && !liveSlugs.has(bucket.id);
+
+				const flags: string[] = [];
+				if (isActive) flags.push('active');
+				if (isDefault) flags.push('default');
+				if (isOrphan) flags.push('orphan');
+				const flagText = flags.length > 0 ? ` (${flags.join(', ')})` : '';
 
 				const setting = new Setting(list)
-					.setName(`${bucket.displayName}${isActive ? ' (active)' : ''}${isDefault ? ' (default)' : ''}`)
-					.setDesc(`Slug: ${bucket.id} · ${uidCount} note${uidCount === 1 ? '' : 's'} · ${bucket.shared ? 'shared' : 'plugin-dir'}`);
+					.setName(`${bucket.displayName}${flagText}`)
+					.setDesc(isOrphan
+						? `⚠ Source workspace no longer exists in Obsidian. Slug: ${bucket.id} · ${uidCount} note${uidCount === 1 ? '' : 's'} · ${bucket.shared ? 'shared' : 'plugin-dir'}`
+						: `Slug: ${bucket.id} · ${uidCount} note${uidCount === 1 ? '' : 's'} · ${bucket.shared ? 'shared' : 'plugin-dir'}`);
+
+				// Reclaim button — only for orphans. Renames the bucket so it matches
+				// a (newly created) Obsidian workspace's slug.
+				if (isOrphan) {
+					setting.addButton(btn => btn
+						.setButtonText('Reclaim…')
+						.setTooltip('Re-associate this orphan bucket with an Obsidian workspace (rename / recreate)')
+						.onClick(async () => {
+							const newName = window.prompt(
+								`Re-associate orphan bucket "${bucket.displayName}".\n\n` +
+								`Enter the exact name of an existing Obsidian workspace whose slug should claim these arrangements. ` +
+								`If the workspace doesn't exist yet, it will be created.`,
+								bucket.displayName
+							);
+							const trimmed = newName?.trim();
+							if (!trimmed) return;
+							const targetSlug = slugifyWorkspaceName(trimmed);
+							if (targetSlug === bucket.id) {
+								// Same slug — just create an Obsidian workspace to match.
+								if (obsidianInstance && !obsidianInstance.workspaces[trimmed]) {
+									try {
+										obsidianInstance.saveWorkspace(trimmed);
+										new Notice(`Created Obsidian workspace "${trimmed}" matching this bucket`);
+									} catch (e) {
+										new Notice(`Failed to create Obsidian workspace: ${e instanceof Error ? e.message : String(e)}`);
+									}
+								}
+								await this.plugin.externalStore.renameWorkspaceBucket(bucket.id, trimmed);
+								renderBucketList();
+								return;
+							}
+							// Different slug — move arrangements to the target bucket.
+							try {
+								if (!this.plugin.externalStore.hasWorkspace(targetSlug)) {
+									await this.plugin.externalStore.createWorkspaceBucket(trimmed, targetSlug);
+								}
+								const max = this.plugin.settings.maxArrangementsPerNote;
+								const stats = this.plugin.externalStore.bulkMove(bucket.id, targetSlug, 'merge', max);
+								await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
+								if (obsidianInstance && !obsidianInstance.workspaces[trimmed]) {
+									try { obsidianInstance.saveWorkspace(trimmed); } catch { /* ignore */ }
+								}
+								new Notice(`Reclaimed ${stats.uids} arrangement bucket${stats.uids === 1 ? '' : 's'} into "${trimmed}"`);
+								renderBucketList();
+							} catch (e) {
+								new Notice(`Failed to reclaim: ${e instanceof Error ? e.message : String(e)}`);
+							}
+						}));
+				}
 
 				if (!isDefault) {
 					setting.addButton(btn => btn
@@ -379,19 +456,28 @@ export class PerspectaSettingTab extends PluginSettingTab {
 						}));
 
 					setting.addButton(btn => btn
-						.setButtonText('Delete')
+						.setButtonText('Delete…')
 						.setWarning()
-						.setTooltip(`Delete all ${uidCount} arrangement${uidCount === 1 ? '' : 's'} in this workspace`)
+						.setTooltip('Delete this workspace bucket — choose whether to move or drop its arrangements')
 						.onClick(async () => {
-							if (uidCount > 0 && !confirm(`Delete workspace bucket "${bucket.displayName}" and all ${uidCount} arrangement${uidCount === 1 ? '' : 's'} inside it? This cannot be undone.`)) {
-								return;
-							}
+							const others = buckets.filter(w => w.id !== bucket.id);
+							const result = await showWorkspaceDeleteDialog(bucket, uidCount, others, isOrphan);
+							if (result.cancelled || !result.action) return;
+
 							try {
-								await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
-								new Notice(`Deleted workspace bucket: ${bucket.displayName}`);
+								if (result.action === 'move' && result.targetWorkspaceId) {
+									const max = this.plugin.settings.maxArrangementsPerNote;
+									const stats = this.plugin.externalStore.bulkMove(bucket.id, result.targetWorkspaceId, 'merge', max);
+									await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
+									const targetName = buckets.find(w => w.id === result.targetWorkspaceId)?.displayName ?? result.targetWorkspaceId;
+									new Notice(`Moved ${stats.uids} arrangement${stats.uids === 1 ? '' : 's'} to "${targetName}"; deleted "${bucket.displayName}"`);
+								} else {
+									await this.plugin.externalStore.deleteWorkspaceBucket(bucket.id);
+									new Notice(`Deleted workspace bucket: ${bucket.displayName}`);
+								}
 								renderBucketList();
 							} catch (e) {
-								new Notice(`Failed to delete bucket: ${e instanceof Error ? e.message : String(e)}`);
+								new Notice(`Failed: ${e instanceof Error ? e.message : String(e)}`);
 							}
 						}));
 				}
