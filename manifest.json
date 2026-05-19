@@ -1,7 +1,7 @@
 {
 	"id": "perspecta-obsidian",
 	"name": "Perspecta",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"minAppVersion": "1.4.0",
 	"description": "Save and restore complex window arrangements across multiple displays with context-aware workspace management for Obsidian.",
 	"author": "Oliver Wrede",
